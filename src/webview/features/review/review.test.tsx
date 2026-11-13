@@ -29,6 +29,7 @@ function stateWith(
       entries,
       hunks: extra.hunks ?? {},
       configChanges: extra.configChanges ?? [],
+      busy: false,
     },
     ...(extra.baseline ? { baseline: extra.baseline } : {}),
     ...(extra.running

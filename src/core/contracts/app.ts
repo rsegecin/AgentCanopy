@@ -65,6 +65,17 @@ export interface UiPort {
   openChangeDiff(folderKey: FolderKey, path: string): Promise<void>;
   /** Opens the native multi-file changes editor for every pending file of a folder. */
   openAllChanges(folderKey: FolderKey): Promise<void>;
+  /**
+   * Opens a Markdown text as a read-only document (used to read one version of a plan). The same
+   * `key` shows the same editor tab again instead of opening another. `beside` opens it next to the
+   * active editor, for a request that comes from a chat in the editor area.
+   */
+  showReadOnlyDocument(input: {
+    key: string;
+    title: string;
+    text: string;
+    beside?: boolean;
+  }): Promise<void>;
   /** Opens a text as a new untitled document the user can save (used to export a plan). */
   showDocument(input: { text: string; language: string }): Promise<void>;
   showLogs(): void;

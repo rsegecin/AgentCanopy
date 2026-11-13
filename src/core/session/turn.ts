@@ -706,7 +706,7 @@ export class TurnRun {
       this.persistMessage();
       return {
         text:
-          `Plan saved as version ${result.version}. The user reviews it in the plan view. ` +
+          `Plan saved as version ${result.version}. The user reviews it in the plan card in the chat. ` +
           'Do not repeat the plan in chat: say in two or three sentences what it covers, or what changed.',
         isError: false,
       };

@@ -392,6 +392,15 @@ export class FakeUi implements UiPort {
     this.record('showDiff', input);
     return Promise.resolve();
   }
+  showReadOnlyDocument(input: {
+    key: string;
+    title: string;
+    text: string;
+    beside?: boolean;
+  }): Promise<void> {
+    this.record('showReadOnlyDocument', input);
+    return Promise.resolve();
+  }
   showDocument(input: { text: string; language: string }): Promise<void> {
     this.record('showDocument', input);
     return Promise.resolve();
@@ -488,7 +497,11 @@ export interface Harness {
   readonly requests: TurnRequest[];
   readonly views: TestView[];
   /** Attaches a view and, by default, sends `ready`. */
-  attach(options?: { ready?: boolean; conversationId?: ConversationId }): TestView;
+  attach(options?: {
+    ready?: boolean;
+    conversationId?: ConversationId;
+    kind?: 'sidebar' | 'panel';
+  }): TestView;
   /** Reads what the fake CLI recorded on its latest run (needs `record`). */
   record(index?: number): Promise<FakeClaudeRecord>;
   /** Waits until no turn runs any more. */
@@ -624,7 +637,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     attach(attachOptions = {}) {
       const view = new TestView();
       view.handle = controller.attachView(
-        'sidebar',
+        attachOptions.kind ?? 'sidebar',
         view,
         attachOptions.conversationId ? { conversationId: attachOptions.conversationId } : undefined,
       );

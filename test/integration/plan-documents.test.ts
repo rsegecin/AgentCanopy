@@ -105,4 +105,78 @@ suite('plan documents', () => {
     assert.strictEqual(editor.document.languageId, 'markdown');
     assert.strictEqual(editor.document.getText(), '# Exported plan\n');
   });
+
+  test('the same key gives the same document, and setting it again replaces the text', async () => {
+    const first = createVirtualDocument('one\n', 'Plan v1', 'plan-p1-v1');
+    const again = createVirtualDocument('two\n', 'Plan v1', 'plan-p1-v1');
+    const other = createVirtualDocument('two\n', 'Plan v1', 'plan-p1-v2');
+    assert.strictEqual(first.toString(), again.toString());
+    assert.notStrictEqual(first.toString(), other.toString());
+    assert.strictEqual((await vscode.workspace.openTextDocument(first)).getText(), 'two\n');
+    // Without a key every call is a new document.
+    assert.notStrictEqual(
+      createVirtualDocument('x', 'Plan v1').toString(),
+      createVirtualDocument('x', 'Plan v1').toString(),
+    );
+  });
+
+  test('showReadOnlyDocument opens the text once per key, even when called twice', async () => {
+    const { ui } = await activateExtension();
+    const key = 'plan-integration-v1';
+    const text = '# Plan\n\nstep one\n';
+    await ui.showReadOnlyDocument({ key, title: 'Plan (version 1)', text });
+    await ui.showReadOnlyDocument({ key, title: 'Plan (version 1)', text, beside: true });
+
+    const tabs = (): vscode.Tab[] =>
+      vscode.window.tabGroups.all.flatMap((group) =>
+        group.tabs.filter(
+          (tab) =>
+            tab.input instanceof vscode.TabInputText &&
+            tab.input.uri.scheme === VIRTUAL_DOCUMENT_SCHEME,
+        ),
+      );
+    await waitFor('the document tab', () => (tabs().length > 0 ? true : undefined));
+    assert.strictEqual(tabs().length, 1);
+    const input = tabs()[0]?.input;
+    assert.ok(input instanceof vscode.TabInputText);
+    assert.strictEqual(tabs()[0]?.isPreview, false);
+    const document = await vscode.workspace.openTextDocument(input.uri);
+    assert.strictEqual(document.getText(), text);
+    assert.notStrictEqual(vscode.workspace.fs.isWritableFileSystem(input.uri.scheme), true);
+    await assert.rejects(async () => {
+      await vscode.workspace.fs.writeFile(input.uri, new TextEncoder().encode('x'));
+    });
+    assert.strictEqual(
+      vscode.window.activeTextEditor?.document.uri.toString(),
+      input.uri.toString(),
+    );
+  });
+
+  test('a long label cannot cut off the version prefix of a keyed document', () => {
+    const uri = createVirtualDocument('x', `Plan v3 - ${'L'.repeat(300)}`, 'plan-long-v3');
+    const basename = uri.path.split('/').pop() ?? '';
+    assert.ok(basename.startsWith('Plan v3 - '), basename);
+  });
+
+  test('setting a keyed document again reloads the open editor with the new text', async () => {
+    const key = 'plan-reload-v1';
+    const uri = createVirtualDocument('old text\n', 'Plan v1 - Reload', key);
+    const document = await vscode.workspace.openTextDocument(uri);
+    assert.strictEqual(document.getText(), 'old text\n');
+    createVirtualDocument('new text\n', 'Plan v1 - Reload', key);
+    await waitFor('the document to reload', () =>
+      document.getText() === 'new text\n' ? true : undefined,
+    );
+  });
+
+  test('a keyed document that was set again counts as the newest entry', async () => {
+    const key = 'plan-order-v1';
+    const uri = createVirtualDocument('keyed first\n', 'Plan v1 - Order', key);
+    for (let i = 0; i < 39; i++) createVirtualDocument(`filler ${String(i)}`, 'filler');
+    // Setting it again makes it the newest: the next 39 fillers must not evict it.
+    createVirtualDocument('keyed first\n', 'Plan v1 - Order', key);
+    for (let i = 0; i < 39; i++) createVirtualDocument(`more ${String(i)}`, 'filler');
+    const document = await vscode.workspace.openTextDocument(uri);
+    assert.strictEqual(document.getText(), 'keyed first\n');
+  });
 });

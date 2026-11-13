@@ -167,7 +167,9 @@ describe('review of agent changes', () => {
       ['a.txt', 'created', 'pending'],
       ['b.txt', 'modified', 'pending'],
     ]);
-    expect(noticesOf(view)).toEqual(['This turn changed 2 files. Review them in the Review tab.']);
+    expect(noticesOf(view)).toEqual([
+      'This turn changed 2 files. Review them in the changes card below the chat.',
+    ]);
 
     // A second view of the same folder (not showing the conversation) sees the same entries.
     other.send({ type: 'resync' });

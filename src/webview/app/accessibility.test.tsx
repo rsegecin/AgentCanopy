@@ -120,7 +120,7 @@ describe('live regions', () => {
       makeState({ baseline: { state: 'capturing', filesDone: done, filesTotal: 100 } });
     const { init, container } = renderWithHost(<ReviewView />, {
       ...state(1),
-      review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+      review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
     });
     const live = () => container.querySelector('.review-snapshot [role="status"]') as HTMLElement;
     expect(live().textContent).toBe('Preparing the workspace snapshot: 1 of 100 files');
@@ -128,7 +128,7 @@ describe('live regions', () => {
       init(
         {
           ...state(done),
-          review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+          review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
         },
         done,
       );
@@ -164,7 +164,7 @@ describe('live regions', () => {
 
 function reviewState(entries: ReviewEntry[], running = false): ViewState {
   return makeState({
-    review: { entries, hunks: {}, configChanges: [] },
+    review: { entries, hunks: {}, configChanges: [], busy: false },
     ...(running ? { active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }) } : {}),
   });
 }
@@ -451,7 +451,7 @@ describe('keyboard, names, roles and states', () => {
             ]),
           ],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
@@ -473,7 +473,7 @@ describe('keyboard, names, roles and states', () => {
       <App />,
       makeState({
         active: makeActive('c1', { plan: makePlanDoc() }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
@@ -583,7 +583,7 @@ describe('keyboard, names, roles and states', () => {
           plan: makePlanDoc(),
           messages: [userMessage('u1', 'hi')],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
         conversations: [makeSummary('c1')],
         banners: [{ id: 'b', level: 'info', text: 'FYI', dismissible: true }],

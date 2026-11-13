@@ -105,7 +105,7 @@ const SIMPLE = {
 const SECOND = { ...SIMPLE, title: 'Rename things, second try', changeSummary: 'A new title.' };
 
 const SAVED_TEXT =
-  'Plan saved as version 1. The user reviews it in the plan view. Do not repeat the plan in chat: ' +
+  'Plan saved as version 1. The user reviews it in the plan card in the chat. Do not repeat the plan in chat: ' +
   'say in two or three sentences what it covers, or what changed.';
 
 /** A turn in which the model calls submit_plan and notes what the tool answered. */
@@ -594,6 +594,54 @@ describe('plan messages', () => {
     view.send({ type: 'plan.export', planId: plan.id, version: 5 });
     await until('a toast', () => view.toasts.length === 1);
     expect(h.ui.callsOf('showDocument')).toHaveLength(1);
+  });
+
+  it('plan.open opens one version as a read-only document, beside the chat in a panel', async () => {
+    const { h, view, plan } = await withPlan([submitScenario(SECOND, 'second-result.txt')]);
+    await nextTurn(h, view, 'change it');
+    const [first, second] = planOf(view).versions;
+    if (!first || !second) throw new Error('two versions expected');
+    const panel = h.attach({ kind: 'panel' });
+
+    view.send({ type: 'plan.open', planId: plan.id, version: 1 });
+    await until('the document', () => h.ui.callsOf('showReadOnlyDocument').length === 1);
+    const opened = h.ui.callsOf('showReadOnlyDocument')[0]?.[0] as { beside?: boolean };
+    expect(opened).toMatchObject({
+      key: `plan-${plan.id}-v1`,
+      title: 'Plan v1 - Add caching',
+      text: renderPlanMarkdown(first.content),
+    });
+    expect(opened.beside).toBeFalsy();
+
+    panel.send({ type: 'plan.open', planId: plan.id, version: 2 });
+    await until('the second document', () => h.ui.callsOf('showReadOnlyDocument').length === 2);
+    expect(h.ui.callsOf('showReadOnlyDocument')[1]?.[0]).toEqual({
+      key: `plan-${plan.id}-v2`,
+      title: 'Plan v2 - Rename things, second try',
+      text: renderPlanMarkdown(second.content),
+      beside: true,
+    });
+    expect(view.toasts).toEqual([]);
+  });
+
+  it('plan.open puts the version first in the title, so a long plan title cannot hide it', async () => {
+    const long = 'L'.repeat(300);
+    const { h, view, plan } = await withPlan([], { input: { ...SIMPLE, title: long } });
+    view.send({ type: 'plan.open', planId: plan.id, version: 1 });
+    await until('the document', () => h.ui.callsOf('showReadOnlyDocument').length === 1);
+    const opened = h.ui.callsOf('showReadOnlyDocument')[0]?.[0] as { title: string };
+    expect(opened.title.startsWith('Plan v1 - ')).toBe(true);
+  });
+
+  it('plan.open with an unknown version or plan gets a toast and opens nothing', async () => {
+    const { h, view, plan } = await withPlan();
+    view.send({ type: 'plan.open', planId: plan.id, version: 7 });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]?.text).toBe('That version of the plan no longer exists.');
+    view.send({ type: 'plan.open', planId: 'plan-that-is-gone', version: 1 });
+    await until('a second toast', () => view.toasts.length === 2);
+    expect(view.toasts[1]?.text).toBe('That plan no longer exists.');
+    expect(h.ui.callsOf('showReadOnlyDocument')).toEqual([]);
   });
 
   it('plan.openInEditor opens the conversation in an editor and shows the plan tab', async () => {

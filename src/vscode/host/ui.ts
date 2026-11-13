@@ -185,6 +185,26 @@ export function createUiPort(parts: UiParts): UiPort {
       terminal.sendText('claude auth login');
     },
 
+    async showReadOnlyDocument({ key, title, text, beside }) {
+      const uri = createVirtualDocument(text, title, key);
+      // A tab for this document may be open already, in any group: show that one, where it is.
+      let openIn: vscode.ViewColumn | undefined;
+      for (const group of vscode.window.tabGroups.all) {
+        const open = group.tabs.some(
+          (tab) =>
+            tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString(),
+        );
+        if (open) {
+          openIn = group.viewColumn;
+          break;
+        }
+      }
+      await vscode.window.showTextDocument(uri, {
+        preview: false,
+        viewColumn: openIn ?? (beside ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active),
+      });
+    },
+
     async showDiff({ title, leftLabel, leftText, rightLabel, rightText }) {
       const left = createVirtualDocument(leftText, leftLabel);
       const right = createVirtualDocument(rightText, rightLabel);

@@ -171,6 +171,12 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     left: z.number().int().positive(),
     right: z.number().int().positive(),
   }),
+  /** Opens one version of the plan as a read-only Markdown document in the editor. */
+  z.object({
+    type: z.literal('plan.open'),
+    planId: PlanIdSchema,
+    version: z.number().int().positive(),
+  }),
   z.object({ type: z.literal('plan.openInEditor'), planId: PlanIdSchema }),
   z.object({
     type: z.literal('plan.export'),

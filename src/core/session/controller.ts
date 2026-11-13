@@ -71,6 +71,7 @@ import { collectGarbage } from '../workspace/store';
 import { createCheckpointService } from '../workspace/checkpoints';
 import { createReviewEngine } from '../workspace/review';
 import { findGit } from '../workspace/tracker/git-state';
+import { BUSY_MESSAGE, CONFIG_PENDING_MESSAGE } from '../workspace/tracker/tracker';
 import { createWorkspaceTracker } from '../workspace/tracker';
 import type { WorkspaceTracker } from '../workspace/tracker';
 
@@ -798,6 +799,8 @@ class Controller implements AppController {
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
    *   the webview's), and answer questions of the agent;
    * - make plan decisions, lock or unlock a plan, revert a plan to an earlier version;
+   * - open a version of a plan as a read-only document (`plan.open`), without a dialog: the text comes
+   *   from the stored plan, not from the message;
    * - accept changes (this only records a decision, no file is written);
    * - reject a single file or hunk when the file is as the agent left it (the checkpoint history can
    *   undo it), and the `agent-only` or `overwrite` choices after a native choice dialog;
@@ -918,6 +921,9 @@ class Controller implements AppController {
         return;
       case 'plan.compare':
         await this.comparePlan(view, message.planId, message.left, message.right);
+        return;
+      case 'plan.open':
+        await this.openPlanVersion(view, message.planId, message.version);
         return;
       case 'plan.openInEditor':
         await this.openPlanInEditor(view, message.planId);
@@ -1364,6 +1370,11 @@ class Controller implements AppController {
     if ('unavailable' in profile) return giveUp(profile.unavailable);
     if (!folder) return giveUp(TEXT.conversationFolderClosed);
     if (runtime && runtime.data.meta.providerId !== provider.id) return giveUp(TEXT.noProvider);
+    // Before the gate and before anything is stored: an Agent turn would be refused by the tracker
+    // anyway, and a plan approval must not be recorded for a turn that cannot start.
+    if (message.mode === 'agent' && (this.tracker?.configChanges(folder.key).length ?? 0) > 0) {
+      return giveUp(CONFIG_PENDING_MESSAGE);
+    }
 
     let promptText: string | undefined;
     if (options.gate) {
@@ -1450,6 +1461,7 @@ class Controller implements AppController {
       ...(images.length > 0 ? { images } : {}),
     });
     this.runs.set(runtime.id, run);
+    this.syncReviewBusyAll();
     this.fireRunningChanged();
     run.start();
     options.onStarted?.(run);
@@ -1488,6 +1500,7 @@ class Controller implements AppController {
       onEnded: (run) => {
         this.collectGarbageSoon(run.folderKey);
         this.runs.delete(run.conversationId);
+        this.syncReviewBusyAll();
         // A turn may have created or removed files.
         this.fileSearch.invalidate();
         this.state.running.delete(run.conversationId);
@@ -1559,6 +1572,7 @@ class Controller implements AppController {
   private syncViewScope(view: ViewRecord): void {
     this.syncBaseline(view, true);
     this.syncConfigChanges(view);
+    this.syncReviewBusy(view);
     this.syncReviewEntries(view);
     this.syncCheckpoints(view);
   }
@@ -2060,7 +2074,10 @@ class Controller implements AppController {
         if (touched.length === 0) return [];
         const count = touched.length === 1 ? '1 file' : `${touched.length} files`;
         return [
-          { level: 'info', text: `This turn changed ${count}. Review them in the Review tab.` },
+          {
+            level: 'info',
+            text: `This turn changed ${count}. Review them in the changes card below the chat.`,
+          },
         ];
       },
     };
@@ -2111,11 +2128,29 @@ class Controller implements AppController {
   private acceptRefused(view: ViewRecord): boolean {
     const folder = this.viewFolder(view);
     if (!folder) return false;
-    const running = [...this.runs.values()].some(
-      (run) => run.folderKey === folder.key && run.mode === 'agent',
-    );
+    const running = this.agentRunningIn(folder.key);
     if (running) this.state.toast(view, 'warning', TEXT.waitBeforeAccepting);
     return running;
+  }
+
+  /** An Agent turn runs in the folder: file changes cannot be accepted or rejected meanwhile. */
+  private agentRunningIn(folderKey: FolderKey): boolean {
+    return [...this.runs.values()].some(
+      (run) => run.folderKey === folderKey && run.mode === 'agent',
+    );
+  }
+
+  private syncReviewBusy(view: ViewRecord): void {
+    if (view.disposed) return;
+    const folder = this.viewFolder(view);
+    const next = folder !== undefined && this.agentRunningIn(folder.key);
+    if (next === view.state.review.busy) return;
+    view.apply([{ op: 'set', path: ['review', 'busy'], value: next }]);
+  }
+
+  /** Every view of every folder, after a run started or ended. */
+  private syncReviewBusyAll(): void {
+    for (const view of this.state.views.values()) this.syncReviewBusy(view);
   }
 
   /** The engine and folder a review message is about. Without them the feature is not there. */
@@ -2527,6 +2562,22 @@ class Controller implements AppController {
     });
   }
 
+  private async openPlanVersion(view: ViewRecord, planId: PlanId, version: number): Promise<void> {
+    const plan = await this.findPlan(view, planId);
+    if (!plan) return;
+    const found = plan.versions.find((candidate) => candidate.version === version);
+    if (!found) {
+      this.state.toast(view, 'warning', TEXT.planVersionGone);
+      return;
+    }
+    await this.deps.ui.showReadOnlyDocument({
+      key: `plan-${plan.id}-v${version}`,
+      title: `Plan v${version} - ${found.content.title}`,
+      text: renderPlanMarkdown(found.content),
+      beside: view.kind === 'panel',
+    });
+  }
+
   private async openPlanInEditor(view: ViewRecord, planId: PlanId): Promise<void> {
     const plan = await this.findPlan(view, planId);
     if (!plan) return;
@@ -2599,6 +2650,16 @@ class Controller implements AppController {
             });
           }
           if (!confirmed || this.disposed) return false;
+          // The dialog was open for a while: a turn of another conversation in this folder may have
+          // ended with configuration changes, or may still run. Record nothing then.
+          if ((this.tracker?.configChanges(meta.folder).length ?? 0) > 0) {
+            this.state.toast(view, 'warning', CONFIG_PENDING_MESSAGE);
+            return false;
+          }
+          if (this.agentRunningIn(meta.folder)) {
+            this.state.toast(view, 'warning', BUSY_MESSAGE);
+            return false;
+          }
           // The approval must be on disk before the turn exists.
           const approval = await plans.approve(planId, version, contentHash);
           if (!approval.ok) {

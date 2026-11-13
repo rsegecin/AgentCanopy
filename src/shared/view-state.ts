@@ -81,6 +81,11 @@ export const ViewStateSchema = z.object({
     /** Hunks per path, filled when a view asks for them. */
     hunks: z.record(RelPathSchema, z.array(HunkSchema)),
     configChanges: z.array(ConfigChangeSchema),
+    /**
+     * An Agent turn is running in this view's folder. File changes cannot be accepted or rejected
+     * meanwhile, so the view hides those actions. Configuration changes stay decidable.
+     */
+    busy: z.boolean(),
   }),
   checkpoints: z.array(CheckpointSummarySchema),
   restorePreview: RestorePreviewSchema.nullable(),
@@ -100,7 +105,7 @@ export const EMPTY_VIEW_STATE: ViewState = {
   draftAttachments: [],
   fileSearch: null,
   search: null,
-  review: { entries: [], hunks: {}, configChanges: [] },
+  review: { entries: [], hunks: {}, configChanges: [], busy: false },
   checkpoints: [],
   restorePreview: null,
   baseline: { state: 'idle', filesDone: 0, filesTotal: 0 },
