@@ -12,3 +12,4 @@ package-lock.json
 media/*.png
 CLAUDE.md
 .claude/
+roadmap/
