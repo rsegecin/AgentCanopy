@@ -1,0 +1,161 @@
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-width: 0;
+}
+.app--loading {
+  align-items: center;
+  justify-content: center;
+  flex-direction: row;
+  gap: 8px;
+  color: var(--vscode-descriptionForeground);
+}
+
+/* The message column is centred and capped when the view is wide (editor area). */
+.column {
+  width: 100%;
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
+}
+
+.tabs {
+  display: flex;
+  flex-wrap: wrap;
+  min-width: 0;
+  gap: 2px;
+}
+.tab {
+  padding: 3px 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--vscode-descriptionForeground);
+  cursor: pointer;
+}
+.tab:hover {
+  color: var(--vscode-foreground);
+}
+/* Selected is shown by the underline and by weight, not only by colour. */
+.tab[aria-selected='true'] {
+  color: var(--vscode-foreground);
+  font-weight: 600;
+  border-bottom-color: var(--vscode-focusBorder);
+}
+
+.provider {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  margin-left: auto;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.provider--attention .provider-state {
+  font-weight: 600;
+  color: var(--vscode-foreground);
+}
+.provider-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.overflow {
+  position: relative;
+}
+.menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  min-width: 180px;
+  padding: 4px 0;
+  border: 1px solid var(--vscode-menu-border, var(--vscode-widget-border, currentColor));
+  border-radius: 4px;
+  color: var(--vscode-menu-foreground);
+  background: var(--vscode-menu-background);
+  box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent);
+}
+.menu [role='menuitem'] {
+  padding: 4px 12px;
+  border: 0;
+  text-align: left;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.menu [role='menuitem']:hover,
+.menu [role='menuitem']:focus-visible {
+  color: var(--vscode-menu-selectionForeground);
+  background: var(--vscode-menu-selectionBackground);
+}
+
+.banners {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px 0;
+}
+.banner-text {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.toasts {
+  position: fixed;
+  right: 8px;
+  bottom: 8px;
+  left: 8px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  pointer-events: none;
+}
+.toast {
+  max-width: 100%;
+  pointer-events: auto;
+  color: var(--vscode-notifications-foreground, inherit);
+  background: var(--vscode-notifications-background, var(--vscode-editorWidget-background));
+}
+
+.app-main {
+  flex: 1;
+  min-height: 0;
+}
+.tabpanel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.tab-badge {
+  display: inline-block;
+  min-width: 1.4em;
+  margin-left: 4px;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 0.8em;
+  text-align: center;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+.header-warning {
+  color: var(--vscode-editorWarning-foreground);
+}

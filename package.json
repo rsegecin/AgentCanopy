@@ -1,0 +1,431 @@
+{
+  "name": "agentcanopy",
+  "displayName": "AgentCanopy",
+  "version": "0.1.0",
+  "description": "AI coding agents in standard VS Code: Ask, Plan and Agent modes with reviewable changes",
+  "license": "MIT",
+  "publisher": "agentcanopy-local",
+  "engines": {
+    "vscode": "^1.106.0"
+  },
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "AgentCanopy does not run agents in untrusted workspaces. Conversation history stays readable."
+    },
+    "virtualWorkspaces": false
+  },
+  "icon": "media/icon.png",
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "secondarySidebar": [
+        {
+          "id": "agentcanopy",
+          "title": "AgentCanopy",
+          "icon": "media/sidebar.svg"
+        }
+      ]
+    },
+    "views": {
+      "agentcanopy": [
+        {
+          "type": "webview",
+          "id": "agentcanopy.chat",
+          "name": "Chat",
+          "icon": "media/sidebar.svg",
+          "contextualTitle": "AgentCanopy"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "agentcanopy.newChat",
+        "title": "New Conversation",
+        "category": "AgentCanopy",
+        "icon": "$(add)"
+      },
+      {
+        "command": "agentcanopy.focusChat",
+        "title": "Focus Chat",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.openInEditor",
+        "title": "Open Chat in Editor Area",
+        "category": "AgentCanopy",
+        "icon": "$(open-in-product)"
+      },
+      {
+        "command": "agentcanopy.addSelectionToChat",
+        "title": "Add Selection to Chat",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.refreshProvider",
+        "title": "Check Claude Code Again",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.signIn",
+        "title": "Sign In to Claude Code",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.showLogs",
+        "title": "Show Logs",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.acceptFile",
+        "title": "Accept Agent Changes in File",
+        "category": "AgentCanopy",
+        "icon": "$(check)"
+      },
+      {
+        "command": "agentcanopy.review.rejectFile",
+        "title": "Reject Agent Changes in File",
+        "category": "AgentCanopy",
+        "icon": "$(discard)"
+      },
+      {
+        "command": "agentcanopy.review.acceptHunk",
+        "title": "Accept Agent Change at Cursor",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.rejectHunk",
+        "title": "Reject Agent Change at Cursor",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.openDiff",
+        "title": "Show Agent Changes for File",
+        "category": "AgentCanopy",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "agentcanopy.review.openAll",
+        "title": "Show All Agent Changes",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.nextChange",
+        "title": "Go to Next Agent Change",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.previousChange",
+        "title": "Go to Previous Agent Change",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.acceptAll",
+        "title": "Accept All Agent Changes",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.review.rejectAll",
+        "title": "Reject All Agent Changes",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.purgeStoredFileData",
+        "title": "Delete Stored File Contents and Change History for This Folder",
+        "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.resetProjectConfigDecision",
+        "title": "Ask Again About This Folder's Claude Code Project Settings",
+        "category": "AgentCanopy"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "agentcanopy.newChat",
+          "when": "view == agentcanopy.chat",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentcanopy.openInEditor",
+          "when": "view == agentcanopy.chat",
+          "group": "navigation@2"
+        }
+      ],
+      "editor/context": [
+        {
+          "command": "agentcanopy.addSelectionToChat",
+          "when": "editorHasSelection && resourceScheme == file",
+          "group": "9_agentcanopy"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "agentcanopy.review.acceptFile",
+          "when": "agentcanopy.activeFileHasPendingChanges",
+          "group": "navigation@1"
+        },
+        {
+          "command": "agentcanopy.review.rejectFile",
+          "when": "agentcanopy.activeFileHasPendingChanges",
+          "group": "navigation@2"
+        },
+        {
+          "command": "agentcanopy.review.openDiff",
+          "when": "agentcanopy.activeFileHasPendingChanges",
+          "group": "navigation@3"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "agentcanopy.review.acceptFile",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.rejectFile",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.acceptHunk",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.rejectHunk",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.openDiff",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.openAll",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.nextChange",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.previousChange",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.acceptAll",
+          "when": "agentcanopy.hasPendingChanges"
+        },
+        {
+          "command": "agentcanopy.review.rejectAll",
+          "when": "agentcanopy.hasPendingChanges"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "AgentCanopy",
+      "properties": {
+        "agentCanopy.claude.path": {
+          "type": "string",
+          "default": "",
+          "scope": "machine",
+          "markdownDescription": "Absolute path to the `claude` executable. Leave empty to find it on `PATH` or in the default install location."
+        },
+        "agentCanopy.defaultMode": {
+          "type": "string",
+          "enum": [
+            "ask",
+            "plan",
+            "agent"
+          ],
+          "default": "ask",
+          "scope": "machine",
+          "description": "Mode a new conversation starts in."
+        },
+        "agentCanopy.defaultModel": {
+          "type": "string",
+          "default": "default",
+          "scope": "machine",
+          "markdownDescription": "Model a new conversation starts with: an alias such as `sonnet`, a full model id, or `default` to let Claude Code decide."
+        },
+        "agentCanopy.customModels": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "description": "Additional model ids to offer in the model selector."
+        },
+        "agentCanopy.ask.webTools": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Let Ask and Plan modes use web search and web fetch. Off by default because fetched pages and search queries leave your machine."
+        },
+        "agentCanopy.readOnly.strict": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Refuse to run Ask and Plan turns when a Claude Code plugin other than the built-in ones is loaded, since plugins run outside AgentCanopy's read-only guarantee."
+        },
+        "agentCanopy.agent.editApproval": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "ask"
+          ],
+          "enumDescriptions": [
+            "Apply the agent's edits inside the workspace and review them afterwards.",
+            "Ask before every edit."
+          ],
+          "default": "auto",
+          "scope": "machine",
+          "description": "How Agent mode treats file edits inside the workspace."
+        },
+        "agentCanopy.agent.alwaysAskCommands": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Ask before every terminal command in Agent mode, ignoring all always-allow rules."
+        },
+        "agentCanopy.agent.sandbox": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Run the agent's terminal commands in Claude Code's sandbox (macOS, Linux and WSL2). Commands can then write only inside the workspace folder and temporary directories."
+        },
+        "agentCanopy.forks.exactEarlierMessages": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "markdownDescription": "When branching from an earlier message, ask Claude Code to cut its own session at that message. This uses a command-line flag that is not in Claude Code's reference documentation. Turn it off to always rebuild the branch's context from the visible messages instead."
+        },
+        "agentCanopy.unsavedFiles": {
+          "type": "string",
+          "enum": [
+            "warn",
+            "ignore"
+          ],
+          "default": "warn",
+          "scope": "window",
+          "description": "What to do when files have unsaved changes at the start of a turn. The agent only sees what is saved on disk."
+        },
+        "agentCanopy.snapshots.maxFileSizeMB": {
+          "type": "number",
+          "default": 10,
+          "minimum": 1,
+          "scope": "machine",
+          "description": "Largest file whose content is captured so that terminal-command changes to it can be undone."
+        },
+        "agentCanopy.snapshots.maxTotalSizeMB": {
+          "type": "number",
+          "default": 512,
+          "minimum": 16,
+          "scope": "machine",
+          "description": "Disk budget for captured file content per workspace."
+        },
+        "agentCanopy.snapshots.exclude": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "scope": "machine",
+          "markdownDescription": "Additional paths to leave out of change tracking, in `.gitignore` syntax."
+        },
+        "agentCanopy.checkpoints.keepOperations": {
+          "type": "number",
+          "default": 50,
+          "minimum": 5,
+          "scope": "machine",
+          "description": "How many checkpoints to keep per workspace folder."
+        },
+        "agentCanopy.checkpoints.keepDays": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "scope": "machine",
+          "description": "How many days to keep checkpoints."
+        }
+      }
+    },
+    "keybindings": [
+      {
+        "command": "agentcanopy.review.nextChange",
+        "key": "alt+]",
+        "when": "editorTextFocus && agentcanopy.activeFileHasPendingChanges"
+      },
+      {
+        "command": "agentcanopy.review.previousChange",
+        "key": "alt+[",
+        "when": "editorTextFocus && agentcanopy.activeFileHasPendingChanges"
+      },
+      {
+        "command": "agentcanopy.review.acceptHunk",
+        "key": "alt+enter",
+        "when": "editorTextFocus && agentcanopy.activeFileHasPendingChanges"
+      },
+      {
+        "command": "agentcanopy.review.rejectHunk",
+        "key": "alt+backspace",
+        "when": "editorTextFocus && agentcanopy.activeFileHasPendingChanges"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "build:prod": "node esbuild.mjs --production",
+    "watch": "node esbuild.mjs --watch",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.webview.json",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:integration": "node esbuild.mjs && node esbuild.mjs --tests && vscode-test",
+    "test:live": "vitest run --config vitest.live.config.mts",
+    "package": "node scripts/package.mjs",
+    "icon": "node scripts/make-icon.mjs",
+    "licenses": "node scripts/third-party-licenses.mjs"
+  },
+  "devDependencies": {
+    "typescript": "~6.0.3",
+    "esbuild": "^0.28.2",
+    "vitest": "^5.1.0",
+    "eslint": "^10.14.0",
+    "@eslint/js": "^10.0.1",
+    "typescript-eslint": "^8.72.2",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "prettier": "^3.10.0",
+    "@types/vscode": "~1.106.0",
+    "@types/node": "^22.20.5",
+    "@vscode/vsce": "^4.1.0",
+    "@vscode/test-cli": "^0.0.15",
+    "@vscode/test-electron": "^3.1.0",
+    "@types/mocha": "^10.0.10",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "zod": "^4.6.7",
+    "ignore": "^7.0.14",
+    "diff": "^9.0.0",
+    "node-diff3": "^3.2.1",
+    "markdown-it": "^15.0.3",
+    "@types/markdown-it": "^14.2.0",
+    "dompurify": "^3.4.17",
+    "highlight.js": "^11.12.0",
+    "mermaid": "^12.3.0",
+    "@vscode/codicons": "^0.0.46-24",
+    "jsdom": "^31.0.0",
+    "@testing-library/react": "^16.3.3",
+    "@testing-library/dom": "^10.4.2"
+  }
+}

@@ -1,0 +1,75 @@
+# Limitations
+
+This page lists what AgentCanopy does not do, does not guarantee, or cannot undo. It is meant to be complete. If you find a limit that is missing, please report it.
+
+## Read-only modes (Ask and Plan)
+
+- **The guarantee covers the agent's own tools, hooks, skills and other tool servers.** It does not cover hooks from Claude Code's managed policy, helper commands that Claude Code runs when it reads its settings, or plugins. Ask and Plan turn off hooks from your own settings, but an administrator's hooks cannot be turned off. When a plugin other than the built-in ones is loaded, the turn shows a notice that the guarantee is downgraded, or stops with `agentCanopy.readOnly.strict` on. A hook that runs shows a notice, or stops the turn with the strict setting on.
+- **Reads inside the workspace folder are not prompted.** That includes files such as `.env`. Claude Code sends what the agent reads to the model.
+- **The check after a turn compares file metadata, not content.** It reports changes and never reverts them. It does not see ignored files (`.gitignore`, `node_modules`, `.git` and similar), and it is skipped for a folder with more than 500,000 files.
+- **Web tools, when you turn them on, send queries and page addresses off your machine.** Each use asks first.
+- The guarantee depends on Claude Code honoring the options AgentCanopy passes. AgentCanopy verifies what Claude Code reports, but it cannot look inside Claude Code.
+
+## Agent mode
+
+- **A command you allow runs with your privileges and can do anything you can**, unless `agentCanopy.agent.sandbox` is on. The sandbox exists on macOS, Linux and WSL2 only, and still leaves the workspace folder and temporary directories writable.
+- **Rules in your own Claude Code settings can still pre-approve some tool calls** other than commands, reads and web access, which always reach AgentCanopy's policy. Such calls show as "Allowed by Claude Code". `agentCanopy.agent.alwaysAskCommands` also ignores your saved always-allow rules, so every command asks.
+- **Ignoring a project's Claude Code settings also skips the project's `CLAUDE.md`**, together with its settings files and tool servers. The agent then does not see the project's instructions until you choose **Use Project Settings**. AgentCanopy cannot split the two.
+- **Always-allow rules exist only for plain literal commands**, not for patterns. A command that contains quotes, pipes, redirections, substitutions or globs, or that starts with an environment variable, asks every time. PowerShell commands always ask.
+- **Background tasks are disabled.** The agent cannot keep a dev server or a watcher running between turns.
+- The agent has text search (Grep and Glob) but no symbol search.
+- Images are not supported in messages. You can attach at most 50 files, folders, selections or problem lists to one message.
+
+## Change tracking and restore
+
+- **Only the workspace folder is tracked.** The tracked set leaves out VCS directories, `node_modules`, `.venv`, `venv`, `__pycache__`, files ignored by Git, and paths in `agentCanopy.snapshots.exclude`. Symlinks are recorded and never followed. Empty directories are not tracked. A rename shows as a delete plus a create. A folder with more than 500,000 files is only partly tracked, and AgentCanopy shows a note about it.
+- **Changes a command makes to ignored, oversized or over-budget files are detected but not restorable.** Their earlier content was never captured. See `agentCanopy.snapshots.maxFileSizeMB` and `agentCanopy.snapshots.maxTotalSizeMB`. Files the agent edits with its own file tools are always captured before the edit, up to 256 MB.
+- **Files matching sensitive patterns** (`.env` files, key and certificate files, `.npmrc`, `.netrc`, `credentials` files, anything in `.ssh` or `.aws`) are hashed and not stored, except that the content before an edit by a file tool is kept, with owner-only permissions. The result of such an edit cannot be restored.
+- **File restore does not undo Git operations, databases, network calls or anything outside the workspace folder.** If the agent changes Git state, a note says so.
+- **Directories left behind.** Rejecting a created file removes the file, not the directories that were created for it.
+- **A hand edit made outside the editor that a command overwrites in the same turn cannot be recovered.** If you change a file with another program while a turn is running, and a command of the agent overwrites that change in the same turn, your version was never captured and is gone.
+- **A change someone else makes in the fraction of a second after a command ends can be attributed to that command.** The tracker closes a command's window when its result arrives, and an edit of yours or another program's in that gap looks like the command's work.
+- **Files over 256 MB are never written** by a restore. They are left as they are.
+- **Hard links and extended attributes are not preserved.** A restore writes a new file and renames it into place.
+- **A sub-millisecond window** remains between the last check of a file and the rename that replaces it. A change made by another program inside that window is not detected beforehand. AgentCanopy checks again after writing and keeps a copy if the file changed.
+- **Line-by-line review** works for UTF-8 text files up to 2 MiB. Other files are accepted or rejected whole, and binary files have no diff.
+- **Moving a workspace folder starts with empty AgentCanopy storage.** Conversations, plans and history of the old location stay where they were.
+- **One window per folder.** Only one VS Code window can track changes in a folder at a time.
+- **Unsaved editor content is invisible to the agent.** It reads from disk. AgentCanopy warns, but does not save for you.
+
+## Forking and checkpoints
+
+- **Exact forks from an earlier message depend on a Claude Code flag, `--resume-session-at`, that is not in Claude Code's CLI reference.** AgentCanopy checks that the installed CLI accepts it, uses it only when the turn it cuts at finished normally, and `agentCanopy.forks.exactEarlierMessages` turns the feature off. It may stop working in a future release.
+- **A rebuilt branch carries only the visible text.** It is rebuilt from the visible messages within a size budget. It does not carry tool inputs and outputs, the model's reasoning, or files and selections attached to messages, and the oldest messages are dropped if the transcript is too long. The branch header names what was not carried over.
+- **A branch is not exact until its first turn has run, and an exact branch can become rebuilt** if Claude Code no longer has its session.
+- **Deleting a conversation deletes AgentCanopy's copy, not Claude Code's own transcript.** Claude Code keeps its sessions on its own schedule and removes old ones after its own retention period. A conversation whose session was removed continues with its visible messages as context.
+- **Checkpoints are kept for 50 steps and 30 days by default.** Older ones cannot be restored. Anything a pending or accepted review entry still needs, and anything after the last Agent turn, is kept regardless of these settings.
+- **A restore only writes files whose content was captured.** Files in the "Cannot be restored" group of a preview (unsaved in the editor, content not kept, blocked path) are left as they are.
+- **Restore and Branch From Here branches only when every chosen file was restored.**
+- Forking never changes files, so a branch can see a folder that is newer than the point it was forked from. The branch says so when later turns changed files.
+- You cannot fork from the last message of a turn that is still running.
+
+## Platform
+
+- **Tested on macOS.** Windows and Linux are covered by the CI configuration, which has not been run yet. Expect problems there.
+- **On Windows, 8.3 short names are not recognised as protected paths.** A short name such as `.GIT~1` for `.git` is not matched by the protected-path list, so an edit through it does not get the extra prompt.
+- **Windows supports the native install only** (`claude.exe`), not npm shims.
+- **Stopping a turn on Windows is a hard stop.** On macOS and Linux AgentCanopy interrupts Claude Code first, and the partial answer is kept.
+- **On Windows, the process of an interrupted turn cannot be matched by its start time**, so after a crash AgentCanopy may ask you to stop the old process yourself and choose **Recover now**.
+- Virtual workspaces and folders that are not on the local file system are not supported. In an untrusted workspace nothing runs and only history is readable.
+
+## Interface
+
+- **A compromised webview could still start a turn or allow a single command without a native dialog.** Native dialogs guard the high-impact actions, and the Content Security Policy and the HTML sanitizer exist to keep script out of the view in the first place. [SECURITY.md](../SECURITY.md) lists what a compromised view could still do.
+- **Mermaid diagrams use the classic layout only.** The ELK layout engine is not shipped with AgentCanopy because of its license (EPL-2.0). A diagram that explicitly asks for the ELK layout cannot be drawn and shows its source instead.
+- Links in Mermaid diagrams are inert: their text stays and nothing opens.
+- Diagrams are drawn only when their code block is complete, at Mermaid's strict security level, and with labels as plain SVG text rather than HTML.
+- Accessibility has been checked with automated tests only. It has not been tested with a screen reader. See the README.
+
+## Provider (Claude Code)
+
+- **Claude Code is the only provider**, and it must be installed locally at version 2.1.295 or newer. AgentCanopy does not include it.
+- **AgentCanopy was built against observed behavior of Claude Code**, recorded on macOS with version 2.1.322 (see `docs/protocol/claude-cli.md`). Windows and Linux, authentication failure and rate-limit output, the shape of subagent events and very large writes were not observed. A new Claude Code version may change behavior that AgentCanopy relies on.
+- **The model list is Claude Code's aliases plus the ids you add** in `agentCanopy.customModels`. AgentCanopy does not query the provider for available models.
+- **Context usage is approximate.**
+- **Usage is yours.** Every turn uses your Claude Code subscription limits or API billing. Check Anthropic's current terms for Claude Code and your plan.

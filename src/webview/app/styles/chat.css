@@ -1,0 +1,469 @@
+.empty-state {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 16px;
+  text-align: center;
+  color: var(--vscode-descriptionForeground);
+}
+.empty-state .codicon {
+  font-size: 32px;
+}
+
+.log-wrap {
+  position: relative;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+}
+.log > .column {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.jump-latest {
+  position: absolute;
+  bottom: 36px;
+  left: 50%;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 12px;
+  border: 1px solid var(--vscode-widget-border, currentColor);
+  border-radius: 12px;
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+  transform: translateX(-50%);
+  cursor: pointer;
+}
+
+.activity {
+  min-height: 0;
+  padding: 0 8px;
+}
+.activity-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  color: var(--vscode-descriptionForeground);
+}
+
+.message {
+  position: relative;
+  min-width: 0;
+}
+.message--user {
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 6px;
+  background: var(--vscode-input-background);
+}
+.message-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.message-author {
+  font-weight: 600;
+}
+.message-actions {
+  display: flex;
+  margin-left: auto;
+  opacity: 0;
+}
+.message:hover .message-actions,
+.message:focus-within .message-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .message-actions {
+    opacity: 1;
+  }
+}
+.user-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.message--user .chips {
+  margin-top: 6px;
+}
+.message--assistant > * + * {
+  margin-top: 8px;
+}
+
+.thinking {
+  color: var(--vscode-descriptionForeground);
+}
+.thinking summary {
+  cursor: pointer;
+}
+.thinking-text {
+  margin-top: 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--vscode-widget-border, currentColor);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.part-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--vscode-descriptionForeground);
+}
+
+.tool-card {
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 4px;
+}
+.tool-card--error,
+.tool-card--denied {
+  border-color: var(--vscode-errorForeground);
+}
+.tool-card-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  padding: 2px 8px 2px 2px;
+}
+.tool-card-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 3px;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+.tool-card-toggle:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.tool-card-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.tool-card-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+}
+.tool-card-summary {
+  flex: 1 1 8em;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--vscode-editor-font-family);
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.tool-card-meta {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0 8px;
+  margin-left: auto;
+}
+.tool-card-status,
+.tool-card-approval {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+}
+.tool-card-approval {
+  color: var(--vscode-descriptionForeground);
+}
+.tool-card-body {
+  padding: 0 8px 8px;
+}
+.tool-card-label {
+  margin: 6px 0 2px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.tool-card-pre {
+  max-height: 280px;
+  margin: 0;
+  padding: 6px 8px;
+  overflow: auto;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--vscode-textCodeBlock-background);
+}
+
+.tool-card-note {
+  font-size: 0.85em;
+  font-style: italic;
+  color: var(--vscode-descriptionForeground);
+}
+p.tool-card-note {
+  margin: 2px 0 0;
+}
+.tool-card-command {
+  margin-top: 4px;
+}
+.tool-card-fields {
+  margin: 4px 0 0;
+}
+.tool-card-fields dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.tool-card-diff {
+  margin-top: 4px;
+}
+.tool-card-diff-lines {
+  padding: 4px 0;
+  white-space: normal;
+}
+.diff-line {
+  display: flex;
+  gap: 6px;
+  min-height: 1.5em;
+  padding: 0 8px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.diff-sign {
+  flex: none;
+  width: 1ch;
+  font-weight: 600;
+}
+.diff-text {
+  min-width: 0;
+}
+.diff-line--removed {
+  background: var(--vscode-diffEditor-removedLineBackground, transparent);
+}
+.diff-line--added {
+  background: var(--vscode-diffEditor-insertedLineBackground, transparent);
+}
+.tool-card-children {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0 0 12px;
+  padding-left: 8px;
+  border-left: 2px solid var(--vscode-widget-border, currentColor);
+}
+
+.prompt-card {
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.prompt-card--needs-answer {
+  border-color: var(--vscode-focusBorder);
+  border-left-width: 4px;
+}
+.prompt-marker {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+.prompt-question + .prompt-question {
+  margin-top: 10px;
+}
+.prompt-header {
+  font-size: 0.8em;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-question-text,
+.prompt-title {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.prompt-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin-top: 4px;
+  cursor: pointer;
+}
+.prompt-option input {
+  margin: 3px 0 0;
+}
+.prompt-option-label {
+  display: block;
+}
+.prompt-option-desc {
+  display: block;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-option--other {
+  flex-wrap: wrap;
+  align-items: center;
+}
+.prompt-other-choice {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+}
+.prompt-other-text {
+  flex: 1 1 10em;
+}
+.prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+.prompt-detail {
+  max-height: calc(12 * 1.5em + 12px);
+  margin: 6px 0 0;
+  padding: 6px 8px;
+  overflow-y: auto;
+  border-radius: 3px;
+  font-family: var(--vscode-editor-font-family);
+  font-size: var(--vscode-editor-font-size);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--vscode-textCodeBlock-background);
+}
+.prompt-details {
+  margin-top: 6px;
+}
+.prompt-details summary {
+  cursor: pointer;
+}
+.prompt-feedback {
+  display: block;
+  margin-top: 8px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-feedback-input {
+  display: block;
+  width: 100%;
+  margin-top: 2px;
+}
+.prompt-rule {
+  margin-top: 8px;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-rule code {
+  font-family: var(--vscode-editor-font-family);
+  overflow-wrap: anywhere;
+}
+.prompt-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin-top: 4px;
+  color: var(--vscode-editorWarning-foreground);
+}
+.prompt-outcome {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-answers {
+  margin: 0;
+}
+.prompt-answer + .prompt-answer {
+  margin-top: 6px;
+}
+.prompt-answer dt {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.prompt-answer dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+/* An open tool card shows its whole title and detail, wrapped; collapsed it is one line. */
+.tool-card:has(.tool-card-toggle[aria-expanded='true']) .tool-card-name,
+.tool-card:has(.tool-card-toggle[aria-expanded='true']) .tool-card-summary {
+  overflow: visible;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.prompt-hint {
+  align-self: center;
+  font-size: 0.9em;
+}
+
+/* Commands: line breaks and runs of blank lines are shown, never hidden. */
+.prompt-detail {
+  max-height: none;
+  overflow: visible;
+}
+.tool-card-command {
+  max-height: none;
+  overflow: visible;
+}
+.cmd-eol {
+  margin-left: 2px;
+  opacity: 0.55;
+  color: var(--vscode-descriptionForeground);
+}
+.cmd-blank {
+  margin-left: 4px;
+  font-size: 0.85em;
+  color: var(--vscode-editorWarning-foreground);
+}
+.cmd-lines {
+  margin-left: 6px;
+  font-size: 0.85em;
+  font-weight: 400;
+  white-space: nowrap;
+}
+.cmd-warning,
+.code-warning {
+  display: flex;
+  align-items: flex-start;
+  gap: 4px;
+  margin: 4px 0 0;
+  padding: 2px 8px;
+  font-size: 0.9em;
+  color: var(--vscode-editorWarning-foreground);
+}
+.invisible-char {
+  padding: 0 2px;
+  border: 1px solid currentColor;
+  border-radius: 3px;
+  font-size: 0.85em;
+  color: var(--vscode-editorWarning-foreground);
+}

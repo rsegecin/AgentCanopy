@@ -1,0 +1,253 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  color: var(--vscode-foreground);
+  background: var(--vscode-sideBar-background, var(--vscode-editor-background));
+  font-family: var(--vscode-font-family);
+  font-size: var(--vscode-font-size);
+  font-weight: var(--vscode-font-weight);
+  line-height: 1.5;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+p {
+  margin: 0;
+}
+
+[hidden] {
+  display: none !important;
+}
+
+/* Every interactive element gets the same visible focus ring. */
+:focus {
+  outline: none;
+}
+:focus-visible {
+  outline: 1px solid var(--vscode-focusBorder);
+  outline-offset: 1px;
+}
+/*
+ * Large containers that only take focus from script (a panel after a tab change, the composer form
+ * when a button in it goes away) are not in the tab order, and a ring around the whole panel says
+ * nothing. Everything the keyboard can reach keeps its ring.
+ */
+[role='tabpanel']:focus-visible,
+.review-scroll:focus-visible,
+.checkpoints-scroll:focus-visible,
+.plan-scroll:focus-visible,
+.history:focus-visible,
+form.composer:focus-visible {
+  outline: none;
+}
+/* Inside a box that clips or scrolls, the ring is drawn inside the edge, where it cannot be cut off. */
+.code-block :focus-visible,
+.diagram-canvas:focus-visible,
+.markdown-table:focus-visible,
+.tool-card-pre:focus-visible,
+.prompt-detail:focus-visible,
+.plan-table-wrap:focus-visible,
+.log:focus-visible {
+  outline-offset: -2px;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.muted {
+  color: var(--vscode-descriptionForeground);
+}
+
+.codicon {
+  flex: none;
+  vertical-align: middle;
+}
+
+/* Buttons */
+.button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 4px 12px;
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+  cursor: pointer;
+}
+.button:hover:not(:disabled) {
+  background: var(--vscode-button-hoverBackground);
+}
+.button:disabled,
+.button[aria-disabled='true'] {
+  /* Clearly unavailable, whatever kind of button it is: dimmed, flat, and a cursor that says so. */
+  opacity: 0.5;
+  cursor: not-allowed;
+  color: var(--vscode-disabledForeground, inherit);
+  background: transparent;
+  border-color: var(--vscode-disabledForeground, currentColor);
+  border-style: dashed;
+}
+.button--secondary {
+  color: var(--vscode-button-secondaryForeground);
+  background: var(--vscode-button-secondaryBackground);
+}
+.button--secondary:hover:not(:disabled) {
+  background: var(--vscode-button-secondaryHoverBackground);
+}
+.button--danger,
+.button--stop {
+  border-color: currentColor;
+}
+
+.icon-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+.icon-button:hover:not(:disabled) {
+  background: var(--vscode-toolbar-hoverBackground);
+}
+.icon-button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+select:disabled,
+textarea:disabled,
+input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.text-input,
+select {
+  min-width: 0;
+  padding: 3px 6px;
+  border: 1px solid var(--vscode-input-border, transparent);
+  border-radius: 2px;
+  color: var(--vscode-input-foreground);
+  background: var(--vscode-input-background);
+}
+.text-input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline-offset: -1px;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 6px;
+  border-radius: 8px;
+  font-size: 0.85em;
+  color: var(--vscode-badge-foreground);
+  background: var(--vscode-badge-background);
+}
+
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 100%;
+  padding: 1px 4px 1px 8px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 10px;
+  font-size: 0.9em;
+}
+.chip-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chip .icon-button {
+  width: 18px;
+  height: 18px;
+}
+
+.notice,
+.banner,
+.toast,
+.composer-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-widget-border, currentColor);
+  border-left-width: 4px;
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.notice--info,
+.banner--info,
+.toast--info {
+  border-left-color: var(--vscode-editorInfo-foreground);
+}
+.notice--warning,
+.banner--warning,
+.toast--warning {
+  border-left-color: var(--vscode-editorWarning-foreground);
+}
+.notice--error,
+.banner--error,
+.toast--error {
+  border-left-color: var(--vscode-errorForeground);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+  /* A spinner that does not turn still says "working": the text next to it carries the meaning. */
+  .codicon-modifier-spin {
+    animation: none !important;
+  }
+}

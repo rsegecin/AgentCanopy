@@ -1,0 +1,140 @@
+.history {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+.history > .column {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.search .text-input {
+  flex: 1;
+}
+
+.group-heading {
+  margin: 0 0 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--vscode-descriptionForeground);
+}
+.history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.history-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+  border-radius: 3px;
+}
+.history-row:hover {
+  background: var(--vscode-list-hoverBackground);
+}
+.history-row--active {
+  background: var(--vscode-list-inactiveSelectionBackground);
+  box-shadow: inset 3px 0 0 var(--vscode-focusBorder);
+}
+.history-row--editing,
+.history-row--confirm {
+  align-items: center;
+  padding: 4px;
+}
+.history-row--editing .text-input {
+  flex: 1;
+}
+.history-row--confirm {
+  flex-wrap: wrap;
+  gap: 6px;
+  border: 1px solid var(--vscode-errorForeground);
+}
+.history-row--confirm p {
+  flex: 1 1 100%;
+  overflow-wrap: anywhere;
+}
+.row-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.history-open {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  text-align: left;
+  background: transparent;
+  cursor: pointer;
+}
+.history-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.history-preview {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.history-snippet {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.history-snippet mark {
+  color: inherit;
+  font-weight: 700;
+  background: var(--vscode-editor-findMatchHighlightBackground);
+  outline: 1px solid var(--vscode-editor-findMatchHighlightBorder, currentColor);
+}
+.history-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.history-flag {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+.badge--attention {
+  color: var(--vscode-button-foreground);
+  background: var(--vscode-button-background);
+}
+
+.row-actions {
+  display: flex;
+  padding-top: 2px;
+  opacity: 0;
+}
+.history-row:hover .row-actions,
+.history-row:focus-within .row-actions {
+  opacity: 1;
+}
+@media (hover: none) {
+  .row-actions {
+    opacity: 1;
+  }
+}

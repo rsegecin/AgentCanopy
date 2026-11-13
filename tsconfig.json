@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "jsx": "react-jsx",
+    "types": ["node", "vscode", "mocha"]
+  },
+  "include": [
+    "src",
+    "test",
+    "scripts",
+    "*.config.ts",
+    "*.config.mts",
+    "*.config.mjs",
+    "esbuild.mjs",
+    ".vscode-test.mjs"
+  ],
+  "exclude": ["test/fixtures", "node_modules", "dist", "dist-test"]
+}

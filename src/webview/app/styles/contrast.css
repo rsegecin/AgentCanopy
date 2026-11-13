@@ -1,0 +1,121 @@
+/*
+ * High-contrast themes. A border that only differs from its surroundings by background colour
+ * disappears there, so each such surface gets an explicit border from the theme's contrast colours.
+ * The selectors are listed once, here, so a new surface is one line to add.
+ */
+body.vscode-high-contrast,
+body.vscode-high-contrast-light {
+  --ac-contrast-border: var(--vscode-contrastBorder, currentColor);
+  --ac-contrast-active: var(--vscode-contrastActiveBorder, var(--vscode-focusBorder));
+}
+
+body.vscode-high-contrast
+  :is(
+    .message--user,
+    .code-block,
+    .tool-card,
+    .prompt-card,
+    .plan-section,
+    .review-entry,
+    .checkpoint-row,
+    .restore-item,
+    .plan-option,
+    .plan-update,
+    .branch-header,
+    .branch-toggle,
+    .notice,
+    .banner,
+    .toast,
+    .composer-notice,
+    .menu,
+    .reference-picker,
+    .chip,
+    .badge,
+    .composer-input,
+    .text-input,
+    select,
+    textarea,
+    .segmented,
+    .diagram-canvas,
+    .tool-card-pre,
+    .prompt-detail,
+    .history-row,
+    .jump-latest
+  ),
+body.vscode-high-contrast-light
+  :is(
+    .message--user,
+    .code-block,
+    .tool-card,
+    .prompt-card,
+    .plan-section,
+    .review-entry,
+    .checkpoint-row,
+    .restore-item,
+    .plan-option,
+    .plan-update,
+    .branch-header,
+    .branch-toggle,
+    .notice,
+    .banner,
+    .toast,
+    .composer-notice,
+    .menu,
+    .reference-picker,
+    .chip,
+    .badge,
+    .composer-input,
+    .text-input,
+    select,
+    textarea,
+    .segmented,
+    .diagram-canvas,
+    .tool-card-pre,
+    .prompt-detail,
+    .history-row,
+    .jump-latest
+  ) {
+  border: 1px solid var(--ac-contrast-border);
+}
+
+/* Buttons, tabs and toolbar icons: an outline, so a flat button is still a button. */
+body.vscode-high-contrast :is(.button, .icon-button, .tab, .plan-section-toggle),
+body.vscode-high-contrast-light :is(.button, .icon-button, .tab, .plan-section-toggle) {
+  border: 1px solid var(--ac-contrast-border);
+}
+
+/* What is selected or current gets the active border, in addition to its other marks. */
+body.vscode-high-contrast
+  :is(
+    .history-row--active,
+    .plan-option--chosen,
+    .prompt-card--needs-answer,
+    .plan-lock--on,
+    .segmented-option:has(input:checked),
+    .reference-option--active,
+    .tab[aria-selected='true']
+  ),
+body.vscode-high-contrast-light
+  :is(
+    .history-row--active,
+    .plan-option--chosen,
+    .prompt-card--needs-answer,
+    .plan-lock--on,
+    .segmented-option:has(input:checked),
+    .reference-option--active,
+    .tab[aria-selected='true']
+  ) {
+  border-color: var(--ac-contrast-active);
+  outline: 1px solid var(--ac-contrast-active);
+}
+
+/* Changed lines are told apart by their sign and by a border, not only by the tint. */
+body.vscode-high-contrast :is(.diff-line--removed, .diff-line--added),
+body.vscode-high-contrast-light :is(.diff-line--removed, .diff-line--added) {
+  border-left: 3px solid var(--ac-contrast-border);
+}
+/* Disabled stays visibly different when colours are forced. */
+body.vscode-high-contrast .button:disabled,
+body.vscode-high-contrast-light .button:disabled {
+  border-style: dashed;
+}

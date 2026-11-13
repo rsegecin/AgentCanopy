@@ -1,0 +1,14 @@
+docs/
+test/fixtures/
+dist/
+dist-test/
+spike/
+spike-out/
+coverage/
+.vscode-test/
+node_modules/
+package-lock.json
+*.vsix
+media/*.png
+CLAUDE.md
+.claude/

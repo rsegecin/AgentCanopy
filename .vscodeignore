@@ -1,0 +1,19 @@
+**
+!dist/**/*.js
+!dist/**/*.css
+!dist/**/*.ttf
+!media/**
+!package.json
+!README.md
+!CHANGELOG.md
+!LICENSE
+!dist/THIRD_PARTY_LICENSES.txt
+!THIRD_PARTY_NOTICES.md
+!SECURITY.md
+
+# The user documentation the README links to, so its links work in the installed extension.
+!CONTRIBUTING.md
+!docs/guide/**
+!docs/limitations.md
+!docs/architecture.md
+!docs/publishing.md
