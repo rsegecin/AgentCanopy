@@ -13,8 +13,16 @@
 | 6. Forking and checkpoints | Done. Exact and rebuilt branches and checkpoint restore verified live against the real CLI; a four-reviewer pass found 2 blockers and 9 major issues, all fixed with regression tests |
 | 7. Polish and release | Done. Accessibility pass, documentation, security review (1 critical, fixed and verified live), VSIX built, installed in a clean profile and tested there |
 | 8. Pasted images | Done in code. Image input through `--input-format stream-json` probed live on Windows (CLI 2.1.323): image read, resume, whole and cut forks, Ask-mode permission flow, 5.85 MB image. Unit and integration tests pass; the chip renders in the preview under the CSP. Not yet tried by hand in VS Code; the live image test is written and not run |
+| 9. Chat cards and concurrent send | In progress. Plan: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md` |
 
 Approved by the owner on 2026-11-10. Updated at every phase commit.
+
+Phase 9 (added 2026-11-13 at the owner's request): the Plan and Review tabs are replaced by cards in the chat (plan request, plan options, plan, changes), and a message can be sent while a turn runs (queued instruction, concurrent side question). Decisions and deviations:
+
+- **Deviation from C19**: hunk actions are no longer offered in the panel. They stay in the editor (CodeLens, decorations) and in commands. The changes card lists files and opens their diffs.
+- **Note on C11**: the plan card's title opens the plan as read-only Markdown source, exactly the text that is hashed and sent on approval. The rendered preview is not opened automatically, because it can load remote images from model-written text; VS Code's own Open Preview stays available. Executing a plan still goes through the native modal.
+- **Accepted losses**: rendered Mermaid and the stage-dependency diagram for plans, clickable file links in the plan, comparing arbitrary plan versions (each card compares with the version before it), the "No longer in the plan" list, exporting a plan as an untitled document.
+- A queued message is kept in memory only and is lost if the window reloads before it is sent. A side question knows the conversation up to the last finished turn, not the work in progress, and never affects the running turn.
 
 Phase 8 (added 2026-11-12 at the owner's request): images pasted into the composer. The plan's "Images are not supported in the first version" (section 2) is lifted. Image bytes stay in the extension host's memory until the turn ends and are never stored; the conversation keeps a reference (SHA-256, type, size). A turn with images adds `--input-format stream-json` and sends one stream-json user line; every other turn is sent exactly as before. No Agent SDK.
 
