@@ -51,7 +51,7 @@ p {
  * nothing. Everything the keyboard can reach keeps its ring.
  */
 [role='tabpanel']:focus-visible,
-.review-scroll:focus-visible,
+.changes-dock:focus-visible,
 .checkpoints-scroll:focus-visible,
 .plan-scroll:focus-visible,
 .history:focus-visible,
@@ -65,7 +65,8 @@ form.composer:focus-visible {
 .tool-card-pre:focus-visible,
 .prompt-detail:focus-visible,
 .plan-table-wrap:focus-visible,
-.log:focus-visible {
+.log:focus-visible,
+.changes-dock-body:focus-visible {
   outline-offset: -2px;
 }
 

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessagePart, ToolCallView } from '../../../shared';
 import {
   assistantMessage,
@@ -290,6 +290,82 @@ describe('MessageList', () => {
       fireEvent.click(jump);
       expect(log.scrollTop).toBe(2000);
       expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
+    });
+
+    describe('when the log is resized', () => {
+      let observers: { callback: () => void; target: Element | null; disconnected: boolean }[];
+      beforeEach(() => {
+        observers = [];
+        vi.stubGlobal(
+          'ResizeObserver',
+          class {
+            private readonly entry: (typeof observers)[number];
+            constructor(callback: () => void) {
+              this.entry = { callback, target: null, disconnected: false };
+              observers.push(this.entry);
+            }
+            observe(target: Element) {
+              this.entry.target = target;
+            }
+            unobserve() {}
+            disconnect() {
+              this.entry.disconnected = true;
+            }
+          },
+        );
+      });
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+      const resize = (log: HTMLElement) => {
+        act(() => {
+          for (const o of observers) if (o.target === log && !o.disconnected) o.callback();
+        });
+      };
+
+      it('stays at the bottom when the changes card appears, grows or collapses', () => {
+        renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
+        const log = screen.getByRole('log');
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 400 });
+        log.scrollTop = 600;
+        fireEvent.scroll(log);
+        // The card appears: the log gets shorter, the content keeps its height.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 200 });
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+        // The card grows.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 120 });
+        log.scrollTop = 880;
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+        // The card collapses: the log gets taller than before.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 500 });
+        log.scrollTop = 400;
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+      });
+
+      it('does not move a log the user scrolled up', () => {
+        renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
+        const log = screen.getByRole('log');
+        setGeometry(log, { scrollHeight: 2000, clientHeight: 400 });
+        log.scrollTop = 100;
+        fireEvent.scroll(log);
+        setGeometry(log, { scrollHeight: 2000, clientHeight: 200 });
+        resize(log);
+        expect(log.scrollTop).toBe(100);
+        expect(screen.getByRole('button', { name: /Jump to latest/ })).toBeTruthy();
+      });
+
+      it('stops observing when the log goes away', () => {
+        const { unmount } = renderWithHost(
+          <MessageList />,
+          stateWith([{ kind: 'text', text: 'a' }]),
+        );
+        expect(observers.some((o) => o.target !== null && !o.disconnected)).toBe(true);
+        unmount();
+        expect(observers.every((o) => o.disconnected)).toBe(true);
+      });
     });
 
     it('scrolls to a message the user just sent even when they were scrolled up', () => {

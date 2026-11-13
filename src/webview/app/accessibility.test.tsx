@@ -9,11 +9,12 @@ import { PromptPart } from '../features/chat/PromptCards';
 import { registerPartRenderer } from '../features/chat/registry';
 import { HistoryList } from '../features/history/HistoryList';
 import { PlanView } from '../features/plan/PlanView';
-import { ReviewView, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ReviewView';
+import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDock';
 import {
   assistantMessage,
   makeActive,
   makeCheckpoint,
+  makeConfigChange,
   makePermissionPrompt,
   makePlanDoc,
   makePlanVersion,
@@ -118,7 +119,7 @@ describe('live regions', () => {
     vi.useFakeTimers();
     const state = (done: number) =>
       makeState({ baseline: { state: 'capturing', filesDone: done, filesTotal: 100 } });
-    const { init, container } = renderWithHost(<ReviewView />, {
+    const { init, container } = renderWithHost(<ChangesDock />, {
       ...state(1),
       review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
     });
@@ -170,9 +171,17 @@ function reviewState(entries: ReviewEntry[], running = false): ViewState {
 }
 
 describe('focus after the focused control goes away', () => {
+  const withComposer = (state: ViewState) =>
+    renderWithHost(
+      <>
+        <ChangesDock />
+        <Composer />
+      </>,
+      state,
+    );
+
   it('moves to the next file when a review entry is accepted', () => {
-    const { init } = renderWithHost(
-      <ReviewView />,
+    const { init } = withComposer(
       reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts'), makeReviewEntry('c.ts')]),
     );
     screen.getByRole('button', { name: 'Accept b.ts' }).focus();
@@ -183,22 +192,26 @@ describe('focus after the focused control goes away', () => {
     );
   });
 
-  it('moves to the summary when the last pending entry is accepted', () => {
-    const { init } = renderWithHost(<ReviewView />, reviewState([makeReviewEntry('a.ts')]));
+  it('moves to the composer when the last pending entry is accepted', () => {
+    const { init } = withComposer(reviewState([makeReviewEntry('a.ts')]));
     screen.getByRole('button', { name: 'Accept a.ts' }).focus();
     init(reviewState([makeReviewEntry('a.ts', { status: 'accepted' })]), 1);
-    expect(document.activeElement?.textContent).toBe('No pending changes');
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+  });
+
+  it('moves to the card itself when there is no composer to take focus', () => {
+    const { init } = renderWithHost(<ChangesDock />, reviewState([makeReviewEntry('a.ts')]));
+    screen.getByRole('button', { name: 'Accept a.ts' }).focus();
+    init(reviewState([makeReviewEntry('a.ts', { status: 'accepted' })]), 1);
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Changes' }));
   });
 
   it('leaves focus alone when it is somewhere that still exists', () => {
-    const { init } = renderWithHost(
-      <ReviewView />,
-      reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts')]),
-    );
-    const stay = screen.getByRole('button', { name: 'Diff b.ts' });
+    const { init } = withComposer(reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts')]));
+    const stay = screen.getByRole('button', { name: 'Reject b.ts' });
     stay.focus();
     init(reviewState([makeReviewEntry('b.ts')]), 1);
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Diff b.ts' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Reject b.ts' }));
   });
 
   it('moves to the card when a question is answered', () => {
@@ -455,7 +468,7 @@ describe('keyboard, names, roles and states', () => {
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
-    for (const tab of ['Plan', 'Review', 'Checkpoints', 'History', 'Chat']) {
+    for (const tab of ['Plan', 'Checkpoints', 'History', 'Chat']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll('[tabindex]')) {
         expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(
@@ -478,7 +491,7 @@ describe('keyboard, names, roles and states', () => {
       }),
     );
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(4);
     expect(tabs.filter((t) => t.getAttribute('tabindex') === '0')).toHaveLength(1);
     for (const tab of tabs) {
       const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
@@ -487,7 +500,7 @@ describe('keyboard, names, roles and states', () => {
     }
     // The arrow keys move through all of them.
     const chat = screen.getByRole('tab', { name: 'Chat' });
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 4; i++) {
       fireEvent.keyDown(document.activeElement ?? chat, { key: 'ArrowRight' });
     }
     expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
@@ -583,13 +596,18 @@ describe('keyboard, names, roles and states', () => {
           plan: makePlanDoc(),
           messages: [userMessage('u1', 'hi')],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
+        review: {
+          entries: [makeReviewEntry('a.ts')],
+          hunks: {},
+          configChanges: [makeConfigChange('k1')],
+          busy: false,
+        },
         checkpoints: [makeCheckpoint('op1')],
         conversations: [makeSummary('c1')],
         banners: [{ id: 'b', level: 'info', text: 'FYI', dismissible: true }],
       }),
     );
-    for (const tab of ['Chat', 'Plan', 'Review', 'Checkpoints', 'History']) {
+    for (const tab of ['Chat', 'Plan', 'Checkpoints', 'History']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll<HTMLElement>('button, input, select, textarea')) {
         const byIds = (el.getAttribute('aria-labelledby') ?? '')
@@ -613,6 +631,33 @@ describe('keyboard, names, roles and states', () => {
 /* ------------------------------------------------------------------ 8. text alternatives, scrollable boxes */
 
 describe('scrollable boxes and text alternatives', () => {
+  it('gives the changes card a name, a toggle that states what it controls, and a reachable scroll box', () => {
+    renderWithHost(
+      <ChangesDock />,
+      makeState({
+        review: {
+          entries: [makeReviewEntry('a.ts')],
+          hunks: {},
+          configChanges: [makeConfigChange('k1')],
+          busy: false,
+        },
+      }),
+    );
+    const card = screen.getByRole('region', { name: 'Changes' });
+    const toggle = within(card).getByRole('button', { name: /^Changes/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
+    const body = within(card).getByRole('group', { name: 'Changes details' });
+    expect(body.getAttribute('tabindex')).toBe('0');
+    expect(body.contains(region)).toBe(true);
+    // Collapsed, the files are hidden from everyone, not only from sight; the decision stays.
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(region?.hidden).toBe(true);
+    expect(within(card).queryByRole('button', { name: 'Accept All' })).toBeNull();
+    expect(within(card).getByRole('button', { name: /^Keep / })).toBeTruthy();
+  });
+
   it('lets the keyboard reach a scrolling diagram, table, code block and tool output', async () => {
     renderWithHost(
       <MessageList />,

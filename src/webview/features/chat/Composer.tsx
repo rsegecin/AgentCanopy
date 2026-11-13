@@ -20,6 +20,9 @@ const MODE_INFO: Record<Mode, { label: string; description: string }> = {
 
 const MAX_DRAFT = 200_000;
 
+const CONFIG_BLOCK_HINT =
+  'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
+
 interface Blocker {
   message: string;
   details: string[];
@@ -83,6 +86,7 @@ export function Composer() {
     (s) => s.active?.prompts.some((p) => p.state === 'pending') ?? false,
   );
   const turns = useViewState((s) => s.active?.turns);
+  const configPending = useViewState((s) => s.review.configChanges.length > 0);
 
   const conversationId = meta?.id;
   const draftKey = conversationId ?? NEW_CONVERSATION_KEY;
@@ -100,6 +104,8 @@ export function Composer() {
     ? models
     : [...models, { id: model, label: model, custom: true }];
 
+  // Only sending in Agent mode waits for the decision: typing, attaching and switching mode do not.
+  const configBlocked = configPending && mode === 'agent';
   const textarea = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
   // Send turns into Stop (and back) while the focused button is replaced: keep focus in the composer.
@@ -107,6 +113,7 @@ export function Composer() {
   const stopButton = useRef<HTMLButtonElement>(null);
   const radioName = useId();
   const noticeId = useId();
+  const configHintId = useId();
 
   const picker = useReferencePicker({
     draft,
@@ -164,7 +171,7 @@ export function Composer() {
 
   const send = () => {
     const text = draft.trim();
-    if (blocker !== null || running || text === '' || pendingPastes > 0) return;
+    if (blocker !== null || configBlocked || running || text === '' || pendingPastes > 0) return;
     setPasteProblem(null);
     post({
       type: 'turn.send',
@@ -209,6 +216,8 @@ export function Composer() {
         ? 'The plan is attached read-only.'
         : null;
 
+  const textareaDescription =
+    blocker !== null ? noticeId : configBlocked ? configHintId : undefined;
   const contextTarget = conversationId !== undefined ? { conversationId } : {};
   const contextDisabled = blocker !== null;
 
@@ -256,6 +265,15 @@ export function Composer() {
           </div>
         )}
 
+        {configBlocked && blocker === null && (
+          <p className="composer-note composer-note--warning">
+            <Icon name="warning" />
+            <span id={configHintId} role="status">
+              {CONFIG_BLOCK_HINT}
+            </span>
+          </p>
+        )}
+
         {hasPendingPrompt && (
           <p className="composer-note">
             <Icon name="comment-discussion" />
@@ -295,7 +313,7 @@ export function Composer() {
             className="composer-input"
             rows={2}
             aria-label="Message"
-            aria-describedby={blocker !== null ? noticeId : undefined}
+            aria-describedby={textareaDescription}
             {...picker.inputProps}
             placeholder={running ? 'The agent is working. Type your next message…' : 'Message'}
             maxLength={MAX_DRAFT}
@@ -438,8 +456,10 @@ export function Composer() {
             <button
               type="submit"
               className="button"
-              disabled={blocker !== null || draft.trim() === '' || pendingPastes > 0}
-              aria-describedby={blocker !== null ? noticeId : undefined}
+              disabled={
+                blocker !== null || configBlocked || draft.trim() === '' || pendingPastes > 0
+              }
+              aria-describedby={textareaDescription}
             >
               <Icon name="send" />
               <span>Send</span>

@@ -5,6 +5,7 @@ import {
   assistantMessage,
   convId,
   makeActive,
+  makeConfigChange,
   makeProvider,
   makeState,
   makeTurn,
@@ -142,6 +143,99 @@ describe('Composer while a turn runs', () => {
     box().focus();
     fireEvent.keyDown(box(), { key: 'Escape' });
     expect(document.activeElement).toBe(box());
+  });
+});
+
+describe('Composer with pending configuration changes', () => {
+  const pending = (mode: 'ask' | 'plan' | 'agent') =>
+    makeState({
+      defaults: { mode, model: 'default' },
+      review: {
+        entries: [],
+        hunks: {},
+        configChanges: [makeConfigChange('k1')],
+        busy: false,
+      },
+    });
+  const send = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+  const hint = () =>
+    screen.getByText(
+      'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.',
+    );
+
+  it('disables Send and Enter in Agent mode, keeps the text, and names the changes card', () => {
+    const { host } = renderWithHost(<Composer />, pending('agent'));
+    type('go on');
+    expect(send().disabled).toBe(true);
+    enter();
+    fireEvent.click(send());
+    expect(host.postedOf('turn.send')).toHaveLength(0);
+    expect(box().value).toBe('go on');
+    expect(hint().textContent).toContain('changes card below the chat');
+    expect(hint().getAttribute('role')).toBe('status');
+    expect(box().getAttribute('aria-describedby')).toBe(hint().id);
+    expect(send().getAttribute('aria-describedby')).toBe(hint().id);
+  });
+
+  it('leaves the textarea, the mode switch and the attachments usable', () => {
+    const { host } = renderWithHost(<Composer />, pending('agent'));
+    expect(box().disabled).toBe(false);
+    expect(screen.getByRole<HTMLInputElement>('radio', { name: 'Ask' }).disabled).toBe(false);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Add a file' }).disabled).toBe(
+      false,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Add a file' }));
+    expect(host.postedOf('context.pick')).toHaveLength(1);
+  });
+
+  it.each(['ask', 'plan'] as const)('does not block %s mode', (mode) => {
+    const { host } = renderWithHost(<Composer />, pending(mode));
+    type('question');
+    expect(send().disabled).toBe(false);
+    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    enter();
+    expect(host.postedOf('turn.send')).toEqual([
+      { type: 'turn.send', text: 'question', mode, model: 'default' },
+    ]);
+  });
+
+  it('is cleared by switching to Ask, and comes back when switching to Agent', () => {
+    const { host } = renderWithHost(<Composer />, pending('agent'));
+    type('hello');
+    fireEvent.click(screen.getByRole('radio', { name: 'Ask' }));
+    expect(send().disabled).toBe(false);
+    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    expect(box().getAttribute('aria-describedby')).toBeNull();
+    fireEvent.click(screen.getByRole('radio', { name: 'Agent' }));
+    expect(send().disabled).toBe(true);
+    expect(hint()).toBeTruthy();
+    expect(host.postedOf('turn.send')).toHaveLength(0);
+  });
+
+  it('is cleared when the host reports the changes decided', () => {
+    const { host, init } = renderWithHost(<Composer />, pending('agent'));
+    type('now');
+    init(makeState({ defaults: { mode: 'agent', model: 'default' } }), 1);
+    expect(send().disabled).toBe(false);
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(1);
+  });
+
+  it('applies to an open conversation in Agent mode', () => {
+    const { host } = renderWithHost(<Composer />, {
+      ...pending('ask'),
+      active: makeActive('c1', { meta: { mode: 'agent' } }),
+    });
+    type('go');
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(0);
+    expect(send().disabled).toBe(true);
+  });
+
+  it('does not add the hint over a provider problem', () => {
+    renderWithHost(<Composer />, { ...pending('agent'), trusted: false });
+    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    expect(box().getAttribute('aria-describedby')).toBe(screen.getByRole('status').id);
   });
 });
 

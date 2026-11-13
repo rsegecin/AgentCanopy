@@ -1,6 +1,4 @@
-import type { Attribution, ChangeType, Hunk, ReviewEntry } from '../../../shared';
-
-export const HUNK_MAX_LINES = 80;
+import type { Attribution, ChangeType, ReviewEntry } from '../../../shared';
 
 export const CHANGE_LABEL: Record<ChangeType, { label: string; icon: string }> = {
   created: { label: 'Added', icon: 'diff-added' },
@@ -51,29 +49,4 @@ export function countFiles(entries: readonly ReviewEntry[]): number {
     if (entry.renamedFrom !== undefined) paths.add(entry.renamedFrom);
   }
   return paths.size;
-}
-
-export interface DisplayLine {
-  sign: '-' | '+';
-  /** The line without its terminator. */
-  text: string;
-  /** True when the line had no terminator: the file ends without a newline here. */
-  noEol: boolean;
-}
-
-function toLine(sign: '-' | '+', raw: string): DisplayLine {
-  const text = raw.replace(/(?:\r\n|\n|\r)$/, '');
-  return { sign, text, noEol: text === raw && raw !== '' };
-}
-
-/** The lines of a hunk to show: removed lines, then added lines, cut at `HUNK_MAX_LINES`. */
-export function hunkLines(hunk: Hunk): { lines: DisplayLine[]; hidden: number } {
-  const all = [
-    ...hunk.baselineLines.map((l) => toLine('-', l)),
-    ...hunk.currentLines.map((l) => toLine('+', l)),
-  ];
-  return {
-    lines: all.slice(0, HUNK_MAX_LINES),
-    hidden: Math.max(all.length - HUNK_MAX_LINES, 0),
-  };
 }

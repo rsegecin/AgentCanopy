@@ -117,6 +117,9 @@
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground);
 }
+.composer-note--warning .codicon {
+  color: var(--vscode-editorWarning-foreground);
+}
 
 .composer-input-wrap {
   position: relative;

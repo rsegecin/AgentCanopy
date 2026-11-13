@@ -164,6 +164,20 @@ function Log({ conversationId }: { conversationId: ConversationId }) {
     previousLength.current = list.length;
   }, [messages, activity, failure, ui, conversationId]);
 
+  // The changes card (or anything else beside the log) can appear, grow or collapse, which changes
+  // the log's height without a scroll: a log that was at the bottom stays there.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => {
+      if (stick.current) el.scrollTop = el.scrollHeight;
+    });
+    observer.observe(el);
+    return () => {
+      observer.disconnect();
+    };
+  }, []);
+
   const onScroll = (event: UIEvent<HTMLDivElement>) => {
     const el = event.currentTarget;
     const near = el.scrollHeight - el.scrollTop - el.clientHeight <= NEAR_BOTTOM_PX;

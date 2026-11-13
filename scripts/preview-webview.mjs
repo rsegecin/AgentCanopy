@@ -460,30 +460,8 @@ const state = {
         operationIds: [],
       },
     ],
-    hunks: {
-      'src/cache.ts': [
-        {
-          id: 'h0',
-          index: 0,
-          baselineStart: 4,
-          baselineLines: ['const cache = new Map();\r\n', 'export function get(key) {\r\n'],
-          currentStart: 4,
-          currentLines: [
-            'const cache = new Map<string, Value>();\r\n',
-            'const MAX = 500;\r\n',
-            'export function get(key: string) {\r\n',
-          ],
-        },
-        {
-          id: 'h1',
-          index: 1,
-          baselineStart: 40,
-          baselineLines: ['module.exports = { get };\n'],
-          currentStart: 41,
-          currentLines: ['export { get };'],
-        },
-      ],
-    },
+    hunks: {},
+    busy: false,
     configChanges: [
       {
         id: 'cfg-1',
@@ -687,9 +665,20 @@ function page(origin, query) {
     window.addEventListener('unhandledrejection', (e) => diag.push('REJECTION ' + String(e.reason)));
     const state = ${JSON.stringify(parsed.data).replace(/</g, '\\u003c')};
     if (new URLSearchParams(location.search).get('restore') === '1') state.restorePreview = ${JSON.stringify(restorePreview)};
+    const params = new URLSearchParams(location.search);
+    // ?busy=1: an Agent turn runs in the folder, so the changes card hides its Files section.
+    if (params.get('busy') === '1') state.review.busy = true;
+    // ?empty=1: no conversation is open, one configuration change is pending, and the composer is in Agent mode.
+    if (params.get('empty') === '1') {
+      state.active = null;
+      state.review = { entries: [], hunks: {}, configChanges: state.review.configChanges.slice(0, 1), busy: false };
+      state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
+      state.defaults = { ...state.defaults, mode: 'agent' };
+    }
     const sent = [];
     window.__sent = sent;
-    let saved;
+    // ?collapsed=1: the user has collapsed the changes card.
+    let saved = params.get('collapsed') === '1' ? { expanded: { 'changes-dock-collapsed': true } } : undefined;
     const deliver = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
@@ -748,7 +737,9 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
-  console.log(`Preview: ${base}/   (add ?tab=plan, ?theme=light, ?kind=panel)`);
+  console.log(
+    `Preview: ${base}/   (add ?tab=plan, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1)`,
+  );
 } else {
   const chrome =
     process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -778,10 +769,18 @@ if (!process.argv.includes('--check')) {
     });
   const views = [
     { name: 'chat-dark', query: '?tab=chat', size: '520,1900' },
+    { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
+    { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
+    { name: 'chat-changes-busy-dark', query: '?tab=chat&busy=1', size: '520,900' },
+    { name: 'chat-empty-config-dark', query: '?tab=chat&empty=1', size: '520,700' },
+    {
+      name: 'chat-panel-changes-light',
+      query: '?tab=chat&theme=light&kind=panel',
+      size: '1100,900',
+    },
     { name: 'plan-dark', query: '?tab=plan', size: '520,3600' },
     { name: 'plan-panel-light', query: '?tab=plan&theme=light&kind=panel', size: '1100,2600' },
     { name: 'history-light', query: '?tab=history&theme=light', size: '520,700' },
-    { name: 'review-dark', query: '?tab=review', size: '520,1500' },
     { name: 'checkpoints-dark', query: '?tab=checkpoints', size: '520,700' },
     {
       name: 'restore-preview-light',

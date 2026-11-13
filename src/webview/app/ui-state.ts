@@ -5,7 +5,7 @@ import type { Mode } from '../../shared';
 import type { Host } from './host';
 import { useApp } from './context';
 
-export type Tab = 'chat' | 'history' | 'plan' | 'review' | 'checkpoints';
+export type Tab = 'chat' | 'history' | 'plan' | 'checkpoints';
 
 /** Draft key used while no conversation is open. */
 export const NEW_CONVERSATION_KEY = '__new__';
@@ -27,7 +27,7 @@ export interface QuestionDraft {
 }
 
 const PersistedSchema = z.object({
-  tab: z.enum(['chat', 'history', 'plan', 'review', 'checkpoints']).catch('chat'),
+  tab: z.enum(['chat', 'history', 'plan', 'checkpoints']).catch('chat'),
   drafts: z.record(z.string(), z.string()).catch({}),
   expanded: z.record(z.string(), z.boolean()).catch({}),
   scroll: z.record(z.string(), z.object({ top: z.number(), atBottom: z.boolean() })).catch({}),
@@ -173,6 +173,15 @@ export class UiState {
     if (keys.length > MAX_REVIEW_INCLUDE) {
       for (const old of keys.slice(0, keys.length - MAX_REVIEW_INCLUDE)) delete next[old];
     }
+    this.update({ reviewInclude: next });
+  }
+
+  /** Forgets ticks of paths that are not in `paths`, so a file that comes back later starts unticked. */
+  pruneReviewInclude(paths: readonly string[]): void {
+    const keep = new Set(paths);
+    const current = this.snapshot.reviewInclude;
+    const next = Object.fromEntries(Object.entries(current).filter(([path]) => keep.has(path)));
+    if (Object.keys(next).length === Object.keys(current).length) return;
     this.update({ reviewInclude: next });
   }
 

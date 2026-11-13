@@ -87,7 +87,7 @@ describe('UiState plan sections', () => {
 });
 
 describe('UiState review ticks', () => {
-  it('ticks and unticks paths, persists them and accepts the review tab', () => {
+  it('ticks and unticks paths, persists them', () => {
     const host = new FakeHost();
     const ui = new UiState(host);
     ui.setReviewInclude('a.ts', true);
@@ -101,7 +101,38 @@ describe('UiState review ticks', () => {
     expect(new UiState(new FakeHost({ reviewInclude: 'x' })).getSnapshot().reviewInclude).toEqual(
       {},
     );
-    expect(new UiState(new FakeHost({ tab: 'review' })).getSnapshot().tab).toBe('review');
+  });
+
+  it('prunes ticks of paths that are not listed, and does nothing when all are listed', () => {
+    const host = new FakeHost();
+    const ui = new UiState(host);
+    ui.setReviewInclude('a.ts', true);
+    ui.setReviewInclude('b.ts', true);
+    ui.pruneReviewInclude(['b.ts', 'c.ts']);
+    expect(ui.getSnapshot().reviewInclude).toEqual({ 'b.ts': true });
+    const before = ui.getSnapshot();
+    let notified = 0;
+    ui.subscribe(() => notified++);
+    ui.pruneReviewInclude(['b.ts']);
+    expect(notified).toBe(0);
+    expect(ui.getSnapshot()).toBe(before);
+    ui.pruneReviewInclude([]);
+    expect(ui.getSnapshot().reviewInclude).toEqual({});
+  });
+
+  it('falls back to the chat tab for the removed review tab', () => {
+    expect(new UiState(new FakeHost({ tab: 'review' })).getSnapshot().tab).toBe('chat');
+    expect(new UiState(new FakeHost({ tab: 'checkpoints' })).getSnapshot().tab).toBe('checkpoints');
+  });
+
+  it('keeps the changes card collapsed state in the expanded map', () => {
+    const host = new FakeHost();
+    const ui = new UiState(host);
+    ui.setExpanded('changes-dock-collapsed', true);
+    ui.flush();
+    expect(
+      new UiState(new FakeHost(host.saved)).getSnapshot().expanded['changes-dock-collapsed'],
+    ).toBe(true);
   });
 });
 

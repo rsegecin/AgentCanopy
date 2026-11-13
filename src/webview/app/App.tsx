@@ -5,8 +5,8 @@ import { Composer, MessageList } from '../features/chat';
 import { HistoryList } from '../features/history/HistoryList';
 import { PlanView } from '../features/plan';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
-import { ReviewView } from '../features/review/ReviewView';
-import { Icon, IconButton, VisuallyHidden } from './components';
+import { ChangesDock } from '../features/review/ChangesDock';
+import { Icon, IconButton } from './components';
 import { useApp, usePost } from './context';
 import { OverflowMenu } from './OverflowMenu';
 import { ProviderIndicator } from './ProviderIndicator';
@@ -18,41 +18,24 @@ import type { Tab } from './ui-state';
 const ALL_TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'plan', label: 'Plan' },
-  { id: 'review', label: 'Review' },
   { id: 'checkpoints', label: 'Checkpoints' },
   { id: 'history', label: 'History' },
 ];
 
 /** Which optional tabs exist, and the tab in use: a tab that has gone away falls back to Chat. */
-function useCurrentTab(): {
-  tab: Tab;
-  hasPlan: boolean;
-  hasReview: boolean;
-  hasCheckpoints: boolean;
-  pending: number;
-} {
+function useCurrentTab(): { tab: Tab; hasPlan: boolean; hasCheckpoints: boolean } {
   const stored = useUi((s) => s.tab);
   const hasPlan = useViewState((s) => s.active?.plan != null);
-  const entries = useViewState((s) => s.review.entries);
-  const configCount = useViewState((s) => s.review.configChanges.length);
-  const hasReview = entries.length > 0 || configCount > 0;
   const hasCheckpoints = useViewState((s) => s.checkpoints.length > 0 || s.restorePreview !== null);
-  const pending = entries.filter((e) => e.status === 'pending').length;
-  const gone =
-    (stored === 'plan' && !hasPlan) ||
-    (stored === 'review' && !hasReview) ||
-    (stored === 'checkpoints' && !hasCheckpoints);
-  return { tab: gone ? 'chat' : stored, hasPlan, hasReview, hasCheckpoints, pending };
+  const gone = (stored === 'plan' && !hasPlan) || (stored === 'checkpoints' && !hasCheckpoints);
+  return { tab: gone ? 'chat' : stored, hasPlan, hasCheckpoints };
 }
 
 function Tabs({ idPrefix }: { idPrefix: string }) {
   const { ui } = useApp();
-  const { tab, hasPlan, hasReview, hasCheckpoints, pending } = useCurrentTab();
+  const { tab, hasPlan, hasCheckpoints } = useCurrentTab();
   const tabs = ALL_TABS.filter(
-    (t) =>
-      (t.id !== 'plan' || hasPlan) &&
-      (t.id !== 'review' || hasReview) &&
-      (t.id !== 'checkpoints' || hasCheckpoints),
+    (t) => (t.id !== 'plan' || hasPlan) && (t.id !== 'checkpoints' || hasCheckpoints),
   );
 
   const select = (next: Tab, focus: boolean) => {
@@ -89,17 +72,7 @@ function Tabs({ idPrefix }: { idPrefix: string }) {
             select(t.id, false);
           }}
         >
-          {t.id === 'review' && pending > 0 ? (
-            <>
-              <span aria-hidden="true">{t.label}</span>
-              <span className="tab-badge" aria-hidden="true">
-                {pending}
-              </span>
-              <VisuallyHidden>{`${t.label}, ${String(pending)} pending`}</VisuallyHidden>
-            </>
-          ) : (
-            t.label
-          )}
+          {t.label}
         </button>
       ))}
     </div>
@@ -110,18 +83,19 @@ export function App() {
   const { store, ui } = useApp();
   const post = usePost();
   const ready = useStoreReady();
-  const { tab, hasPlan, hasReview, hasCheckpoints } = useCurrentTab();
-  const configChanges = useViewState((s) => s.review.configChanges.length);
+  const { tab, hasPlan, hasCheckpoints } = useCurrentTab();
   const idPrefix = useId();
 
   useEffect(() => {
     return store.onEvent((event) => {
       if (event.kind === 'show-tab') {
-        if (
+        if (event.tab === 'review') {
+          // The host may still ask for the Review tab; its content now sits under the chat.
+          ui.setTab('chat');
+        } else if (
           event.tab === 'chat' ||
           event.tab === 'history' ||
           event.tab === 'plan' ||
-          event.tab === 'review' ||
           event.tab === 'checkpoints'
         ) {
           ui.setTab(event.tab);
@@ -190,16 +164,6 @@ export function App() {
           }}
         />
         <Tabs idPrefix={idPrefix} />
-        {configChanges > 0 && (
-          <IconButton
-            icon="warning"
-            className="header-warning"
-            label={`${String(configChanges)} configuration ${configChanges === 1 ? 'change needs' : 'changes need'} your decision. Open Review`}
-            onClick={() => {
-              ui.setTab('review');
-            }}
-          />
-        )}
         <ProviderIndicator />
         <OverflowMenu />
       </header>
@@ -217,6 +181,7 @@ export function App() {
           {tab === 'chat' && (
             <>
               <MessageList />
+              <ChangesDock />
               <Composer />
             </>
           )}
@@ -231,18 +196,6 @@ export function App() {
             hidden={tab !== 'plan'}
           >
             {tab === 'plan' && <PlanView />}
-          </div>
-        )}
-        {hasReview && (
-          <div
-            id={`${idPrefix}-panel-review`}
-            className="tabpanel"
-            role="tabpanel"
-            tabIndex={-1}
-            aria-labelledby={`${idPrefix}-tab-review`}
-            hidden={tab !== 'review'}
-          >
-            {tab === 'review' && <ReviewView />}
           </div>
         )}
         {hasCheckpoints && (
