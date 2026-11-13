@@ -222,6 +222,46 @@ describe('composePrompt', () => {
     expect(order.every((n) => n >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
+
+  describe('with images', () => {
+    const image = (id: string): Attachment => ({
+      kind: 'image',
+      id: id.repeat(64),
+      mediaType: 'image/png',
+      bytes: 10,
+    });
+    const base = composePrompt({ mode: 'ask', text: 'x', attachments: none });
+
+    it('adds exactly one line for the images, and nothing to the referenced files', () => {
+      const prompt = composePrompt({ mode: 'ask', text: 'x', attachments: [image('a')] });
+      expect(prompt).toBe(
+        base.replace(
+          '\n</agentcanopy-context>',
+          '\n\nImages attached to this message: 1\n</agentcanopy-context>',
+        ),
+      );
+      expect(prompt).not.toContain('Referenced by the user:');
+    });
+
+    it('counts every image and puts the line after the other attachments', () => {
+      const { block } = split(
+        composePrompt({
+          mode: 'ask',
+          text: 'x',
+          attachments: [
+            image('a'),
+            { kind: 'file', path: 'f.ts' },
+            image('b'),
+            { kind: 'diagnostics', path: 'd.ts', text: 'DIAG' },
+          ],
+        }),
+      );
+      expect(block).toContain('Images attached to this message: 2');
+      expect(block).not.toContain('a'.repeat(64));
+      expect(block.indexOf('DIAG')).toBeLessThan(block.indexOf('Images attached'));
+      expect(block).toContain('Referenced by the user:\n- f.ts\n\n');
+    });
+  });
 });
 
 describe('SYSTEM_PROMPT_APPEND', () => {

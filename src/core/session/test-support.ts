@@ -43,6 +43,7 @@ import type {
   ViewSink,
 } from '../contracts';
 import { createHostToolServer } from '../mcp-host';
+import { sha256Hex } from '../util';
 import { createClaudeProvider, isAlive } from '../provider/claude';
 import { createAppControllerWithInternals } from './controller';
 import type { RuleStore } from '../policy/agent';
@@ -962,4 +963,31 @@ export function stubProvider(status: ProviderStatus): AgentProvider {
       throw new Error('the stub provider cannot run turns');
     },
   };
+}
+
+// ---- images -------------------------------------------------------------------------------------------------
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** The bytes of a small image: a real PNG signature, then `seed` as filler so each seed is a different image. */
+export function pngBytes(seed = 'one', size = 0): Buffer {
+  const body = Buffer.from(seed);
+  const filler = Buffer.alloc(Math.max(0, size - PNG_SIGNATURE.length - body.length), 0x2a);
+  return Buffer.concat([Buffer.from(PNG_SIGNATURE), body, filler]);
+}
+
+/** The webview message that pastes an image. */
+export function pasteImageMessage(
+  bytes: Uint8Array,
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' = 'image/png',
+): { type: 'context.pasteImage'; mediaType: string; data: string } {
+  return { type: 'context.pasteImage', mediaType, data: Buffer.from(bytes).toString('base64') };
+}
+
+/** The reference a paste puts in the draft: the id is the sha256 of the bytes. */
+export function imageReference(
+  bytes: Uint8Array,
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' = 'image/png',
+): Attachment {
+  return { kind: 'image', id: sha256Hex(bytes), mediaType, bytes: bytes.length };
 }

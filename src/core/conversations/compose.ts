@@ -98,6 +98,9 @@ function attachmentSections(attachments: Attachment[]): string[] {
       sections.push(`Diagnostics for ${pathLine(attachment.path)}:\n${fenced(attachment.text)}`);
     }
   }
+
+  const images = attachments.filter((attachment) => attachment.kind === 'image').length;
+  if (images > 0) sections.push(`Images attached to this message: ${images}`);
   return sections;
 }
 

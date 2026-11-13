@@ -12,7 +12,27 @@ import {
 } from './ids';
 import { ModeSchema } from './modes';
 
-/** Context the user attached to a message. Paths are relative to the conversation's folder. */
+/** Image types the user can paste into a message. */
+export const ImageMediaTypeSchema = z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+export type ImageMediaType = z.infer<typeof ImageMediaTypeSchema>;
+
+/** Largest pasted image, in bytes. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Most images in one message. */
+export const MAX_IMAGES_PER_MESSAGE = 5;
+/** Combined size of the images in one message, in bytes (the largest size checked against the CLI). */
+export const MAX_IMAGE_BYTES_PER_MESSAGE = 5 * 1024 * 1024;
+/** Length of the base64 text for an image of `MAX_IMAGE_BYTES`. */
+export const MAX_IMAGE_BASE64_LENGTH = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
+
+/** Content hash of an image: lowercase hex SHA-256. */
+export const ImageIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * Context the user attached to a message. Paths are relative to the conversation's folder.
+ * An image is only a reference: its bytes stay in the extension host's memory until the turn that
+ * sends it has ended, and are never stored with the conversation.
+ */
 export const AttachmentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('file'), path: RelPathSchema }),
   z.object({ kind: z.literal('folder'), path: RelPathSchema }),
@@ -24,6 +44,12 @@ export const AttachmentSchema = z.discriminatedUnion('kind', [
     text: z.string().max(100_000),
   }),
   z.object({ kind: z.literal('diagnostics'), path: RelPathSchema, text: z.string().max(100_000) }),
+  z.object({
+    kind: z.literal('image'),
+    id: ImageIdSchema,
+    mediaType: ImageMediaTypeSchema,
+    bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
+  }),
 ]);
 export type Attachment = z.infer<typeof AttachmentSchema>;
 

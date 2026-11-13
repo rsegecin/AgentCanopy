@@ -64,6 +64,13 @@ export const TEXT = {
   noSelection: 'There is no selection to add.',
   noDiagnostics: 'There are no problems to add.',
   attachmentLimit: 'You can attach at most 50 items to a message.',
+  imageInvalid: 'The pasted image could not be read. Paste a PNG, JPEG, GIF or WebP image.',
+  imageTooLarge: 'The pasted image is larger than 5 MB.',
+  imagesTooLarge: 'Images in one message can be at most 5 MB together.',
+  imageLimit: 'A message can have at most 5 images.',
+  imageGone: 'An attached image was no longer available and was left out.',
+  earlierImagesLost:
+    'Claude Code no longer has the earlier images of this conversation: only their mention was carried into the new session.',
   branchFailed: 'A branch could not be created from that message.',
   openFailed: 'That conversation could not be opened.',
   renameFailed: 'That conversation could not be renamed.',

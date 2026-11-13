@@ -48,6 +48,7 @@ import type {
   TurnContext,
   ToolHookEvent,
   TurnHandle,
+  TurnImage,
   TurnObserver,
   TurnPolicy,
   TurnRegistration,
@@ -139,6 +140,8 @@ export interface TurnStart {
   mode: Mode;
   model: string;
   attachments: Attachment[];
+  /** Bytes of the images in this message, in order. Only for a turn that sends images. */
+  images?: TurnImage[];
 }
 
 interface SessionPlan {
@@ -500,6 +503,17 @@ export class TurnRun {
     }
     await this.patchMeta(patch);
     if (notice !== undefined) this.addNotice('info', notice);
+    // A branch reports lost images in its own list of what was lost.
+    if (
+      meta.fork === undefined &&
+      earlier.some(
+        (message) =>
+          message.role === 'user' &&
+          message.attachments.some((attachment) => attachment.kind === 'image'),
+      )
+    ) {
+      this.addNotice('info', TEXT.earlierImagesLost);
+    }
     return { ref: { kind: 'new', sessionId }, prefix };
   }
 
@@ -534,6 +548,7 @@ export class TurnRun {
     const request: TurnRequest = {
       cwd: this.input.folder.path,
       prompt: plan.prefix.length > 0 ? `${plan.prefix}\n\n${this.prompt}` : this.prompt,
+      ...(this.input.images ? { images: this.input.images } : {}),
       mode: this.input.mode,
       model: this.input.model,
       session: plan.ref,

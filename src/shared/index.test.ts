@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AttachmentSchema,
   DEFAULT_SETTINGS,
+  MAX_IMAGE_BASE64_LENGTH,
+  MAX_IMAGE_BYTES,
   EMPTY_VIEW_STATE,
   HostMessageSchema,
   PlanContentSchema,
@@ -45,6 +48,32 @@ describe('shared contracts', () => {
         model: 'default',
       }).success,
     ).toBe(true);
+  });
+
+  it('accepts image references and pasted images within the limits', () => {
+    const id = 'a'.repeat(64);
+    const image = { kind: 'image', id, mediaType: 'image/png', bytes: 120 };
+    expect(AttachmentSchema.safeParse(image).success).toBe(true);
+    for (const bad of [
+      { ...image, id: 'A'.repeat(64) },
+      { ...image, id: '../x' },
+      { ...image, mediaType: 'image/svg+xml' },
+      { ...image, bytes: 0 },
+      { ...image, bytes: MAX_IMAGE_BYTES + 1 },
+    ]) {
+      expect(AttachmentSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    const paste = { type: 'context.pasteImage', mediaType: 'image/png', data: 'iVBORw0KGgo=' };
+    expect(WebviewMessageSchema.safeParse(paste).success).toBe(true);
+    expect(WebviewMessageSchema.safeParse({ ...paste, data: '' }).success).toBe(false);
+    expect(
+      WebviewMessageSchema.safeParse({ ...paste, data: 'A'.repeat(MAX_IMAGE_BASE64_LENGTH + 1) })
+        .success,
+    ).toBe(false);
+    expect(WebviewMessageSchema.safeParse({ ...paste, mediaType: 'application/pdf' }).success).toBe(
+      false,
+    );
+    expect(MAX_IMAGE_BASE64_LENGTH).toBe(Math.ceil(MAX_IMAGE_BYTES / 3) * 4);
   });
 
   it('validates host messages', () => {

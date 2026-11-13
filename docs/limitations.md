@@ -18,7 +18,16 @@ This page lists what AgentCanopy does not do, does not guarantee, or cannot undo
 - **Always-allow rules exist only for plain literal commands**, not for patterns. A command that contains quotes, pipes, redirections, substitutions or globs, or that starts with an environment variable, asks every time. PowerShell commands always ask.
 - **Background tasks are disabled.** The agent cannot keep a dev server or a watcher running between turns.
 - The agent has text search (Grep and Glob) but no symbol search.
-- Images are not supported in messages. You can attach at most 50 files, folders, selections or problem lists to one message.
+- You can attach at most 50 files, folders, selections, problem lists or images to one message.
+
+## Pasted images
+
+- **Images can only be pasted** (Ctrl+V or Cmd+V) into the message box: PNG, JPEG, GIF or WebP, at most 5 images and 5 MB together per message. A clipboard that also holds text, as Excel, Word and browsers often do, pastes the text and no image.
+- **A message with an image still needs text.** Image-only messages are not supported.
+- **AgentCanopy does not store image content.** The bytes stay in memory until the message is sent and the turn ends. Your conversation history keeps only the image's type and size, so earlier messages show an image chip without a preview, and a new window or a restart cannot resend them.
+- **Claude Code keeps the image in its own session.** Later turns and exact branches still see it. When Claude Code no longer has the session, or a branch is rebuilt, the earlier images are gone: the new session only learns that an image was attached, and AgentCanopy says so.
+- **Branching at your own message keeps its text, not its images.** Paste them again in the branch.
+- Checked against Claude Code 2.1.323 on Windows. Images use Claude Code's `--input-format stream-json` input; text-only messages are sent exactly as before.
 
 ## Change tracking and restore
 
@@ -40,7 +49,7 @@ This page lists what AgentCanopy does not do, does not guarantee, or cannot undo
 ## Forking and checkpoints
 
 - **Exact forks from an earlier message depend on a Claude Code flag, `--resume-session-at`, that is not in Claude Code's CLI reference.** AgentCanopy checks that the installed CLI accepts it, uses it only when the turn it cuts at finished normally, and `agentCanopy.forks.exactEarlierMessages` turns the feature off. It may stop working in a future release.
-- **A rebuilt branch carries only the visible text.** It is rebuilt from the visible messages within a size budget. It does not carry tool inputs and outputs, the model's reasoning, or files and selections attached to messages, and the oldest messages are dropped if the transcript is too long. The branch header names what was not carried over.
+- **A rebuilt branch carries only the visible text.** It is rebuilt from the visible messages within a size budget. It does not carry tool inputs and outputs, the model's reasoning, files and selections attached to messages, or pasted images, and the oldest messages are dropped if the transcript is too long. The branch header names what was not carried over.
 - **A branch is not exact until its first turn has run, and an exact branch can become rebuilt** if Claude Code no longer has its session.
 - **Deleting a conversation deletes AgentCanopy's copy, not Claude Code's own transcript.** Claude Code keeps its sessions on its own schedule and removes old ones after its own retention period. A conversation whose session was removed continues with its visible messages as context.
 - **Checkpoints are kept for 50 steps and 30 days by default.** Older ones cannot be restored. Anything a pending or accepted review entry still needs, and anything after the last Agent turn, is kept regardless of these settings.

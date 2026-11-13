@@ -118,7 +118,19 @@ With `--tools Read,Grep,Glob,AskUserQuestion --strict-mcp-config --disable-slash
 - Orphan recovery must signal the recorded CLI process first (so it stops its own commands) before killing anything.
 - A sandboxed run creates `.claude/.cc-writes/` in the workspace; the tracker must ignore it.
 
-## 12. Not covered
+## 12. Image input (`--input-format stream-json`)
+
+Probed on 2026-11-12 on Windows 10 with CLI 2.1.323, Haiku, spawned without a shell as the runner does.
+
+- With `--input-format stream-json`, stdin takes one line `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}},{"type":"text","text":"..."}]},"parent_tool_use_id":null}` followed by a newline. Closing stdin after it is enough: the CLI answers, emits `result` and exits 0 about 0.5 to 0.8 s later. No `user` event is echoed on stdout.
+- The image is kept in the session: a later `--resume` turn with plain-text stdin, a whole fork (`--resume X --fork-session --session-id Y`) and a cut fork (`--resume-session-at`) all still answered from it.
+- With the full Ask-mode argument list (permission prompt tool on the loopback server, `--settings`, `--strict-mcp-config`, `--tools Read,Grep,Glob,AskUserQuestion`), the permission prompt for `Read` arrived and was answered after stdin had been closed.
+- PNGs of 3.0 MB and 5.85 MB (a 7.8 MB stdin line) were accepted.
+- `--resume` of an unknown session gives the same shape as with text input: exit code 1, no `init`, one `result` with `error_during_execution` and "No conversation found with session ID".
+- A PNG declared as `image/jpeg` was still read. Bytes that are not an image did not fail the turn: the model said it could not read the image, and the session resumed normally afterwards.
+- Not probed: the Agent-mode argument list (HTTP hooks, sandbox), SIGINT on macOS or Linux in this input mode, stdin lines above 7.8 MB, CLI versions before 2.1.323.
+
+## 13. Not covered
 
 - Windows and Linux.
 - Authentication failure and rate-limit shapes (not reproducible without logging out or exhausting limits).

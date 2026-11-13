@@ -1,5 +1,5 @@
 import * as z from 'zod';
-import { AttachmentSchema } from './conversation';
+import { AttachmentSchema, ImageMediaTypeSchema, MAX_IMAGE_BASE64_LENGTH } from './conversation';
 import {
   ConversationIdSchema,
   FolderKeySchema,
@@ -121,6 +121,15 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('context.addDiagnostics'),
     conversationId: conversationId.optional(),
+  }),
+  /**
+   * An image pasted into the composer, as base64. The host checks the bytes, keeps them in memory
+   * and attaches a reference to the view's draft.
+   */
+  z.object({
+    type: z.literal('context.pasteImage'),
+    mediaType: ImageMediaTypeSchema,
+    data: z.string().min(1).max(MAX_IMAGE_BASE64_LENGTH),
   }),
   z.object({
     type: z.literal('context.remove'),

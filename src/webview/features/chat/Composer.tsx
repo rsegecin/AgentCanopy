@@ -1,6 +1,6 @@
-import { useEffect, useId, useLayoutEffect, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
-import { MODES } from '../../../shared';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import type { ClipboardEvent, KeyboardEvent } from 'react';
+import { ImageMediaTypeSchema, MAX_IMAGE_BYTES, MODES } from '../../../shared';
 import type { Mode, ProviderStatus } from '../../../shared';
 import { Icon, IconButton } from '../../app/components';
 import { useApp, usePost } from '../../app/context';
@@ -9,6 +9,7 @@ import { useViewState } from '../../app/store';
 import { NEW_CONVERSATION_KEY, useUi } from '../../app/ui-state';
 import { LOCK_HINT } from '../plan/lock-hint';
 import { AttachmentChip } from './AttachmentChip';
+import { pastedImage, toBase64 } from './paste-image';
 import { ReferencePicker, useReferencePicker } from './reference-picker';
 
 const MODE_INFO: Record<Mode, { label: string; description: string }> = {
@@ -134,9 +135,37 @@ export function Composer() {
     });
   }, [store, ui, draftKey]);
 
+  // Images being read from a paste. Send waits for them, so the message does not leave without its image.
+  const [pendingPastes, setPendingPastes] = useState(0);
+  const [pasteProblem, setPasteProblem] = useState<string | null>(null);
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const file = pastedImage(event.clipboardData);
+    const mediaType = ImageMediaTypeSchema.safeParse(file?.type);
+    if (!file || !mediaType.success) return;
+    event.preventDefault();
+    if (file.size > MAX_IMAGE_BYTES) {
+      setPasteProblem('The image is larger than 5 MB.');
+      return;
+    }
+    setPendingPastes((n) => n + 1);
+    void (async () => {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        post({ type: 'context.pasteImage', mediaType: mediaType.data, data: toBase64(bytes) });
+        setPasteProblem(null);
+      } catch {
+        setPasteProblem('The image could not be read.');
+      } finally {
+        setPendingPastes((n) => n - 1);
+      }
+    })();
+  };
+
   const send = () => {
     const text = draft.trim();
-    if (blocker !== null || running || text === '') return;
+    if (blocker !== null || running || text === '' || pendingPastes > 0) return;
+    setPasteProblem(null);
     post({
       type: 'turn.send',
       ...(conversationId !== undefined ? { conversationId } : {}),
@@ -182,6 +211,11 @@ export function Composer() {
 
   const contextTarget = conversationId !== undefined ? { conversationId } : {};
   const contextDisabled = blocker !== null;
+
+  const imageWithoutText =
+    draft.trim() === '' && attachments.some((attachment) => attachment.kind === 'image');
+  const attachmentStatus =
+    pasteProblem ?? (imageWithoutText ? 'Add a message to send with the image.' : null);
 
   return (
     <form
@@ -229,11 +263,22 @@ export function Composer() {
           </p>
         )}
 
+        {attachmentStatus !== null && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span role="status">{attachmentStatus}</span>
+          </p>
+        )}
+
         {attachments.length > 0 && (
           <ul className="chips" aria-label="Attached context">
             {attachments.map((attachment, index) => (
               <AttachmentChip
-                key={`${attachment.kind}:${attachment.path}:${String(index)}`}
+                key={
+                  attachment.kind === 'image'
+                    ? `image:${attachment.id}:${String(index)}`
+                    : `${attachment.kind}:${attachment.path}:${String(index)}`
+                }
                 attachment={attachment}
                 onRemove={() => {
                   post({ type: 'context.remove', ...contextTarget, attachment });
@@ -261,6 +306,7 @@ export function Composer() {
               picker.onTextChange(event.target.value, event.target.selectionStart);
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             onKeyUp={(event) => {
               picker.onCaretMove(event.currentTarget.selectionStart);
             }}
@@ -392,7 +438,7 @@ export function Composer() {
             <button
               type="submit"
               className="button"
-              disabled={blocker !== null || draft.trim() === ''}
+              disabled={blocker !== null || draft.trim() === '' || pendingPastes > 0}
               aria-describedby={blocker !== null ? noticeId : undefined}
             >
               <Icon name="send" />

@@ -394,6 +394,176 @@ describe('prepareInvocation validation', () => {
   });
 });
 
+describe('prepareInvocation images', () => {
+  const MIB = 1024 * 1024;
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+  const jpeg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 9, 8, 7]);
+
+  async function stdinFor(req: TurnRequest): Promise<string> {
+    return (await prepareInvocation(req)).stdin;
+  }
+
+  it('adds only the stream-json input format at the end of the arguments', async () => {
+    const textDir = runDir;
+    const text = await prepareInvocation(request());
+    runDir = await mkdtemp(join(tmpdir(), 'invocation-'));
+    const withImage = await prepareInvocation(
+      request({ images: [{ mediaType: 'image/png', data: png }] }),
+    );
+    // The two turns differ in their run directory only; compare with that normalised.
+    const sameDir = text.args.map((arg) => arg.replace(textDir, runDir));
+    expect(withImage.args).toEqual([...sameDir, '--input-format', 'stream-json']);
+    await rm(textDir, { recursive: true, force: true });
+  });
+
+  it('sends one stream-json user line with the images before the prompt', async () => {
+    const stdin = await stdinFor(request({ images: [{ mediaType: 'image/png', data: png }] }));
+    expect(stdin.endsWith('\n')).toBe(true);
+    expect(stdin.endsWith('\n\n')).toBe(false);
+    expect(stdin.indexOf('\n')).toBe(stdin.length - 1);
+    expect(JSON.parse(stdin) as unknown).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: Buffer.from(png).toString('base64'),
+            },
+          },
+          { type: 'text', text: PROMPT },
+        ],
+      },
+      parent_tool_use_id: null,
+    });
+  });
+
+  it('keeps several images in order', async () => {
+    const stdin = await stdinFor(
+      request({
+        images: [
+          { mediaType: 'image/png', data: png },
+          { mediaType: 'image/jpeg', data: jpeg },
+        ],
+      }),
+    );
+    const parsed = JSON.parse(stdin) as {
+      message: { content: { type: string; source?: { media_type: string; data: string } }[] };
+    };
+    expect(parsed.message.content.map((block) => block.type)).toEqual(['image', 'image', 'text']);
+    expect(parsed.message.content[0]?.source).toEqual({
+      type: 'base64',
+      media_type: 'image/png',
+      data: Buffer.from(png).toString('base64'),
+    });
+    expect(parsed.message.content[1]?.source).toEqual({
+      type: 'base64',
+      media_type: 'image/jpeg',
+      data: Buffer.from(jpeg).toString('base64'),
+    });
+  });
+
+  it('keeps a text-only turn exactly as it was', async () => {
+    const prepared = await prepareInvocation(request());
+    expect(prepared.args).not.toContain('--input-format');
+    expect(prepared.stdin).toBe(PROMPT);
+  });
+
+  describe('validation', () => {
+    async function rejectsImages(req: TurnRequest): Promise<void> {
+      let message = '';
+      try {
+        await prepareInvocation(req);
+      } catch (error) {
+        message = error instanceof Error ? error.message : String(error);
+      }
+      expect(message).not.toBe('');
+      // Neither the bytes nor their base64 text may leak into the message.
+      expect(message).not.toContain('QUFB');
+      expect(message).not.toContain('AAAA');
+      expect(message.length).toBeLessThan(100);
+      expect(await readdir(runDir)).toEqual([]);
+    }
+
+    it('rejects an empty list', async () => {
+      await rejectsImages(request({ images: [] }));
+    });
+
+    it('rejects a media type that is not allowed', async () => {
+      await rejectsImages(
+        request({
+          images: [{ mediaType: 'image/svg+xml' as unknown as 'image/png', data: png }],
+        }),
+      );
+    });
+
+    it('rejects empty data', async () => {
+      await rejectsImages(
+        request({ images: [{ mediaType: 'image/png', data: new Uint8Array(0) }] }),
+      );
+    });
+
+    it('rejects data that is not bytes', async () => {
+      await rejectsImages(
+        request({
+          images: [{ mediaType: 'image/png', data: 'QUFB' as unknown as Uint8Array }],
+        }),
+      );
+    });
+
+    it('rejects an image over the size limit', async () => {
+      await rejectsImages(
+        request({
+          images: [{ mediaType: 'image/png', data: new Uint8Array(5 * MIB + 1).fill(0x41) }],
+        }),
+      );
+    });
+
+    it('accepts an image of exactly the size limit', async () => {
+      const prepared = await prepareInvocation(
+        request({ images: [{ mediaType: 'image/png', data: new Uint8Array(5 * MIB) }] }),
+      );
+      expect(prepared.args.slice(-2)).toEqual(['--input-format', 'stream-json']);
+    });
+
+    it('rejects more than five images', async () => {
+      await rejectsImages(
+        request({
+          images: Array.from({ length: 6 }, () => ({
+            mediaType: 'image/png' as const,
+            data: new Uint8Array([0x41]),
+          })),
+        }),
+      );
+    });
+
+    it('accepts five images', async () => {
+      await prepareInvocation(
+        request({
+          images: Array.from({ length: 5 }, () => ({
+            mediaType: 'image/png' as const,
+            data: new Uint8Array([0x41]),
+          })),
+        }),
+      );
+    });
+
+    it('rejects images that are too large together', async () => {
+      await rejectsImages(
+        request({
+          images: [
+            { mediaType: 'image/png', data: new Uint8Array(3 * MIB).fill(0x41) },
+            { mediaType: 'image/jpeg', data: new Uint8Array(3 * MIB).fill(0x41) },
+          ],
+        }),
+      );
+    });
+  });
+});
+
 describe('prepareInvocation project configuration', () => {
   const choices = [
     { name: 'absent', value: undefined, settingsIgnored: true, mcpIgnored: true },

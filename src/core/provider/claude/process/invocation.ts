@@ -1,10 +1,19 @@
 import { isAbsolute, join } from 'node:path';
+import {
+  ImageMediaTypeSchema,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_BYTES_PER_MESSAGE,
+} from '../../../../shared';
 import type { TurnRequest } from '../../../contracts/provider';
 import { isUuid, writeNewPrivateFile } from '../../../util';
 
 export interface PreparedInvocation {
   args: string[];
-  /** The prompt. It travels on stdin and never in the argument list. */
+  /**
+   * The prompt text, or for a turn with images one stream-json user line (the images, then the
+   * prompt, then a newline). It travels on stdin and never in the argument list.
+   */
   stdin: string;
   /** Whether the child environment needs the read-only switches. */
   readOnly: boolean;
@@ -73,6 +82,50 @@ function validate(request: TurnRequest): void {
   } else if (profile.kind !== 'read-only') {
     throw new Error('unknown execution profile');
   }
+  validateImages(request);
+}
+
+/** Messages here are fixed on purpose: image bytes never appear in an error. */
+function validateImages(request: TurnRequest): void {
+  const { images } = request;
+  if (images === undefined) return;
+  if (!Array.isArray(images) || images.length === 0) {
+    throw new Error('the attached images are not valid');
+  }
+  if (images.length > MAX_IMAGES_PER_MESSAGE) throw new Error('too many images are attached');
+  let total = 0;
+  for (const image of images) {
+    if (
+      typeof image !== 'object' ||
+      image === null ||
+      !ImageMediaTypeSchema.safeParse(image.mediaType).success ||
+      !(image.data instanceof Uint8Array) ||
+      image.data.byteLength === 0 ||
+      image.data.byteLength > MAX_IMAGE_BYTES
+    ) {
+      throw new Error('an attached image is not valid');
+    }
+    total += image.data.byteLength;
+  }
+  if (total > MAX_IMAGE_BYTES_PER_MESSAGE) throw new Error('the attached images are too large');
+}
+
+/** The one stream-json user line that carries the images and the prompt. */
+function imageStdin(request: TurnRequest, images: NonNullable<TurnRequest['images']>): string {
+  const content: unknown[] = images.map((image) => ({
+    type: 'image',
+    source: {
+      type: 'base64',
+      media_type: image.mediaType,
+      data: Buffer.from(image.data).toString('base64'),
+    },
+  }));
+  content.push({ type: 'text', text: request.prompt });
+  return `${JSON.stringify({
+    type: 'user',
+    message: { role: 'user', content },
+    parent_tool_use_id: null,
+  })}\n`;
 }
 
 function sessionArgs(request: TurnRequest): string[] {
@@ -206,13 +259,17 @@ export async function prepareInvocation(request: TurnRequest): Promise<PreparedI
     args.push('--setting-sources', 'user');
   }
 
+  // A turn with images needs the stream-json input format; a text-only turn is left untouched.
+  const images = request.images;
+  if (images !== undefined) args.push('--input-format', 'stream-json');
+
   await writeNewPrivateFile(mcpPath, JSON.stringify(mcp, null, 2));
   await writeNewPrivateFile(settingsPath, JSON.stringify(buildSettings(request), null, 2));
   await writeNewPrivateFile(promptPath, request.systemPromptAppend);
 
   return {
     args,
-    stdin: request.prompt,
+    stdin: images === undefined ? request.prompt : imageStdin(request, images),
     readOnly: profile.kind === 'read-only',
     files: [mcpPath, settingsPath, promptPath],
   };

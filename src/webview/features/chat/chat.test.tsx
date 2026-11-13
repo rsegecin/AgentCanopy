@@ -59,6 +59,7 @@ describe('MessageList', () => {
                 { kind: 'folder', path: 'src' },
                 { kind: 'selection', path: 'src/b.ts', startLine: 3, endLine: 9, text: 'x' },
                 { kind: 'diagnostics', path: 'src/c.ts', text: 'err' },
+                { kind: 'image', id: 'd'.repeat(64), mediaType: 'image/png', bytes: 123456 },
               ],
             }),
           ],
@@ -73,6 +74,7 @@ describe('MessageList', () => {
     expect(within(article).getByText('src')).toBeTruthy();
     expect(within(article).getByText('b.ts:3-9')).toBeTruthy();
     expect(within(article).getByText('Problems in c.ts')).toBeTruthy();
+    expect(within(article).getByText('Image dddddd · PNG · 121 KB')).toBeTruthy();
   });
 
   it('renders every part kind', () => {

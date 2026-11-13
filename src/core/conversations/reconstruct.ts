@@ -22,17 +22,21 @@ function escapeBody(text: string): string {
 
 /** One line naming what the user attached. Selections and diagnostics are named by path only. */
 function attachedLine(attachments: Attachment[]): string {
+  const pathOf = (path: string): string => neutralizeBlockTags(path.replace(/[\r\n]+/g, ' '));
   const names = attachments.map((attachment) => {
-    const path = neutralizeBlockTags(attachment.path.replace(/[\r\n]+/g, ' '));
     switch (attachment.kind) {
       case 'file':
-        return path;
-      case 'folder':
+        return pathOf(attachment.path);
+      case 'folder': {
+        const path = pathOf(attachment.path);
         return path.endsWith('/') ? path : `${path}/`;
+      }
       case 'selection':
-        return `${path} (selection)`;
+        return `${pathOf(attachment.path)} (selection)`;
       case 'diagnostics':
-        return `${path} (diagnostics)`;
+        return `${pathOf(attachment.path)} (diagnostics)`;
+      case 'image':
+        return `image (${attachment.mediaType.slice('image/'.length)})`;
     }
   });
   return `Attached: ${names.join(', ')}`;
@@ -129,12 +133,20 @@ export function reconstructContext(
       message.role === 'assistant' && message.parts.some((part) => part.kind === 'thinking'),
   );
   const hasAttachments = messages.some(
-    (message) => message.role === 'user' && message.attachments.length > 0,
+    (message) =>
+      message.role === 'user' &&
+      message.attachments.some((attachment) => attachment.kind !== 'image'),
+  );
+  const hasImages = messages.some(
+    (message) =>
+      message.role === 'user' &&
+      message.attachments.some((attachment) => attachment.kind === 'image'),
   );
   if (hasTools) lost.push('Tool inputs and outputs');
   if (hasThinking) lost.push("The model's reasoning");
   if (hasAttachments) lost.push('Files and selections attached to messages');
   if (dropped > 0) lost.push(`${dropped} earlier ${dropped === 1 ? 'message' : 'messages'}`);
   if (truncated) lost.push('Part of the text of the most recent message');
+  if (hasImages) lost.push('Images attached to messages');
   return { text, lost };
 }

@@ -244,7 +244,15 @@ const state = {
         createdAt: now - 120000,
         text: 'How do requests reach the handlers?',
         mode: 'ask',
-        attachments: [{ kind: 'file', path: 'src/server/router.ts' }],
+        attachments: [
+          { kind: 'file', path: 'src/server/router.ts' },
+          {
+            kind: 'image',
+            id: '3f2a9c71d0b84e5a96c1f7e2a4d8b03c5e6f1a2b7c9d0e8f4a3b2c1d0e9f8a7b',
+            mediaType: 'image/png',
+            bytes: 123456,
+          },
+        ],
       },
       {
         role: 'assistant',

@@ -1,4 +1,10 @@
-import type { AgentEvent, Mode, ModelInfo, ProviderStatus } from '../../shared';
+import type { AgentEvent, ImageMediaType, Mode, ModelInfo, ProviderStatus } from '../../shared';
+
+/** An image sent with the turn's user message. */
+export interface TurnImage {
+  mediaType: ImageMediaType;
+  data: Uint8Array;
+}
 
 /** Which provider session a turn runs on. */
 export type SessionRef =
@@ -65,6 +71,11 @@ export interface TurnRequest {
   cwd: string;
   /** The full prompt, including the mode block. Sent on stdin. */
   prompt: string;
+  /**
+   * Images sent before the prompt, in the same user message. Absent (never empty) for a turn
+   * without images, so that turn is sent exactly as a text-only turn.
+   */
+  images?: TurnImage[];
   mode: Mode;
   model: string;
   session: SessionRef;

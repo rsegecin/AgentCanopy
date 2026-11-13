@@ -19,6 +19,9 @@ import {
   createHarness,
   createPlanTestPolicy,
   finishedTurn,
+  imageReference,
+  pasteImageMessage,
+  pngBytes,
   resultStep,
   sendAndFinish,
   sleep,
@@ -708,6 +711,28 @@ describe('approving a plan', () => {
     expect(planOf(view).approvals[0]?.executionTurnId).toBe(executing?.id);
     expect((await planStoreOf(h).get(plan.id))?.approvals[0]?.executionTurnId).toBe(executing?.id);
     view.expectMirror();
+  });
+
+  it('sends no images and takes none from the draft', async () => {
+    const { h, view, plan } = await withPlan([textSpec('done')]);
+    const image = pngBytes('draft-image');
+    view.send(pasteImageMessage(image));
+    expect(view.current().draftAttachments).toEqual([imageReference(image)]);
+
+    approve(view, plan);
+    await until('the execution turn', () => view.active().turns.length === 2);
+    await finishedTurn(h, view);
+
+    expect(h.requests).toHaveLength(2);
+    expect('images' in (h.requests[1] ?? {})).toBe(false);
+    expect(h.requests[1]?.prompt).not.toContain('Images attached');
+    const user = view.active().messages.filter((m) => m.role === 'user')[1];
+    expect(user?.role === 'user' && user.attachments).toEqual([]);
+    // The image still belongs to the draft, and goes with the next message of the user.
+    expect(view.current().draftAttachments).toEqual([imageReference(image)]);
+    await nextTurn(h, view, 'now with the picture', 'agent');
+    expect(h.requests[2]?.images).toHaveLength(1);
+    expect(Buffer.from(h.requests[2]?.images?.[0]?.data ?? []).equals(image)).toBe(true);
   });
 
   it('starts nothing until the approval has been recorded', async () => {

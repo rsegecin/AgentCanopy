@@ -12,8 +12,11 @@
 | 5. Review changes | Done. Verified live against the real CLI and in VS Code; an independent review found 2 blockers in snapshot cleanup and 4 other issues, all fixed with regression tests |
 | 6. Forking and checkpoints | Done. Exact and rebuilt branches and checkpoint restore verified live against the real CLI; a four-reviewer pass found 2 blockers and 9 major issues, all fixed with regression tests |
 | 7. Polish and release | Done. Accessibility pass, documentation, security review (1 critical, fixed and verified live), VSIX built, installed in a clean profile and tested there |
+| 8. Pasted images | Done in code. Image input through `--input-format stream-json` probed live on Windows (CLI 2.1.323): image read, resume, whole and cut forks, Ask-mode permission flow, 5.85 MB image. Unit and integration tests pass; the chip renders in the preview under the CSP. Not yet tried by hand in VS Code; the live image test is written and not run |
 
 Approved by the owner on 2026-11-10. Updated at every phase commit.
+
+Phase 8 (added 2026-11-12 at the owner's request): images pasted into the composer. The plan's "Images are not supported in the first version" (section 2) is lifted. Image bytes stay in the extension host's memory until the turn ends and are never stored; the conversation keeps a reference (SHA-256, type, size). A turn with images adds `--input-format stream-json` and sends one stream-json user line; every other turn is sent exactly as before. No Agent SDK.
 
 Further deviations, decided during Phases 6 and 7:
 

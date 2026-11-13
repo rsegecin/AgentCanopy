@@ -3,6 +3,9 @@ import { join, posix, resolve } from 'node:path';
 import {
   AttachmentSchema,
   EMPTY_VIEW_STATE,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_BYTES_PER_MESSAGE,
   RelPathSchema,
   WebviewMessageSchema,
 } from '../../shared';
@@ -14,6 +17,7 @@ import type {
   ConversationMeta,
   FolderKey,
   Hunk,
+  ImageMediaType,
   MessageId,
   Mode,
   PatchOp,
@@ -35,6 +39,7 @@ import type {
   Logger,
   ProjectConfigChoice,
   RejectResult,
+  TurnImage,
   TurnObserver,
   TurnPolicy,
   ViewHandle,
@@ -61,7 +66,7 @@ import {
 import type { RuleStore } from '../policy/agent';
 import { createProjectConfigDecisions, inspectProjectConfig } from '../policy/project-config';
 import { isAlive, stopOrphan } from '../provider/claude';
-import { isNotFound, newId, redact } from '../util';
+import { isNotFound, newId, redact, sha256Hex } from '../util';
 import { collectGarbage } from '../workspace/store';
 import { createCheckpointService } from '../workspace/checkpoints';
 import { createReviewEngine } from '../workspace/review';
@@ -86,6 +91,7 @@ export function checkpointLabel(operation: CheckpointSummary): string {
 /** Where a review message goes: a toast in one view, or in every view of a folder. */
 type Report = (level: 'info' | 'warning' | 'error', text: string) => void;
 import { REFRESH_ACTION, SIGN_IN_ACTION, bannerKey, computeBanners } from './banners';
+import { decodeBase64, matchesImageSignature } from './images';
 import { isInside, resolveInsideWorkspace } from './paths';
 import { alwaysAllowDetail, answerProblem, canonicalJson } from './prompts';
 import type { PendingPrompt } from './prompts';
@@ -182,6 +188,11 @@ class Controller implements AppController {
   private storageDir: string | undefined;
   private opening: Promise<void> | undefined;
   private readonly runs = new Map<ConversationId, TurnRun>();
+  /**
+   * Bytes of pasted images by id (the content hash), kept only while some view's draft refers to
+   * them; a turn takes its own copies when the message is sent.
+   */
+  private readonly imageBytes = new Map<string, Buffer>();
   private readonly prompts = new Map<PromptId, PendingPrompt>();
   private readonly loading = new Map<ConversationId, Promise<ConvRuntime | undefined>>();
   private readonly listeners = new Set<() => void>();
@@ -716,6 +727,7 @@ class Controller implements AppController {
     this.state.views.delete(view.id);
     if (this.lastUsed === view) this.lastUsed = undefined;
     if (view.activeId !== undefined) this.state.release(view.activeId);
+    this.pruneImages();
   }
 
   private recentView(): ViewRecord | undefined {
@@ -781,6 +793,8 @@ class Controller implements AppController {
    *
    * What a compromised webview can still do WITHOUT a native dialog, as the residual risk:
    * - start a turn (`turn.send`), in any mode the policy offers, with text and attachments of its own;
+   * - hand the host pasted image data, which is checked (type, size, signature), kept in memory only
+   *   while a draft refers to it, and sent with the next message;
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
    *   the webview's), and answer questions of the agent;
    * - make plan decisions, lock or unlock a plan, revert a plan to an earlier version;
@@ -853,6 +867,9 @@ class Controller implements AppController {
         return;
       case 'context.addDiagnostics':
         this.addFromEditor(view, 'diagnostics');
+        return;
+      case 'context.pasteImage':
+        this.pasteImage(view, message.mediaType, message.data);
         return;
       case 'context.remove':
         this.removeAttachment(view, message.attachment);
@@ -1394,10 +1411,29 @@ class Controller implements AppController {
 
     // The sending view's attachments go into the message. They are taken before the view shows the
     // new conversation, which would clear them.
-    const attachments = options.noAttachments ? [] : [...view.state.draftAttachments];
-    if (attachments.length > 0) {
+    const taken = options.noAttachments ? [] : [...view.state.draftAttachments];
+    // Images travel as bytes: look them up now, before the draft is cleared. One whose bytes are gone
+    // is left out of the message.
+    const images: TurnImage[] = [];
+    const attachments: Attachment[] = [];
+    for (const attachment of taken) {
+      if (attachment.kind !== 'image') {
+        attachments.push(attachment);
+        continue;
+      }
+      const bytes = this.imageBytes.get(attachment.id);
+      if (bytes) {
+        images.push({ mediaType: attachment.mediaType, data: new Uint8Array(bytes) });
+        attachments.push(attachment);
+      } else {
+        this.logger.warn('an attached image was no longer available');
+        refuse(TEXT.imageGone);
+      }
+    }
+    if (taken.length > 0) {
       view.apply([{ op: 'set', path: ['draftAttachments'], value: [] }]);
     }
+    this.pruneImages();
     if (creating && view.activeId === undefined) this.state.showConversation(view, runtime);
 
     const run = new TurnRun(this.turnServices(store, plans, policy, storageDir), {
@@ -1411,6 +1447,7 @@ class Controller implements AppController {
       mode: message.mode,
       model: message.model,
       attachments,
+      ...(images.length > 0 ? { images } : {}),
     });
     this.runs.set(runtime.id, run);
     this.fireRunningChanged();
@@ -2716,6 +2753,64 @@ class Controller implements AppController {
     const next = current.filter((item) => canonicalJson(item) !== key);
     if (next.length === current.length) return;
     view.apply([{ op: 'set', path: ['draftAttachments'], value: next }]);
+    this.pruneImages();
+  }
+
+  /**
+   * An image pasted into the composer. Everything is checked here, because the webview is not
+   * trusted: the text must be exact base64, the size within the limits and the first bytes those of
+   * the declared type. Synchronous on purpose: nothing can happen between the paste and the next
+   * message of the view. The data itself is never logged or shown.
+   */
+  private pasteImage(view: ViewRecord, mediaType: ImageMediaType, data: string): void {
+    const bytes = decodeBase64(data);
+    if (!bytes) {
+      this.logger.warn('ignored a pasted image that is not valid base64');
+      this.state.toast(view, 'warning', TEXT.imageInvalid);
+      return;
+    }
+    if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) {
+      this.logger.warn('ignored a pasted image of an unacceptable size');
+      this.state.toast(view, 'warning', TEXT.imageTooLarge);
+      return;
+    }
+    if (!matchesImageSignature(mediaType, bytes)) {
+      this.logger.warn('ignored a pasted image that is not of the declared type');
+      this.state.toast(view, 'warning', TEXT.imageInvalid);
+      return;
+    }
+    const id = sha256Hex(bytes);
+    const draft: Extract<Attachment, { kind: 'image' }>[] = [];
+    for (const attachment of view.state.draftAttachments) {
+      if (attachment.kind === 'image') draft.push(attachment);
+    }
+    if (draft.some((attachment) => attachment.id === id)) return;
+    if (draft.length >= MAX_IMAGES_PER_MESSAGE) {
+      this.state.toast(view, 'warning', TEXT.imageLimit);
+      return;
+    }
+    const total = draft.reduce((sum, attachment) => sum + attachment.bytes, 0);
+    if (total + bytes.length > MAX_IMAGE_BYTES_PER_MESSAGE) {
+      this.state.toast(view, 'warning', TEXT.imagesTooLarge);
+      return;
+    }
+    this.pruneImages();
+    this.imageBytes.set(id, bytes);
+    this.attach(view, [{ kind: 'image', id, mediaType, bytes: bytes.length }]);
+  }
+
+  /** Forgets the bytes of every image that no view's draft refers to any more. */
+  private pruneImages(): void {
+    if (this.imageBytes.size === 0) return;
+    const wanted = new Set<string>();
+    for (const view of this.state.views.values()) {
+      for (const attachment of view.state.draftAttachments) {
+        if (attachment.kind === 'image') wanted.add(attachment.id);
+      }
+    }
+    for (const id of [...this.imageBytes.keys()]) {
+      if (!wanted.has(id)) this.imageBytes.delete(id);
+    }
   }
 
   /** Closes the file search of a view; an answer that is still on its way is dropped. */

@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, within } from '@testing-library/react';
+import { fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   assistantMessage,
@@ -273,6 +273,152 @@ describe('Composer context', () => {
   it('shows no chip list while there are no draft attachments', () => {
     renderWithHost(<Composer />);
     expect(screen.queryByRole('list', { name: 'Attached context' })).toBeNull();
+  });
+});
+
+describe('Composer image paste', () => {
+  const bytes = new Uint8Array([137, 80, 78, 71, 1, 2, 3, 250, 251, 252]);
+  const pngFile = () => new File([bytes], 'clip.png', { type: 'image/png' });
+  const clipboardOf = (file: File | null, text = '') => ({
+    items: file ? [{ kind: 'file', type: file.type, getAsFile: () => file }] : [],
+    files: file ? [file] : [],
+    types: [...(file ? ['Files'] : []), ...(text !== '' ? ['text/plain'] : [])],
+    getData: (format: string) => (format === 'text/plain' ? text : ''),
+  });
+  const paste = (clipboardData: ReturnType<typeof clipboardOf>) =>
+    fireEvent.paste(box(), { clipboardData });
+
+  it('posts one context.pasteImage for an image-only clipboard and prevents default', async () => {
+    const { host } = renderWithHost(<Composer />);
+    const notPrevented = paste(clipboardOf(pngFile()));
+    expect(notPrevented).toBe(false);
+    await waitFor(() => {
+      expect(host.postedOf('context.pasteImage')).toHaveLength(1);
+    });
+    expect(host.postedOf('context.pasteImage')).toEqual([
+      {
+        type: 'context.pasteImage',
+        mediaType: 'image/png',
+        data: btoa(String.fromCharCode(...bytes)),
+      },
+    ]);
+  });
+
+  it('leaves a text-only paste alone', () => {
+    const { host } = renderWithHost(<Composer />);
+    const notPrevented = paste(clipboardOf(null, 'plain text'));
+    expect(notPrevented).toBe(true);
+    expect(host.postedOf('context.pasteImage')).toHaveLength(0);
+  });
+
+  it('treats a clipboard with text and an image as a text paste', async () => {
+    const { host } = renderWithHost(<Composer />);
+    const notPrevented = paste(clipboardOf(pngFile(), 'a spreadsheet cell'));
+    expect(notPrevented).toBe(true);
+    await Promise.resolve();
+    expect(host.postedOf('context.pasteImage')).toHaveLength(0);
+  });
+
+  it('refuses an image over 5 MB with a notice, and clears the notice on the next good paste', async () => {
+    const { host } = renderWithHost(<Composer />);
+    const big = new File([new Uint8Array(5 * 1024 * 1024 + 1)], 'big.png', { type: 'image/png' });
+    expect(paste(clipboardOf(big))).toBe(false);
+    expect(screen.getByRole('status').textContent).toContain('The image is larger than 5 MB.');
+    expect(host.postedOf('context.pasteImage')).toHaveLength(0);
+    paste(clipboardOf(pngFile()));
+    await waitFor(() => {
+      expect(host.postedOf('context.pasteImage')).toHaveLength(1);
+    });
+    expect(screen.queryByRole('status')).toBeNull();
+  });
+
+  it('shows a notice when the image cannot be read', async () => {
+    const { host } = renderWithHost(<Composer />);
+    const file = pngFile();
+    file.arrayBuffer = () => Promise.reject(new Error('gone'));
+    paste(clipboardOf(file));
+    await waitFor(() => {
+      expect(screen.getByRole('status').textContent).toContain('The image could not be read.');
+    });
+    expect(host.postedOf('context.pasteImage')).toHaveLength(0);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
+    type('hello');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(false);
+  });
+
+  it('keeps Send disabled while a paste is pending, then enables it', async () => {
+    const { host } = renderWithHost(<Composer />);
+    let release: (buffer: ArrayBuffer) => void = () => undefined;
+    const file = pngFile();
+    file.arrayBuffer = () =>
+      new Promise<ArrayBuffer>((resolve) => {
+        release = resolve;
+      });
+    type('describe it');
+    const send = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+    expect(send().disabled).toBe(false);
+    paste(clipboardOf(file));
+    expect(send().disabled).toBe(true);
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(0);
+    release(bytes.buffer);
+    await waitFor(() => {
+      expect(send().disabled).toBe(false);
+    });
+    expect(host.postedOf('context.pasteImage')).toHaveLength(1);
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(1);
+  });
+
+  it('shows an image chip, and its remove button posts the exact attachment', () => {
+    const image = {
+      kind: 'image' as const,
+      id: '3f2a9c'.padEnd(64, '0'),
+      mediaType: 'image/png' as const,
+      bytes: 1024,
+    };
+    const { host } = renderWithHost(<Composer />, makeState({ draftAttachments: [image] }));
+    const chips = screen.getByRole('list', { name: 'Attached context' });
+    expect(within(chips).getByText('Image 3f2a9c · PNG · 1 KB')).toBeTruthy();
+    expect(chips.querySelector('.codicon-file-media')).not.toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove Image 3f2a9c · PNG · 1 KB' }));
+    expect(host.postedOf('context.remove')).toEqual([
+      { type: 'context.remove', attachment: image },
+    ]);
+  });
+
+  it('keeps two chips for different images distinct', () => {
+    const a = {
+      kind: 'image' as const,
+      id: 'a'.repeat(64),
+      mediaType: 'image/png' as const,
+      bytes: 10,
+    };
+    const b = {
+      kind: 'image' as const,
+      id: 'b'.repeat(64),
+      mediaType: 'image/jpeg' as const,
+      bytes: 2000,
+    };
+    renderWithHost(<Composer />, makeState({ draftAttachments: [a, b] }));
+    expect(screen.getByRole('button', { name: 'Remove Image aaaaaa · PNG · 10 B' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove Image bbbbbb · JPEG · 2 KB' })).toBeTruthy();
+  });
+
+  it('asks for a message while an image is attached and the text is empty', () => {
+    const image = {
+      kind: 'image' as const,
+      id: 'c'.repeat(64),
+      mediaType: 'image/webp' as const,
+      bytes: 5,
+    };
+    renderWithHost(<Composer />, makeState({ draftAttachments: [image] }));
+    expect(screen.getByRole('status').textContent).toContain(
+      'Add a message to send with the image.',
+    );
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
+    type('look');
+    expect(screen.queryByRole('status')).toBeNull();
   });
 });
 

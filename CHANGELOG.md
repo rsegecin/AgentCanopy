@@ -24,6 +24,7 @@ Version 0.1.0, the first version. It is not published to the Marketplace; instal
 - Keyboard support for the tabs and review actions, theme colors only with extra borders in high-contrast themes, and status announcements for screen readers. Checked with automated tests, not yet with a screen reader.
 - Mermaid diagrams with the classic layout; the ELK layout engine is not shipped.
 - A notice when an always-allow rule could not be saved.
+- Pasted images: paste a PNG, JPEG, GIF or WebP image into the message box (at most 5 images and 5 MB together per message) and it is sent with your message through Claude Code's `--input-format stream-json` input. Image content is kept in memory only, never stored; the history keeps the image's type and size. Text-only messages are sent exactly as before.
 - `npm run package` writes the license text of every bundled package to `dist/THIRD_PARTY_LICENSES.txt`, which ships in the VSIX with the third-party notices and the security policy.
 - Documentation: README, guides for each mode, review and checkpoints, troubleshooting, limitations, security policy, architecture, contributing and publishing notes, and third-party notices.
 

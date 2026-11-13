@@ -1,5 +1,6 @@
 import type { Attachment } from '../../../shared';
 import { Icon, IconButton } from '../../app/components';
+import { formatBytes } from './paste-image';
 
 function basename(path: string): string {
   const parts = path.split('/').filter((p) => p !== '');
@@ -33,6 +34,11 @@ export function describeAttachment(attachment: Attachment): {
         text: `Problems in ${basename(attachment.path)}`,
         title: `Diagnostics for ${attachment.path}`,
       };
+    case 'image': {
+      const subtype = attachment.mediaType.slice('image/'.length).toUpperCase();
+      const text = `Image ${attachment.id.slice(0, 6)} · ${subtype} · ${formatBytes(attachment.bytes)}`;
+      return { icon: 'file-media', text, title: text };
+    }
   }
 }
 
