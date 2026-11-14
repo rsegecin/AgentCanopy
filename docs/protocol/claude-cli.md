@@ -130,7 +130,20 @@ Probed on 2026-11-12 on Windows 10 with CLI 2.1.323, Haiku, spawned without a sh
 - A PNG declared as `image/jpeg` was still read. Bytes that are not an image did not fail the turn: the model said it could not read the image, and the session resumed normally afterwards.
 - Not probed: the Agent-mode argument list (HTTP hooks, sandbox), SIGINT on macOS or Linux in this input mode, stdin lines above 7.8 MB, CLI versions before 2.1.323.
 
-## 13. Not covered
+## 13. Permission facts from the documentation (not probed)
+
+Checked on 2026-11-14 against the Claude Code documentation for 2.1.322, for the Auto switch of Agent mode. Nothing in this section was observed in a run.
+
+- **Which tools ask.** The tools reference marks as needing permission: `Bash`, `PowerShell`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Monitor`, `Skill`, `ExitPlanMode`, `EnterWorktree`, `Workflow`. It marks as running without asking: subagent launch (`Task`, called `Agent` in the reference), `ToolSearch`, `ListAgents`, `TaskStop`, `EnterPlanMode`, `ExitWorktree`, `CronCreate` / `CronDelete` / `CronList`, `ScheduleWakeup`, `SendMessage`, `RemoteTrigger`, `PushNotification`, `ReportFindings`, `AskUserQuestion`. `DesignSync`, `SendToProject` and `SendToProjectContext` are not in the reference. So the host is never asked about the second group: those calls show as "Allowed by Claude Code".
+- **Rules.** "Rules are evaluated in order: deny, then ask, then allow." A bare tool name in `permissions.ask` prompts for that tool, also when an allow rule matches. That a prompt caused by an ask rule goes to `--permission-prompt-tool` in `-p` mode is the behaviour section 4 observed for the named tools; the documentation does not state it for every tool.
+- **Sandbox.** macOS, Linux and WSL2 only; on native Windows commands run unsandboxed. The `Bash` input `dangerouslyDisableSandbox` asks to run one command outside the sandbox, behind a prompt. `sandbox.allowUnsandboxedCommands: false` removes that retry and, set through `--settings`, holds against project settings. Whether the permission prompt tool receives the `dangerouslyDisableSandbox` field is not documented.
+- **Monitor** runs a background command and "uses the same permission rules as Bash"; its own name also needs permission.
+- **Skill.** A skill's `allowed-tools` grants the listed tools for the turn that invokes it, without prompting. That an ask rule still wins over that grant follows from the evaluation order; it is not stated.
+- **Subagents.** Their tool calls fire `PreToolUse` and `PostToolUse` like the main agent's. A subagent definition's `permissionMode` applies under a parent in the default mode. Whether a subagent's inner calls reach the permission prompt tool was not probed (see section 14).
+- **Plan mode tools.** `EnterPlanMode` switches the session to plan mode without asking. Approving `ExitPlanMode` can switch the session's permission mode for later calls. The policy's `inspect` checks the mode at session start only.
+- **Hooks.** "PreToolUse hook decisions don't bypass permission rules": a matching ask rule still prompts when a hook returned allow.
+
+## 14. Not covered
 
 - Windows and Linux.
 - Authentication failure and rate-limit shapes (not reproducible without logging out or exhausting limits).

@@ -2,7 +2,7 @@
 
 ## Context
 
-In Agent mode every terminal command asks for approval, including `ls`, and so do web tools, other tools such as `TodoWrite` and subagents, and anything outside the folder. Only edits inside the workspace folder run without asking (`agentCanopy.agent.editApproval: auto`, the default). The owner wants Agent mode to also have an auto setting, where the agent keeps working without an approval for each action.
+In Agent mode every terminal command asks for approval, including `ls`, and so do web tools, the other tools that need permission (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`) and anything outside the folder. Subagent launch, tool search and the other tools Claude Code runs without asking never reach AgentCanopy's policy (corrected on 2026-11-14 against the CLI documentation; see `docs/protocol/claude-cli.md`, section 13). Only edits inside the workspace folder run without asking (`agentCanopy.agent.editApproval: auto`, the default). The owner wants Agent mode to also have an auto setting, where the agent keeps working without an approval for each action.
 
 Approvals are decided by AgentCanopy's own policy in the extension host, not by the CLI: the CLI always runs with `--permission-mode default`, its settings file sends every edit, command, read and web call to the loopback permission tool, and that tool calls `createAgentPolicy().decide()` (`src/core/policy/agent/policy.ts:261-301`). Auto is therefore a change to that one policy.
 
@@ -10,7 +10,9 @@ Approvals are decided by AgentCanopy's own policy in the extension host, not by 
 
 These are the recommended answers. The first two set the security posture and are the owner's call.
 
-1. **What Auto approves.** Terminal commands and built-in tools, in addition to in-folder edits. It keeps asking for protected paths, anything outside the folder, web tools and unknown MCP tools (table below).
+Confirmed by the owner on 2026-11-14, with the changes recorded under Phase 10 in `docs/planning/2026-11-10-implementation-plan.md`: Auto can also be turned on before the first message of a new conversation, and turning it off takes effect at once, also during a turn.
+
+1. **What Auto approves.** Terminal commands, in addition to in-folder edits. It keeps asking for protected paths, anything outside the folder, web tools, every other tool that asks today and unknown MCP tools (table below). Decided on 2026-11-14: other tools only from an explicit list of verified names, and the documentation check left that list empty.
 2. **Commands are approved without a sandbox.** Claude Code's sandbox exists only on macOS, Linux and WSL2, and the owner works on Windows, so requiring it would make Auto unavailable there. The backstops are review, checkpoints and the configuration tripwire, none of which undo what a command does outside the folder, to Git or over the network.
 3. **Auto is a per-conversation switch on Agent mode**, not a fourth mode, and turning it on needs a native confirmation.
 4. **AgentCanopy's policy decides, not the CLI's `--permission-mode auto`.** Calls the CLI approves on its own never reach the host, which would skip protected-path checks, the file capture taken at the permission request, and the approval record; `inspect()` also stops any turn whose permission mode is not `default` (`policy.ts:305`).
@@ -24,7 +26,9 @@ These are the recommended answers. The first two set the security posture and ar
 | Edit inside the folder | Runs (default) or asks (`editApproval: ask`) | Runs |
 | Read inside the folder | Runs | Runs |
 | Terminal command (Bash, PowerShell) | Asks unless an always-allow rule matches | **Runs** |
-| Built-in tools (`TodoWrite`, `Task`, `Skill`, …) | Asks | **Runs** |
+| Tools that need permission (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`) and unknown tools | Asks | Asks |
+| Subagent launch, tool search and other tools Claude Code runs on its own | Runs (Claude Code decides) | Runs (unchanged) |
+| Terminal command that asks to leave the sandbox | Asks | Asks; cannot leave it at all when the turn started with Auto and the sandbox is configured |
 | Edit on a protected path (`.git`, `.vscode`, `.claude`, `.husky`, `.devcontainer`, `.mcp.json`, `.env*`, `.npmrc`, `.netrc`) | Asks | Asks |
 | Edit or read outside the folder | Asks | Asks |
 | Web fetch and web search | Asks | Asks, unless `agentCanopy.agent.auto.webTools` is on |

@@ -7,7 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 AgentCanopy is a VS Code extension that drives the locally installed Claude Code CLI (Ask, Plan and Agent modes, change review, checkpoints, forking).
 
 - The plan in force, with a status table per phase: `docs/planning/2026-11-10-implementation-plan.md`.
-- Plans for work after the first release are in `roadmap/plans/`. Built: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md` (Phase 9 in the status table, with what was decided along the way).
+- Plans for work after the first release are in `roadmap/plans/`. Built: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md` (Phase 9 in the status table, with what was decided along the way). In progress: `roadmap/plans/2026-11-13-agent-auto-mode.md` (Phase 10).
 - The owner's specification: `docs/SPEC.md`. Evidence for CLI and VS Code facts: `docs/planning/2026-11-10-research-and-architecture.md`.
 - Layers, enforced by ESLint: `src/shared` and `src/core` import neither `vscode` nor React; `src/webview` imports only `src/shared`; `src/vscode` adapts core to VS Code.
 - `package.json`, the lockfile, `src/shared/`, `src/core/contracts/` and `src/vscode/extension.ts` are changed only by the primary model. Subagents report the dependency or contract change they need instead of editing them.

@@ -14,6 +14,7 @@
 | 7. Polish and release | Done. Accessibility pass, documentation, security review (1 critical, fixed and verified live), VSIX built, installed in a clean profile and tested there |
 | 8. Pasted images | Done in code. Image input through `--input-format stream-json` probed live on Windows (CLI 2.1.323): image read, resume, whole and cut forks, Ask-mode permission flow, 5.85 MB image. Unit and integration tests pass; the chip renders in the preview under the CSP. Not yet tried by hand in VS Code; the live image test is written and not run |
 | 9. Chat cards and concurrent send | Done in code (plan: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md`). Unit tests and the VS Code integration tests pass; every card renders in the preview under the CSP. Each phase was reviewed by independent reviewers and what they confirmed was fixed with regression tests. Not yet tried by hand in VS Code; the live tests were not run, so the new Plan-mode prompt wording is unverified against the real CLI |
+| 10. Auto for Agent mode | In progress. Plan: `roadmap/plans/2026-11-13-agent-auto-mode.md` |
 
 Approved by the owner on 2026-11-10. Updated at every phase commit.
 
@@ -39,6 +40,14 @@ Decided while Phase 9 was built (not in the plan as written):
 - `roadmap/` is excluded from Prettier, like `docs/`.
 
 Phase 8 (added 2026-11-12 at the owner's request): images pasted into the composer. The plan's "Images are not supported in the first version" (section 2) is lifted. Image bytes stay in the extension host's memory until the turn ends and are never stored; the conversation keeps a reference (SHA-256, type, size). A turn with images adds `--input-format stream-json` and sends one stream-json user line; every other turn is sent exactly as before. No Agent SDK.
+
+Phase 10 (added 2026-11-14 at the owner's request): an **Auto** switch for Agent mode, per conversation, with which the policy approves terminal commands (and edits inside the folder) without a prompt for each one.
+
+- **Deviation from section 2.2** ("Commands ask: once, always, or deny with feedback"): with Auto on, commands run without asking. Everything else of section 2.2 stands: protected paths, anything outside the folder, web tools and external tools still ask, and `bypassPermissions` is never used. The decision stays in AgentCanopy's policy; the CLI still runs with `--permission-mode default`.
+- **SPEC section 8** ("Never silently enable unrestricted command execution", "No unrestricted command execution by default"): Auto is off by default, off for every new conversation, branch and side question, and can only be turned on by the user through a native dialog that says what will run without asking and what review and checkpoints cannot undo. While it is on it is visible in the composer, on every message sent with it, on every call it approved ("Auto-approved") and in History, and it can be turned off at any moment, also during a turn.
+- **Owner's decisions (2026-11-14).** Commands are approved without requiring the sandbox, since it does not exist on Windows; the dialog states what is known about it. Auto can be turned on before the first message of a new conversation. Turning it off takes effect at once, also for a running turn; turning it on is only possible between turns. Other tools are approved only from an explicit list of verified names.
+- **That list is empty.** The documentation check (`docs/protocol/claude-cli.md`, section 13) showed that the harmless tools the roadmap had in mind (subagent launch, tool search) never ask, so the host is not consulted about them, and that every other tool that does ask (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`) must keep asking. Auto therefore covers commands, edits inside the folder and, by setting, web tools; `Monitor` and `Skill` are named in the ask rules so that this is the host's decision and not the CLI's default.
+- **Sandbox escape.** A turn that starts with Auto and the sandbox configured sets `sandbox.allowUnsandboxedCommands: false`, so a command cannot leave the sandbox in that turn, and a command that carries `dangerouslyDisableSandbox` is never approved by Auto. The roadmap only said such a command asks; whether the host sees that field is not documented, so the escape is closed where it does not depend on it.
 
 Further deviations, decided during Phases 6 and 7:
 
