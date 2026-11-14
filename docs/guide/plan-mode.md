@@ -45,11 +45,11 @@ Your answers are listed under **Your decisions**. They belong to you, not to the
 
 ## Approve and execute
 
-**Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running or while configuration changes from an earlier Agent turn await your decision in the Changes card.
+**Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running, while configuration changes from an earlier Agent turn await your decision in the Changes card, or while an Agent turn of another conversation runs in the same folder ("Another agent turn is running in this folder.").
 
 1. Click it. A native VS Code dialog, "Approve and execute this plan?", names the version and warns if questions or decisions are still unanswered.
 2. Confirm with **Approve and Execute**. AgentCanopy records the approval for that exact version and content before anything starts. If the plan changed since you looked at it, you are asked to review it and approve again.
-3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt. In the chat its message reads "Plan approved: executing version N".
+3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt. In the chat its message reads "Plan approved: executing version N" (in a branch, the copied turns show "Execute plan version N").
 
 From then on the usual Agent rules apply: edits are tracked, commands ask, and you [review the changes](reviewing-changes.md) afterwards. The plan card shows the time of each approval.
 

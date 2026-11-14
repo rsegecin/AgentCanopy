@@ -829,8 +829,10 @@ class Controller implements AppController {
    * - ask one side question at a time per conversation (`turn.send` in Ask mode while a turn runs
    *   there), which creates a branch (a copy of the finished turns) in storage and runs a read-only
    *   turn in it alongside the running one;
-   * - hand the host pasted image data, which is checked (type, size, signature), kept in memory only
-   *   while a draft refers to it, and sent with the next message;
+   * - hand the host pasted image data, which is checked (type, size, signature) and kept in memory while
+   *   a draft or a queued message refers to it (until that message is sent, edited, removed, its
+   *   conversation deleted, or the window reloads); queued messages together hold at most
+   *   4 * MAX_IMAGE_BYTES_PER_MESSAGE of it;
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
    *   the webview's), and answer questions of the agent;
    * - make plan decisions, lock or unlock a plan, revert a plan to an earlier version;
@@ -1482,6 +1484,11 @@ class Controller implements AppController {
     if (message.mode === 'agent' && (this.tracker?.configChanges(folder.key).length ?? 0) > 0) {
       return giveUp(CONFIG_PENDING_MESSAGE);
     }
+    // A plan approval asks the user first: do not ask when another conversation's Agent turn already
+    // holds the folder. The gate checks again for a turn that starts while its dialog is open.
+    if (options.gate && message.mode === 'agent' && this.agentRunningIn(folder.key)) {
+      return giveUp(BUSY_MESSAGE);
+    }
 
     let promptText: string | undefined;
     if (options.gate) {
@@ -1838,6 +1845,18 @@ class Controller implements AppController {
       return false;
     }
     const taken = [...view.state.draftAttachments];
+    // All queued messages together may hold only so many image bytes.
+    const imageBytesOf = (list: readonly Attachment[]): number =>
+      list.reduce((sum, item) => sum + (item.kind === 'image' ? item.bytes : 0), 0);
+    const draftBytes = imageBytesOf(taken);
+    if (draftBytes > 0) {
+      let held = draftBytes;
+      for (const entry of this.queued.values()) held += imageBytesOf(entry.message.attachments);
+      if (held > 4 * MAX_IMAGE_BYTES_PER_MESSAGE) {
+        this.state.toast(view, 'warning', TEXT.queuedImagesFull);
+        return false;
+      }
+    }
     // The bytes of images stay held in `imageBytes`, which the queued message now refers to.
     const { attachments } = this.resolveAttachments(taken, (text) =>
       this.state.toast(view, 'warning', text),
@@ -1949,6 +1968,27 @@ class Controller implements AppController {
   private async sendQueuedNow(view: ViewRecord, id: ConversationId): Promise<void> {
     const entry = this.queued.get(id);
     if (!entry || this.sendingNow.has(id)) return;
+    if (entry.message.mode === 'agent') {
+      // Stopping the running turn would be for nothing when the message cannot go out afterwards.
+      const meta =
+        this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+      if (meta !== undefined) {
+        if ((this.tracker?.configChanges(meta.folder).length ?? 0) > 0) {
+          this.state.toast(view, 'warning', CONFIG_PENDING_MESSAGE);
+          return;
+        }
+        const otherAgent = [...this.runs.values()].some(
+          (other) =>
+            other.folderKey === meta.folder &&
+            other.mode === 'agent' &&
+            other.conversationId !== id,
+        );
+        if (otherAgent) {
+          this.state.toast(view, 'warning', BUSY_MESSAGE);
+          return;
+        }
+      }
+    }
     this.sendingNow.add(id);
     try {
       const run = this.runs.get(id);

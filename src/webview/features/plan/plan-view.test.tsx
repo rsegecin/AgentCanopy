@@ -527,6 +527,29 @@ describe('Approve and Execute', () => {
     expect(host.postedOf('plan.approve')).toEqual([]);
   });
 
+  it('is disabled with a hint while an Agent turn of another conversation holds the folder', () => {
+    const { host } = renderWithHost(<MessageList />, {
+      ...chat(makePlanDoc({ decisions: answeredAll }), [1], { turns: [makeTurn()] }),
+      review: { entries: [], configChanges: [], busy: true },
+    });
+    expect(approve().disabled).toBe(true);
+    expect(describedBy(approve())).toEqual(['Another agent turn is running in this folder.']);
+    fireEvent.click(approve());
+    expect(host.postedOf('plan.approve')).toEqual([]);
+  });
+
+  it('shows only the running hint while this conversation runs, even with the folder busy', () => {
+    renderWithHost(<MessageList />, {
+      ...chat(makePlanDoc({ decisions: answeredAll }), [1], {
+        turns: [makeTurn({ status: 'running' })],
+      }),
+      review: { entries: [], configChanges: [], busy: true },
+    });
+    expect(approve().disabled).toBe(true);
+    expect(describedBy(approve())).toEqual(['Wait for the current turn to finish.']);
+    expect(screen.queryByText('Another agent turn is running in this folder.')).toBeNull();
+  });
+
   it('gives both reasons when both apply', () => {
     renderWithHost(
       <MessageList />,

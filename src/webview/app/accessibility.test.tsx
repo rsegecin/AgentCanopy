@@ -806,7 +806,7 @@ describe('keyboard, names, roles and states', () => {
     });
     expect(now.disabled).toBe(true);
     expect(document.getElementById(now.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
-      'Sent when the agent finishes, once you decide on the configuration changes.',
+      'Sent when the agent finishes if the configuration changes are decided by then. Otherwise press Send afterwards.',
     );
     // Stop and Send are both in the composer, and Send is disabled with its own reason.
     const form = screen.getByRole('form', { name: 'Message composer' });

@@ -1254,6 +1254,47 @@ describe('a message sent while a turn runs', () => {
     expect(view.toasts).toHaveLength(1);
   });
 
+  it('"Send now" does not stop a Plan turn when an Agent turn of another conversation blocks the message', async () => {
+    const h = await harnessFor(hanging, hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view, 'plan');
+    sendIn(view, 'agent work');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    const other = h.attach();
+    sendIn(other, 'other work');
+    await until('the other turn to run', () => h.requests.length === 2);
+    await until('the other conversation', () => other.state?.active != null);
+    const otherId = other.active().meta.id;
+
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await until('the refusal', () => view.toasts.length > 0);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(view.toasts).toEqual([{ level: 'warning', text: BUSY_MESSAGE }]);
+    // The Plan turn was not interrupted and the message is still queued.
+    expect(view.active().turns.map((turn) => turn.status)).toEqual(['running']);
+    expect(h.controller.runningTurns()).toBe(2);
+    expect(view.active().queued?.text).toBe('agent work');
+    expect(h.requests).toHaveLength(2);
+
+    other.send({ type: 'turn.cancel', conversationId: otherId });
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await until('the turns to end', () => h.controller.runningTurns() === 0);
+  });
+
+  it('"Send now" stops the own Agent turn of the conversation and sends', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    expect(view.toasts).toEqual([]);
+    expect(view.active().turns.map((turn) => turn.status)).toEqual(['interrupted', 'completed']);
+    expect(userTexts(view)).toEqual(['first', 'second']);
+    expect(view.active().queued).toBeNull();
+  });
+
   it('cannot be queued again while the conversation is being deleted', async () => {
     // The wrap-up of the stopped turn is held, so the deletion waits for it.
     let release: () => void = () => undefined;

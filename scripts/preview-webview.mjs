@@ -526,7 +526,10 @@ const state = {
         operationIds: [],
       },
     ],
-    busy: false,
+    // The sample's turn t3 is a running Agent turn, so the host reports the folder busy: the changes
+    // card shows the configuration changes but hides its Files section. Variants without a running Agent
+    // turn set this to false.
+    busy: true,
     configChanges: [
       {
         id: 'cfg-1',
@@ -804,8 +807,6 @@ function page(origin, query) {
     const state = ${JSON.stringify(parsed.data).replace(/</g, '\\u003c')};
     if (new URLSearchParams(location.search).get('restore') === '1') state.restorePreview = ${JSON.stringify(restorePreview)};
     const params = new URLSearchParams(location.search);
-    // ?busy=1: an Agent turn runs in the folder, so the changes card hides its Files section.
-    if (params.get('busy') === '1') state.review.busy = true;
     // ?empty=1: no conversation is open, one configuration change is pending, and the composer is in Agent mode.
     if (params.get('empty') === '1') {
       state.active = null;
@@ -830,7 +831,12 @@ function page(origin, query) {
         approvals: [],
         decisions: a.plan.decisions.filter((d) => d.kind === 'interactive-question'),
       };
-      if (planVariant === 'ready') state.review = { ...state.review, configChanges: [], busy: false };
+      // No turn runs, so the folder is free.
+      state.review = {
+        ...state.review,
+        configChanges: planVariant === 'ready' ? [] : state.review.configChanges,
+        busy: false,
+      };
     }
     // ?queued=running: an Agent message waits behind the running turn (Stop and Send both show; the chip offers Send now).
     // ?queued=stopped: the turn was stopped, so the message is held and the chip offers Send.
@@ -839,7 +845,8 @@ function page(origin, query) {
       const a = state.active;
       a.meta = { ...a.meta, mode: 'agent' };
       a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
-      state.review = { ...state.review, configChanges: [], busy: false };
+      // Running: the turn is an Agent turn, so the folder is busy. Stopped: nothing runs.
+      state.review = { ...state.review, configChanges: [], busy: queuedVariant === 'running' };
       if (queuedVariant === 'stopped') {
         a.turns = a.turns.map((t) => (t.id === 't3' ? { ...t, status: 'interrupted', endedAt: Date.now() } : t));
         a.activity = null;
@@ -862,7 +869,8 @@ function page(origin, query) {
       const a = state.active;
       a.meta = { ...a.meta, mode: 'ask' };
       a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
-      state.review = { ...state.review, configChanges: [], busy: false };
+      // The parent's Agent turn still runs, so the folder is busy.
+      state.review = { ...state.review, configChanges: [], busy: true };
       a.messages = a.messages.map((m) =>
         m.id === 'm6'
           ? {
@@ -877,6 +885,15 @@ function page(origin, query) {
       );
       a.asides = [${JSON.stringify(asideSamples)}[asideVariant === 'running' ? 'streaming' : 'done']];
     }
+    // ?changes=both: no turn runs and the folder is free, so the changes card shows one configuration
+    // change and the file changes together (the card's body scrolls past 320px, hence a single one).
+    if (params.get('changes') === 'both' && state.active) {
+      const a = state.active;
+      a.turns = a.turns.map((t) => ({ ...t, status: 'completed', endedAt: t.endedAt ?? Date.now() }));
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      a.activity = null;
+      state.review = { ...state.review, configChanges: state.review.configChanges.slice(0, 1), busy: false };
+    }
     // ?sendMode=ask: the parent's turn runs in Agent mode and the user has switched the composer to Ask
     // while it runs. No side question runs, so the composer shows the note "Asked as a side question: the
     // agent keeps working and does not see it." The choice is view-local (in memory, not part of the
@@ -886,7 +903,7 @@ function page(origin, query) {
       const a = state.active;
       a.meta = { ...a.meta, mode: 'agent' };
       a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
-      state.review = { ...state.review, configChanges: [], busy: false };
+      state.review = { ...state.review, configChanges: [], busy: true };
       const pick = setInterval(() => {
         const radio = document.querySelector('input[type="radio"][value="' + sendMode + '"]');
         if (!radio) return;
@@ -960,7 +977,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask)`,
   );
 } else {
   const chrome =
@@ -1000,7 +1017,7 @@ if (!process.argv.includes('--check')) {
     },
     { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
     { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
-    { name: 'chat-changes-busy-dark', query: '?tab=chat&busy=1', size: '520,900' },
+    { name: 'chat-changes-both-dark', query: '?tab=chat&changes=both', size: '520,1100' },
     { name: 'chat-queued-running-dark', query: '?tab=chat&queued=running', size: '520,900' },
     { name: 'chat-queued-stopped-dark', query: '?tab=chat&queued=stopped', size: '520,900' },
     { name: 'chat-empty-config-dark', query: '?tab=chat&empty=1', size: '520,700' },

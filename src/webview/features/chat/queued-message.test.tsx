@@ -26,6 +26,8 @@ const queued = (over: Partial<Queued> = {}): Queued => ({
 const state = (
   over: {
     status?: TurnStatus;
+    /** The mode of the turn (the conversation's own turn is an Agent turn unless said otherwise). */
+    turnMode?: Mode;
     queued?: Queued | null;
     config?: boolean;
     busy?: boolean;
@@ -34,7 +36,7 @@ const state = (
   makeState({
     active: makeActive('c1', {
       meta: { mode: 'agent' },
-      turns: [makeTurn({ status: over.status ?? 'running' })],
+      turns: [makeTurn({ status: over.status ?? 'running', mode: over.turnMode ?? 'agent' })],
       queued: over.queued === undefined ? queued() : over.queued,
     }),
     review: {
@@ -121,14 +123,40 @@ describe('QueuedMessage status line', () => {
 
   it('says it waits for the configuration changes when none runs and the message is for Agent', () => {
     renderWithHost(<QueuedMessage />, state({ status: 'interrupted', config: true }));
-    expect(status().textContent).toBe('Waiting for your decision on the configuration changes.');
+    expect(status().textContent).toBe('Decide on the configuration changes, then press Send.');
   });
 
-  it('says the send also waits for the decision when a turn runs and configuration changes are pending', () => {
+  it('says the send needs the decision by then when a turn runs and configuration changes are pending', () => {
     renderWithHost(<QueuedMessage />, state({ status: 'running', config: true }));
     expect(status().textContent).toBe(
-      'Sent when the agent finishes, once you decide on the configuration changes.',
+      'Sent when the agent finishes if the configuration changes are decided by then. Otherwise press Send afterwards.',
     );
+  });
+
+  it('says the send needs the folder to be free by then when another agent turn holds it while a Plan turn runs', () => {
+    const { host } = renderWithHost(
+      <QueuedMessage />,
+      state({ status: 'running', turnMode: 'plan', busy: true }),
+    );
+    expect(status().textContent).toBe(
+      'Sent when the agent finishes if the other agent turn in this folder has ended by then. Otherwise press Send afterwards.',
+    );
+    const now = within(region()).getByRole<HTMLButtonElement>('button', {
+      name: 'Send now, queued message',
+    });
+    expect(now.disabled).toBe(true);
+    expect(now.getAttribute('aria-describedby')).toBe(status().id);
+    fireEvent.click(now);
+    expect(host.postedOf('queue.sendNow')).toHaveLength(0);
+  });
+
+  it("does not treat this conversation's own Agent turn as a blocker", () => {
+    renderWithHost(<QueuedMessage />, state({ status: 'running', turnMode: 'agent', busy: true }));
+    expect(status().textContent).toBe('Sent when the agent finishes.');
+    expect(
+      within(region()).getByRole<HTMLButtonElement>('button', { name: 'Send now, queued message' })
+        .disabled,
+    ).toBe(false);
   });
 
   it('says only that it is sent when the turn finishes for a Plan message, with changes pending', () => {
@@ -141,12 +169,14 @@ describe('QueuedMessage status line', () => {
 
   it('says another agent turn runs in this folder when none runs here and the message is for Agent', () => {
     renderWithHost(<QueuedMessage />, state({ status: 'interrupted', busy: true }));
-    expect(status().textContent).toBe('Waiting: another agent turn is running in this folder.');
+    expect(status().textContent).toBe(
+      'Another agent turn is running in this folder. Press Send when it has ended.',
+    );
   });
 
   it('puts the configuration decision before the busy folder', () => {
     renderWithHost(<QueuedMessage />, state({ status: 'interrupted', busy: true, config: true }));
-    expect(status().textContent).toBe('Waiting for your decision on the configuration changes.');
+    expect(status().textContent).toBe('Decide on the configuration changes, then press Send.');
   });
 
   it('does not mention the busy folder for a Plan message or while a turn runs here', () => {

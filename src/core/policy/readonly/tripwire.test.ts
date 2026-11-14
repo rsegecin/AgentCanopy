@@ -60,7 +60,7 @@ describe('read-only tripwire', () => {
     expect(notices).toEqual([
       {
         level: 'warning',
-        text: '1 file changed in the workspace while this read-only turn was running: a.txt. The agent had no tool that can write, so another program or an edit of yours changed it. AgentCanopy reverts nothing here.',
+        text: '1 file changed in the workspace while this read-only turn was running: a.txt. The agent of this turn had no tool that can write, so an Agent turn in this folder, another program or an edit of yours changed it. AgentCanopy reverts nothing here.',
       },
     ]);
   });
@@ -74,7 +74,7 @@ describe('read-only tripwire', () => {
     expect(notices).toHaveLength(1);
     expect(notices?.[0]?.level).toBe('warning');
     expect(notices?.[0]?.text).toBe(
-      '3 files changed in the workspace while this read-only turn was running: a.txt, new.txt, src/c.ts. The agent had no tool that can write, so another program or an edit of yours changed them. AgentCanopy reverts nothing here.',
+      '3 files changed in the workspace while this read-only turn was running: a.txt, new.txt, src/c.ts. The agent of this turn had no tool that can write, so an Agent turn in this folder, another program or an edit of yours changed them. AgentCanopy reverts nothing here.',
     );
   });
 

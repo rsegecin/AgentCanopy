@@ -14,6 +14,8 @@ export const TEXT = {
   checkingProvider: 'AgentCanopy is still checking Claude Code. Try again in a moment.',
   turnRunning: 'A turn is already running in this conversation.',
   messageAlreadyQueued: 'A message is already waiting for this turn. Edit or remove it first.',
+  queuedImagesFull:
+    'Too many images are waiting in queued messages. Send or remove a queued message first.',
   asideRunning: 'A side question is already running. Wait for it or stop it.',
   asideFailed: 'The side question could not be started.',
   conversationGone: 'That conversation no longer exists.',

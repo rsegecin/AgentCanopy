@@ -6,6 +6,7 @@ import { initEvent } from '../../../test/fake-cli';
 import type { AssistantMessage, ConversationId, PlanDoc, Prompt } from '../../shared';
 import type { TurnPolicy, TurnRequest } from '../contracts';
 import type * as PlansModule from '../plans';
+import { BUSY_MESSAGE } from '../workspace/tracker/tracker';
 import { createConversationStore } from '../conversations/store';
 import type { ConversationStore } from '../conversations/store';
 import {
@@ -1083,6 +1084,29 @@ describe('approving a plan', () => {
     expect(h.ui.callsOf('confirm')).toEqual([]);
     await expectNothingHappened(h, view, plan, 2);
     view.expectMirror();
+  });
+
+  it('refuses without a dialog while an Agent turn of another conversation runs in the folder', async () => {
+    const { h, view, plan } = await withPlan([hanging]);
+    const other = h.attach();
+    send(other, 'other work', 'agent');
+    await until('the other turn to run', () => h.requests.length === 2);
+    await until('the other conversation', () => other.state?.active != null);
+    const otherId = other.active().meta.id;
+
+    approve(view, plan);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: BUSY_MESSAGE });
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    await sleep(40);
+    expect(approvalsOnDisk(h, plan)).toEqual([]);
+    expect(planOf(view).approvals).toEqual([]);
+    expect(h.requests).toHaveLength(2);
+    expect(view.active().turns).toHaveLength(1);
+    expect(h.controller.runningTurns()).toBe(1);
+
+    other.send({ type: 'turn.cancel', conversationId: otherId });
+    await until('the other turn to end', () => h.controller.runningTurns() === 0);
   });
 
   it('refuses a hash from an older version after a new version was saved', async () => {

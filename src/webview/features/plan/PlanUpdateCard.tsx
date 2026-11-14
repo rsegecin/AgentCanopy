@@ -19,6 +19,7 @@ import {
 /** The title button of a card: where focus goes when the control that had it is gone. */
 const TITLE_BUTTON = '.plan-card-open';
 const RUNNING_HINT = 'Wait for the current turn to finish.';
+const FOLDER_HINT = 'Another agent turn is running in this folder.';
 const CONFIG_HINT =
   'Keep or revert the configuration changes in the changes card below the chat first.';
 
@@ -120,12 +121,15 @@ function CurrentPlanCard({
   useFocusRecovery(root, { fallback: TITLE_BUTTON });
   const running = useViewState((s) => isTurnRunning(s.active?.turns));
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
+  // An Agent turn of another conversation holds the folder (while this one runs, the running hint says it).
+  const folderBusy = useViewState((s) => s.review.busy && !isTurnRunning(s.active?.turns));
   const titleId = useId();
   const decisionsId = useId();
   const stillId = useId();
   const warningId = useId();
   const runningId = useId();
   const configId = useId();
+  const folderId = useId();
 
   const { content } = latest;
   const unanswered = countUnanswered(content, plan.decisions);
@@ -134,9 +138,14 @@ function CurrentPlanCard({
   const summaryText = content.changeSummary.trim();
   const hasChoices = content.decisionPoints.length > 0 || content.openQuestions.length > 0;
   const previous = latest.version - 1;
-  const blocked = running || configPending;
+  const blocked = running || configPending || folderBusy;
   const describedBy =
-    [running ? runningId : null, configPending ? configId : null, unanswered > 0 ? warningId : null]
+    [
+      running ? runningId : null,
+      folderBusy ? folderId : null,
+      configPending ? configId : null,
+      unanswered > 0 ? warningId : null,
+    ]
       .filter((id) => id !== null)
       .join(' ') || undefined;
 
@@ -234,6 +243,11 @@ function CurrentPlanCard({
       {running && (
         <p id={runningId} className="plan-hint muted">
           {RUNNING_HINT}
+        </p>
+      )}
+      {folderBusy && (
+        <p id={folderId} className="plan-hint muted">
+          {FOLDER_HINT}
         </p>
       )}
       {configPending && (

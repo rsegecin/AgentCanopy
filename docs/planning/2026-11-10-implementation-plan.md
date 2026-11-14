@@ -32,6 +32,10 @@ Decided while Phase 9 was built (not in the plan as written):
 - Editing a queued message returns its text through `prefill-composer`, which now goes in front of what the user typed instead of replacing it.
 - The plan card still lists decisions whose question is no longer in the plan, each tagged "No longer in the plan"; only the separate list is gone.
 - The hint to reject the whole file, for a single change that may hold the user's own work, moved from the panel to the editor with the hunk actions.
+- In a branch, turns copied from the original conversation show the execution message with its stored text ("Execute plan version N") and carry no plan options cards: the label is found through the plan's approvals, which a copy of a plan does not keep, and branches never carried prompts. Marking the message itself would need a new stored field, which the plan rules out ("no new message part kind"), so this is a documented limitation.
+- Send now does not stop the turn when the queued Agent message could not be sent afterwards (configuration changes pending, or another conversation's Agent turn in the folder). Approve and Execute is refused before its dialog in the second case too. Once such a blocker clears, the user presses Send: only the end of the conversation's own turn sends a queued message by itself.
+- Queued messages together hold at most 20 MB of pasted images.
+- The read-only check after an Ask or Plan turn names an Agent turn in the folder as a possible cause of changed files, since a side question normally runs while one edits.
 - `roadmap/` is excluded from Prettier, like `docs/`.
 
 Phase 8 (added 2026-11-12 at the owner's request): images pasted into the composer. The plan's "Images are not supported in the first version" (section 2) is lifted. Image bytes stay in the extension host's memory until the turn ends and are never stored; the conversation keeps a reference (SHA-256, type, size). A turn with images adds `--input-format stream-json` and sends one stream-json user line; every other turn is sent exactly as before. No Agent SDK.

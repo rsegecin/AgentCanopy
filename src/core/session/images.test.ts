@@ -592,3 +592,71 @@ describe('an image in a message queued behind a running turn', () => {
     await finishedTurn(h, view);
   });
 });
+
+describe('the images held by queued messages together', () => {
+  const hanging: ScenarioSpec = {
+    scenario: { steps: [...streamedText(['working']), { hang: true }] },
+  };
+
+  async function startRunning(h: Harness, view: TestView, count: number): Promise<void> {
+    view.send({ type: 'turn.send', text: 'first', mode: 'plan', model: 'default' });
+    await until('the turn to run', () => h.requests.length === count);
+    await until('the conversation to be shown', () => view.state?.active != null);
+  }
+
+  function queue(view: TestView, text: string): void {
+    view.send({
+      type: 'turn.send',
+      conversationId: view.active().meta.id,
+      text,
+      mode: 'agent',
+      model: 'default',
+    });
+  }
+
+  it('refuse another image-bearing message past the total, and still queue one without images', async () => {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: Array.from({ length: 6 }, () => hanging),
+    });
+    const views: TestView[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const view = h.attach();
+      await startRunning(h, view, i + 1);
+      views.push(view);
+    }
+    // Four messages of the largest allowed size together are exactly the total.
+    for (let i = 0; i < 4; i += 1) {
+      const view = views[i];
+      if (!view) throw new Error('no view');
+      view.send(pasteImageMessage(pngBytes(`queued-${i}`, MAX_IMAGE_BYTES_PER_MESSAGE)));
+      queue(view, 'later');
+      await until('the message to be queued', () => view.state?.active?.queued != null);
+      expect(view.toasts).toEqual([]);
+    }
+
+    const fifth = views[4];
+    const sixth = views[5];
+    if (!fifth || !sixth) throw new Error('no view');
+    const over = pngBytes('queued-over', MAX_IMAGE_BYTES_PER_MESSAGE);
+    fifth.send(pasteImageMessage(over));
+    await until('the image in the draft', () => draftOf(fifth).length === 1);
+    queue(fifth, 'later');
+    await until('the refusal', () => fifth.toasts.length === 1);
+    expect(fifth.toasts).toEqual([{ level: 'warning', text: TEXT.queuedImagesFull }]);
+    expect(fifth.active().queued).toBeNull();
+    expect(draftOf(fifth)).toEqual([imageReference(over)]);
+    expect(heldImages(h).size).toBe(5);
+
+    // A message without images is never refused by the total.
+    queue(sixth, 'only text');
+    await until('the text message to be queued', () => sixth.state?.active?.queued != null);
+    expect(sixth.toasts).toEqual([]);
+    expect(sixth.active().queued?.text).toBe('only text');
+
+    for (const view of views) {
+      view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    }
+    await until('the turns to end', () => h.controller.runningTurns() === 0);
+  });
+});

@@ -53,19 +53,26 @@ export function QueuedMessage() {
 
   const running = isTurnRunning(turns);
   const lastStatus = turns?.[turns.length - 1]?.status;
-  // The host queues an Agent or Plan message; an Ask message only in an edge case. Only Agent waits for
-  // the configuration decision and for the folder.
-  const configBlocked = queued.mode === 'agent' && configPending;
-  // The host refuses an Agent send while an Agent turn of another conversation runs in this folder.
-  const folderBusy = !running && queued.mode === 'agent' && reviewBusy;
+  // Only an Agent message waits for the configuration decision and for the folder. The folder is held
+  // by an Agent turn of another conversation, or by this one's own, which is not a blocker for a
+  // message that is sent when it ends.
+  const isAgent = queued.mode === 'agent';
+  const lastTurn = turns?.[turns.length - 1];
+  const ownAgentRuns = running && lastTurn?.mode === 'agent';
+  const configBlocked = isAgent && configPending;
+  const folderBusy = isAgent && reviewBusy && !ownAgentRuns;
+  // The host sends a queued message by itself only when this conversation's turn ends as completed, so
+  // a blocker that clears later leaves the message for the user to send.
   const status = running
-    ? configBlocked
-      ? 'Sent when the agent finishes, once you decide on the configuration changes.'
-      : 'Sent when the agent finishes.'
+    ? isAgent && configBlocked
+      ? 'Sent when the agent finishes if the configuration changes are decided by then. Otherwise press Send afterwards.'
+      : isAgent && folderBusy
+        ? 'Sent when the agent finishes if the other agent turn in this folder has ended by then. Otherwise press Send afterwards.'
+        : 'Sent when the agent finishes.'
     : configBlocked
-      ? 'Waiting for your decision on the configuration changes.'
+      ? 'Decide on the configuration changes, then press Send.'
       : folderBusy
-        ? 'Waiting: another agent turn is running in this folder.'
+        ? 'Another agent turn is running in this folder. Press Send when it has ended.'
         : lastStatus === 'interrupted'
           ? 'Not sent: the turn was stopped.'
           : lastStatus === 'error'

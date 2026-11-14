@@ -18,6 +18,7 @@ import {
   assistantText,
   assistantToolUse,
   createHarness,
+  createPlanTestPolicy,
   finishedTurn,
   resultStep,
   sleep,
@@ -458,6 +459,46 @@ describe('Agent mode with the default policy and tracker', () => {
     expect(view.active().queued).toBeNull();
     expect(h.requests).toHaveLength(2);
     view.expectMirror();
+  });
+
+  it('"Send now" does not stop a Plan turn when pending configuration changes block the queued Agent message', async () => {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: [
+        writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'),
+        { scenario: { steps: [...streamedText(['working']), { hang: true }] } },
+      ],
+    });
+    const view = h.attach();
+    sendAgent(view);
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+
+    const id = view.active().meta.id;
+    view.send({
+      type: 'turn.send',
+      conversationId: id,
+      text: 'plan',
+      mode: 'plan',
+      model: 'default',
+    });
+    await until('the Plan turn to run', () => h.requests.length === 2);
+    sendAgent(view, 'queued');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await until('the toast', () => view.toasts.length === 1);
+    await sleep(100);
+    expect(view.toasts).toEqual([{ level: 'warning', text: CONFIG_PENDING_MESSAGE }]);
+    // The Plan turn was not interrupted and the message is still queued.
+    expect(view.active().turns.at(-1)?.status).toBe('running');
+    expect(h.controller.runningTurns()).toBe(1);
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(2);
+
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await until('the turn to end', () => h.controller.runningTurns() === 0);
   });
 
   it('lets the user keep a configuration change, which unblocks the next turn', async () => {
