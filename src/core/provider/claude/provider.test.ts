@@ -201,7 +201,13 @@ describe('Claude provider', () => {
     });
     const turnRequest = await request({
       mode: 'agent',
-      profile: { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false },
+      profile: {
+        kind: 'agent',
+        allowRules: [],
+        alwaysAskCommands: false,
+        sandbox: false,
+        sandboxLocked: false,
+      },
       host: registration.endpoint,
     });
     const handle = provider.startTurn(turnRequest);

@@ -75,13 +75,21 @@ export function makeContext(options: {
   conversationId?: string;
   mode?: Mode;
   planLocked?: boolean;
+  /** Agent mode's Auto applies to the decision. Default false. */
+  auto?: boolean;
+  /** Fields of the conversation meta to override. */
+  conversation?: Partial<ConversationMeta>;
 }): FakeAsk {
   const prompts: NewPrompt[] = [];
   const context: PolicyContext = {
-    conversation: meta(options.conversationId, options.mode, options.planLocked),
+    conversation: {
+      ...meta(options.conversationId, options.mode, options.planLocked),
+      ...options.conversation,
+    },
     mode: options.mode ?? 'ask',
     folder: { key: 'folder-1' as FolderKey, name: 'folder', path: options.folderPath },
     settings: { ...DEFAULT_SETTINGS, ...options.settings },
+    auto: options.auto ?? false,
     askUser(prompt) {
       prompts.push(prompt);
       return Promise.resolve(options.answer);

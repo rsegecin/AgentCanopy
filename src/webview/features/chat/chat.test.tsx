@@ -450,6 +450,7 @@ describe('ToolCard', () => {
   it.each([
     ['user', 'Approved by you'],
     ['policy', 'Allowed by AgentCanopy'],
+    ['auto', 'Auto-approved'],
     ['provider', 'Allowed by Claude Code'],
     ['unverified', 'Not verified by AgentCanopy'],
   ] as const)('labels the %s approval source', (approval, label) => {

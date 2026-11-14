@@ -19,6 +19,10 @@ export const SettingsSchema = z.object({
   editApproval: z.enum(['auto', 'ask']),
   alwaysAskCommands: z.boolean(),
   sandbox: z.boolean(),
+  /** Offer Agent mode's Auto switch. Off hides it and turns Auto off in every conversation. */
+  agentAuto: z.boolean(),
+  /** Let Auto also approve web fetch and web search. */
+  agentAutoWebTools: z.boolean(),
   /** Use the provider's cut-at-message flag for forks from an earlier message when it is available. */
   exactEarlierForks: z.boolean(),
   unsavedFiles: z.enum(['warn', 'ignore']),
@@ -40,6 +44,8 @@ export const DEFAULT_SETTINGS: Settings = {
   editApproval: 'auto',
   alwaysAskCommands: false,
   sandbox: false,
+  agentAuto: true,
+  agentAutoWebTools: false,
   exactEarlierForks: true,
   unsavedFiles: 'warn',
   snapshotMaxFileBytes: 10 * 1024 * 1024,

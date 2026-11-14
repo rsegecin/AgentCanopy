@@ -155,6 +155,7 @@ describe('prepareInvocation args', () => {
           allowRules: ['Bash(npm test)', 'Read(src/**)'],
           alwaysAskCommands: false,
           sandbox: true,
+          sandboxLocked: false,
         },
         host: { ...base.host, hookUrl: 'http://127.0.0.1:4000/hooks/xyz' },
       }),
@@ -189,7 +190,13 @@ describe('prepareInvocation args', () => {
 
   it('agent turn: always ask drops the allow rules; empty rules omit the key', async () => {
     const asking = request({
-      profile: { kind: 'agent', allowRules: ['Bash(ls)'], alwaysAskCommands: true, sandbox: false },
+      profile: {
+        kind: 'agent',
+        allowRules: ['Bash(ls)'],
+        alwaysAskCommands: true,
+        sandbox: false,
+        sandboxLocked: false,
+      },
     });
     await prepareInvocation(asking);
     expect(await json('settings.json')).toEqual({
@@ -199,7 +206,13 @@ describe('prepareInvocation args', () => {
     runDir = await mkdtemp(join(tmpdir(), 'invocation-'));
     await prepareInvocation(
       request({
-        profile: { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false },
+        profile: {
+          kind: 'agent',
+          allowRules: [],
+          alwaysAskCommands: false,
+          sandbox: false,
+          sandboxLocked: false,
+        },
       }),
     );
     const settings = (await json('settings.json')) as { permissions: Record<string, unknown> };
@@ -268,6 +281,7 @@ describe('prepareInvocation args', () => {
           allowRules: ['Bash(secret-rule)'],
           alwaysAskCommands: false,
           sandbox: false,
+          sandboxLocked: false,
         },
       }),
     );
@@ -366,7 +380,15 @@ describe('prepareInvocation validation', () => {
 
   it('rejects bad allow rules', async () => {
     const withRules = (allowRules: string[]) =>
-      request({ profile: { kind: 'agent', allowRules, alwaysAskCommands: false, sandbox: false } });
+      request({
+        profile: {
+          kind: 'agent',
+          allowRules,
+          alwaysAskCommands: false,
+          sandbox: false,
+          sandboxLocked: false,
+        },
+      });
     await rejects(withRules(['']), /allow rule/);
     await rejects(withRules(['   ']), /allow rule/);
     await rejects(withRules(['a\nb']), /allow rule/);
@@ -383,6 +405,7 @@ describe('prepareInvocation validation', () => {
           allowRules: ['x'.repeat(500)],
           alwaysAskCommands: false,
           sandbox: false,
+          sandboxLocked: false,
         },
       }),
     );
@@ -636,6 +659,7 @@ describe('prepareInvocation project configuration', () => {
             allowRules: ['Bash(npm test)'],
             alwaysAskCommands: false,
             sandbox: false,
+            sandboxLocked: false,
             ...projectConfig,
           },
         }),

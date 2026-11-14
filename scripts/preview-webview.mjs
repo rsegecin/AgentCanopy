@@ -222,6 +222,7 @@ const state = {
     { id: 'haiku', label: 'Haiku', custom: false },
   ],
   defaults: { mode: 'ask', model: 'default' },
+  agentAuto: { offered: false, commands: false },
   conversations: [
     { ...meta, preview: 'Here is how requests flow today…', running: true, pendingPrompts: 1 },
     {
@@ -439,6 +440,7 @@ const state = {
     { operationId: 'op-1', kind: 'reject', at: now - 7200000, filesChanged: 1, interrupted: false },
   ],
   draftAttachments: [{ kind: 'folder', path: 'src/server' }],
+  draftAgentAuto: false,
   review: {
     entries: [
       {

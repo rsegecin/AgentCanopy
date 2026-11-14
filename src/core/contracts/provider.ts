@@ -52,6 +52,12 @@ export type ExecutionProfile =
       /** Ask the host before every terminal command, ignoring allow rules. */
       alwaysAskCommands: boolean;
       sandbox: boolean;
+      /**
+       * A command may not leave the sandbox, not even behind a prompt. Set for a turn that starts
+       * with Auto, so a command approved without a prompt always ran sandboxed. Only means something
+       * with `sandbox`.
+       */
+      sandboxLocked: boolean;
     };
 
 /** Where the provider reaches the host's tool server for this turn. */

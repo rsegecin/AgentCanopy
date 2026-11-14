@@ -255,6 +255,7 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
         allowRules: settings.alwaysAskCommands ? [] : rules.list(conversation.folder),
         alwaysAskCommands: settings.alwaysAskCommands,
         sandbox: settings.sandbox,
+        sandboxLocked: false, // placeholder: the Auto phase sets it
       };
     },
 

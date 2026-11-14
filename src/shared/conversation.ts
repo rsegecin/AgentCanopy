@@ -53,8 +53,11 @@ export const AttachmentSchema = z.discriminatedUnion('kind', [
 ]);
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
-/** Who allowed a tool call. `provider` means the host was never asked. */
-export const ApprovalSourceSchema = z.enum(['user', 'policy', 'provider', 'unverified']);
+/**
+ * Who allowed a tool call. `policy`: AgentCanopy's standing rules. `auto`: AgentCanopy, because the
+ * conversation's Auto switch was on. `provider` means the host was never asked.
+ */
+export const ApprovalSourceSchema = z.enum(['user', 'policy', 'auto', 'provider', 'unverified']);
 export type ApprovalSource = z.infer<typeof ApprovalSourceSchema>;
 
 export const ToolCallStatusSchema = z.enum([
@@ -107,6 +110,8 @@ export const UserMessageSchema = z.object({
   text: z.string(),
   mode: ModeSchema,
   attachments: z.array(AttachmentSchema),
+  /** The turn started with the conversation's Auto switch on (Agent mode only). Absent means no. */
+  auto: z.boolean().optional(),
 });
 export type UserMessage = z.infer<typeof UserMessageSchema>;
 
@@ -215,6 +220,13 @@ export const ConversationMetaSchema = z.object({
   aside: AsideInfoSchema.optional(),
   planId: PlanIdSchema.optional(),
   planLocked: z.boolean(),
+  /**
+   * Agent mode's Auto switch: terminal commands and edits inside the folder run without a prompt for
+   * each one. On only when exactly `true`; conversations stored before it existed do not have it.
+   * Only the user turns it on, through a native dialog. A new conversation, a branch and a side
+   * question start without it.
+   */
+  agentAuto: z.boolean().optional(),
 });
 export type ConversationMeta = z.infer<typeof ConversationMetaSchema>;
 

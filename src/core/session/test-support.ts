@@ -137,7 +137,13 @@ export function createPlanTestPolicy(): TurnPolicy {
         };
       }
       if (input.mode === 'agent') {
-        return { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false };
+        return {
+          kind: 'agent',
+          allowRules: [],
+          alwaysAskCommands: false,
+          sandbox: false,
+          sandboxLocked: false,
+        };
       }
       return base.profile(input);
     },

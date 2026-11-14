@@ -20,6 +20,8 @@ const MAPPING: Mapping = {
   editApproval: { config: 'agent.editApproval' },
   alwaysAskCommands: { config: 'agent.alwaysAskCommands' },
   sandbox: { config: 'agent.sandbox' },
+  agentAuto: { config: 'agent.auto.enabled' },
+  agentAutoWebTools: { config: 'agent.auto.webTools' },
   exactEarlierForks: { config: 'forks.exactEarlierMessages' },
   unsavedFiles: { config: 'unsavedFiles' },
   snapshotMaxFileBytes: { config: 'snapshots.maxFileSizeMB', convert: megabytesToBytes },

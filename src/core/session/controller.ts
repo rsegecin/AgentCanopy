@@ -879,6 +879,10 @@ class Controller implements AppController {
       case 'conversation.setModel':
         await this.changeConversation(view, message.conversationId, { model: message.model });
         return;
+      case 'conversation.setAuto':
+        // The next phase implements Auto.
+        this.state.toast(view, 'info', TEXT.notAvailableYet);
+        return;
       case 'conversation.fork':
         await this.forkConversation(view, message.conversationId, message.messageId);
         return;

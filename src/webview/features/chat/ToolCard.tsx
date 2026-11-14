@@ -31,6 +31,7 @@ const APPROVAL: Record<ApprovalSource, string> = {
   user: 'Approved by you',
   policy: 'Allowed by AgentCanopy',
   provider: 'Allowed by Claude Code',
+  auto: 'Auto-approved',
   unverified: 'Not verified by AgentCanopy',
 };
 

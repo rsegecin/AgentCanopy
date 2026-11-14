@@ -118,6 +118,7 @@ describe('agent policy', () => {
         allowRules: ['Bash(npm test)', 'mcp__x__y'],
         alwaysAskCommands: false,
         sandbox: false,
+        sandboxLocked: false,
       });
       expect(profile('agent', { sandbox: true })).toMatchObject({ sandbox: true });
     });
@@ -128,6 +129,7 @@ describe('agent policy', () => {
         allowRules: [],
         alwaysAskCommands: true,
         sandbox: false,
+        sandboxLocked: false,
       });
     });
 

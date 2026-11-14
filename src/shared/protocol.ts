@@ -87,6 +87,16 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     conversationId,
     model: z.string().min(1).max(200),
   }),
+  /**
+   * Turns Agent mode's Auto switch on or off: for a conversation, or without an id for the
+   * conversation this view is about to start. Turning it on opens a native dialog on the host;
+   * turning it off needs none and also applies to a turn that is running.
+   */
+  z.object({
+    type: z.literal('conversation.setAuto'),
+    conversationId: conversationId.optional(),
+    on: z.boolean(),
+  }),
   z.object({ type: z.literal('conversation.fork'), conversationId, messageId: MessageIdSchema }),
   z.object({
     type: z.literal('conversation.openInEditor'),

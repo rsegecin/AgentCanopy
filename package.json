@@ -301,6 +301,18 @@
           "scope": "machine",
           "description": "Run the agent's terminal commands in Claude Code's sandbox (macOS, Linux and WSL2). Commands can then write only inside the workspace folder and temporary directories."
         },
+        "agentCanopy.agent.auto.enabled": {
+          "type": "boolean",
+          "default": true,
+          "scope": "machine",
+          "description": "Offer the Auto switch in Agent mode. With Auto on, a conversation's terminal commands and edits inside the workspace folder run without asking for each one. Turning this off hides the switch and turns Auto off in every conversation."
+        },
+        "agentCanopy.agent.auto.webTools": {
+          "type": "boolean",
+          "default": false,
+          "scope": "machine",
+          "description": "Let Auto also approve web fetch and web search. Off by default: a fetched page can carry instructions for the agent, and a request can send file contents out."
+        },
         "agentCanopy.forks.exactEarlierMessages": {
           "type": "boolean",
           "default": true,

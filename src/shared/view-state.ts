@@ -95,10 +95,22 @@ export const ViewStateSchema = z.object({
   provider: ProviderStatusSchema.nullable(),
   models: z.array(ModelInfoSchema),
   defaults: z.object({ mode: ModeSchema, model: z.string() }),
+  /** What the settings allow of Agent mode's Auto switch. The same in every view. */
+  agentAuto: z.object({
+    /** The switch is offered at all (`agentCanopy.agent.auto.enabled`). */
+    offered: z.boolean(),
+    /** Auto covers terminal commands. False while `agentCanopy.agent.alwaysAskCommands` is on. */
+    commands: z.boolean(),
+  }),
   conversations: z.array(ConversationSummarySchema),
   active: ActiveConversationSchema.nullable(),
   /** Attachments queued for this view's next message, whether or not a conversation exists yet. */
   draftAttachments: z.array(AttachmentSchema),
+  /**
+   * The user turned Auto on for the conversation this view is about to start. Its first message, if
+   * it is an Agent message, creates the conversation with Auto on. Gone when the view moves on.
+   */
+  draftAgentAuto: z.boolean(),
   /** Results of the composer's file search (typing `@`), or null when no search is open. */
   fileSearch: z
     .object({
@@ -136,9 +148,11 @@ export const EMPTY_VIEW_STATE: ViewState = {
   provider: null,
   models: [],
   defaults: { mode: 'ask', model: 'default' },
+  agentAuto: { offered: false, commands: false },
   conversations: [],
   active: null,
   draftAttachments: [],
+  draftAgentAuto: false,
   fileSearch: null,
   search: null,
   review: { entries: [], configChanges: [], busy: false },

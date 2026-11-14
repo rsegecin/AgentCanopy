@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ApprovalSourceSchema,
   AttachmentSchema,
+  ConversationMetaSchema,
   DEFAULT_SETTINGS,
   MAX_IMAGE_BASE64_LENGTH,
   MAX_IMAGE_BYTES,
@@ -9,6 +11,7 @@ import {
   PlanContentSchema,
   RelPathSchema,
   SettingsSchema,
+  UserMessageSchema,
   ViewStateSchema,
   WebviewMessageSchema,
 } from './index';
@@ -17,6 +20,63 @@ describe('shared contracts', () => {
   it('accepts the default settings and the empty view state', () => {
     expect(SettingsSchema.parse(DEFAULT_SETTINGS)).toEqual(DEFAULT_SETTINGS);
     expect(ViewStateSchema.parse(EMPTY_VIEW_STATE)).toEqual(EMPTY_VIEW_STATE);
+  });
+
+  it('has the Auto settings, on and off by default', () => {
+    expect(DEFAULT_SETTINGS).toMatchObject({ agentAuto: true, agentAutoWebTools: false });
+    expect(EMPTY_VIEW_STATE.agentAuto).toEqual({ offered: false, commands: false });
+    expect(EMPTY_VIEW_STATE.draftAgentAuto).toBe(false);
+  });
+
+  it('accepts the auto approval source', () => {
+    expect(ApprovalSourceSchema.safeParse('auto').success).toBe(true);
+    expect(ApprovalSourceSchema.safeParse('automatic').success).toBe(false);
+  });
+
+  it('parses a conversation meta with and without agentAuto', () => {
+    const meta = {
+      id: 'c1',
+      title: 'T',
+      createdAt: 1,
+      updatedAt: 1,
+      folder: 'f1',
+      providerId: 'claude',
+      model: 'default',
+      mode: 'agent',
+      planLocked: false,
+    };
+    expect(ConversationMetaSchema.parse(meta)).not.toHaveProperty('agentAuto');
+    expect(ConversationMetaSchema.parse({ ...meta, agentAuto: true }).agentAuto).toBe(true);
+    expect(ConversationMetaSchema.safeParse({ ...meta, agentAuto: 'yes' }).success).toBe(false);
+  });
+
+  it('parses a user message with and without auto', () => {
+    const message = {
+      role: 'user',
+      id: 'm1',
+      turnId: 't1',
+      createdAt: 1,
+      text: 'hi',
+      mode: 'agent',
+      attachments: [],
+    };
+    expect(UserMessageSchema.parse(message)).not.toHaveProperty('auto');
+    expect(UserMessageSchema.parse({ ...message, auto: true }).auto).toBe(true);
+    expect(UserMessageSchema.safeParse({ ...message, auto: 1 }).success).toBe(false);
+  });
+
+  it('parses the Auto webview message', () => {
+    expect(WebviewMessageSchema.safeParse({ type: 'conversation.setAuto', on: true }).success).toBe(
+      true,
+    );
+    expect(
+      WebviewMessageSchema.safeParse({
+        type: 'conversation.setAuto',
+        conversationId: 'c1',
+        on: false,
+      }).success,
+    ).toBe(true);
+    expect(WebviewMessageSchema.safeParse({ type: 'conversation.setAuto' }).success).toBe(false);
   });
 
   it('rejects paths that leave the folder', () => {

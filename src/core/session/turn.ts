@@ -1310,6 +1310,7 @@ export class TurnRun {
       mode: this.input.mode,
       folder: this.input.folder,
       settings: this.input.settings,
+      auto: false, // placeholder: the Auto phase derives it
       askUser: (prompt) => this.askUser(prompt, signal),
     };
   }
