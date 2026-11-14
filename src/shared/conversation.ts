@@ -227,6 +227,12 @@ export const ConversationMetaSchema = z.object({
    * question start without it.
    */
   agentAuto: z.boolean().optional(),
+  /**
+   * When Auto was last turned on for this conversation. Auto counts as on only while this is later
+   * than the last time the setting that offers Auto was seen off on this machine, so turning that
+   * setting off and on again arms no conversation, also in a workspace that was closed meanwhile.
+   */
+  agentAutoSince: TimestampSchema.optional(),
 });
 export type ConversationMeta = z.infer<typeof ConversationMetaSchema>;
 

@@ -1,5 +1,5 @@
 import type { ErrorCategory, ResultEvent } from '../../shared';
-import { escapeForDisplay } from '../policy/readonly';
+import { escapeForDisplay, escapeOneLine } from '../policy/readonly';
 
 /** Plain-language sentences the controller shows to the user. Kept in one place so they are easy to review. */
 
@@ -81,11 +81,14 @@ export const TEXT = {
   autoWaitForTurn: 'Wait for the current turn to finish before turning on Auto.',
   autoDialogOpen: 'The dialog to turn on Auto is already open.',
   autoDraftGone: 'Auto can be turned on for a new conversation only before its first message.',
+  autoNotShown: 'Open the conversation to turn Auto on.',
   autoChangedDuringDialog:
     'Auto was not turned on: the conversation changed while the dialog was open.',
   autoNotSaved: 'Auto could not be turned on. The AgentCanopy log has the details.',
   autoOffNotSaved:
     'Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later.',
+  autoResetNotSaved:
+    'Auto is off in this window, but that could not be saved for other workspaces on this machine. AgentCanopy will try again.',
 } as const;
 
 export function claudeNotInstalled(displayName: string): string {
@@ -173,6 +176,52 @@ export function formatCheckpointTime(atMs: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+/** How many code points of a folder's path the dialog that turns Auto on shows at most. */
+const SHOWN_PATH_LENGTH = 120;
+/** A longer path is cut in the middle: this many code points of its start, then `…`, then the rest. */
+const SHOWN_PATH_HEAD = 40;
+const SHOWN_PATH_TAIL = SHOWN_PATH_LENGTH - SHOWN_PATH_HEAD - 1;
+
+/** A drive letter and a separator: a Windows path, whose letter case does not matter. */
+const DRIVE_PATH = /^[A-Za-z]:[\\/]/;
+
+/** The part of `path` that follows `home` when `home` is its directory at a path boundary. */
+function belowHome(path: string, home: string): string | undefined {
+  const windows = DRIVE_PATH.test(home);
+  const same = (a: string, b: string): boolean =>
+    windows ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if (!same(path.slice(0, home.length), home)) return undefined;
+  const rest = path.slice(home.length);
+  return rest === '' || rest.startsWith('/') || rest.startsWith('\\') ? rest : undefined;
+}
+
+/**
+ * A folder's path as a dialog shows it, before it is escaped: the user's home directory as `~`
+ * (without regard to the case of a drive letter), and a path longer than 120 code points cut in the
+ * middle with an ellipsis, so that both its root and its end stay visible.
+ */
+export function shownPath(path: string, home: string): string {
+  let shown = path;
+  // A home that is only a root (`/`, `C:\`) says nothing, so it is not shown as `~`.
+  if (home.length > 0 && home !== '/' && home !== '\\' && !/^[A-Za-z]:[\\/]?$/.test(home)) {
+    const rest = belowHome(path, home);
+    if (rest !== undefined) shown = `~${rest}`;
+  }
+  const chars = Array.from(shown);
+  return chars.length > SHOWN_PATH_LENGTH
+    ? `${chars.slice(0, SHOWN_PATH_HEAD).join('')}…${chars.slice(chars.length - SHOWN_PATH_TAIL).join('')}`
+    : shown;
+}
+
+/**
+ * Text from the workspace or the webview (a path, a title) for one line of a native dialog: line
+ * breaks, tabs, control and direction-changing characters are written out rather than dropped, so it
+ * cannot add a line and two texts that differ only by such a character show differently.
+ */
+export function oneLineText(text: string): string {
+  return escapeOneLine(text);
 }
 
 /**

@@ -1,5 +1,5 @@
-import { promises as fs } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { promises as fs, readFileSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
@@ -39,7 +39,8 @@ import {
   type Step,
   type TestView,
 } from './test-support';
-import { TEXT } from './text';
+import { AUTO_RESET_FILE } from './auto-reset';
+import { TEXT, shownPath } from './text';
 
 // The conversation store, with a way to make its meta writes fail or hold them (written, but not yet
 // resolved to the controller), to hold the creation of a conversation, and a handle on the instance,
@@ -52,6 +53,15 @@ const stores = vi.hoisted(() => ({
   holdMeta: undefined as
     ((patch: Record<string, unknown>) => Promise<void> | undefined) | undefined,
   holdCreate: undefined as Promise<void> | undefined,
+  /** Waits, then reports a failure without writing anything: a write that failed late. */
+  failLater: undefined as
+    ((patch: Record<string, unknown>) => Promise<void> | undefined) | undefined,
+  /** Holds what `load` read (the snapshot is taken) before it is returned to the controller. */
+  holdLoad: undefined as Promise<void> | undefined,
+  /** How many loads have read their snapshot. */
+  loads: 0,
+  /** The patches whose write has resolved to the controller, in order. */
+  landed: [] as Record<string, unknown>[],
 }));
 vi.mock('../conversations/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../conversations/store')>();
@@ -66,12 +76,27 @@ vi.mock('../conversations/store', async (importOriginal) => {
           await updateMeta(id, patch);
           throw new Error('the write could not be confirmed');
         }
+        const late = stores.failLater?.(patch);
+        if (late) {
+          await late;
+          throw new Error('the disk is full');
+        }
         const written = updateMeta(id, patch);
         const hold = stores.holdMeta?.(patch);
-        if (!hold) return written;
-        written.catch(() => undefined);
-        await hold;
-        return written;
+        if (hold) {
+          written.catch(() => undefined);
+          await hold;
+        }
+        const result = await written;
+        stores.landed.push(patch);
+        return result;
+      };
+      const load = store.load.bind(store);
+      store.load = async (id) => {
+        const data = await load(id);
+        stores.loads += 1;
+        if (stores.holdLoad) await stores.holdLoad;
+        return data;
       };
       const create = store.create.bind(store);
       store.create = async (input) => {
@@ -95,6 +120,10 @@ afterEach(async () => {
   stores.failAfterWrite = undefined;
   stores.holdMeta = undefined;
   stores.holdCreate = undefined;
+  stores.failLater = undefined;
+  stores.holdLoad = undefined;
+  stores.loads = 0;
+  stores.landed = [];
   for (const h of harnesses.splice(0)) await h.dispose();
 });
 
@@ -253,6 +282,11 @@ function userMessages(view: TestView): UserMessage[] {
 /** What History shows of a conversation's Auto. */
 function summaryAuto(view: TestView, id: ConversationId): boolean | undefined {
   return view.current().conversations.find((c) => c.id === id)?.agentAuto;
+}
+
+/** The first line of the dialog that turns Auto on, for the harness's own folder. */
+function workLine(h: Harness): string {
+  return `Folder: ${shownPath(h.workspace, homedir())}`;
 }
 
 /** A promise a test resolves when it wants to. */
@@ -482,7 +516,8 @@ describe('turning Auto on', () => {
       title: AUTO_TITLE,
       confirmLabel: 'Turn On Auto',
       detail: [
-        'In "hello" (work), Agent turns run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
+        `${workLine(h)}\nConversation: hello`,
+        'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
         'Commands are not sandboxed.',
         'Still asks: protected files, anything outside the folder, web access and other tools.',
         REVIEW_PARAGRAPH,
@@ -506,7 +541,8 @@ describe('turning Auto on', () => {
     await turnOn(h, view);
     expect(autoDialogs(h)[0]?.detail).toBe(
       [
-        'In "hello" (work), Agent turns run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.',
+        `${workLine(h)}\nConversation: hello`,
+        'Agent turns in this conversation run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.',
         'Commands are not sandboxed.',
         'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).',
         REVIEW_PARAGRAPH,
@@ -545,7 +581,8 @@ describe('turning Auto on', () => {
         title: DRAFT_TITLE,
         confirmLabel: 'Turn On Auto',
         detail: [
-          'In the new conversation (work), Agent turns run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
+          `${workLine(h)}\nConversation: new`,
+          'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
           sentence,
           'Still asks: protected files, anything outside the folder, web access and other tools.',
           REVIEW_PARAGRAPH,
@@ -562,7 +599,7 @@ describe('turning Auto on', () => {
     view.send({ type: 'conversation.rename', conversationId: id, title: 'a‮b' });
     await until('the rename', () => view.active().meta.title === 'a‮b');
     await turnOn(h, view);
-    expect(autoDialogs(h)[0]?.detail).toContain('In "a\\u{202E}b" (work)');
+    expect(autoDialogs(h)[0]?.detail).toContain(`${workLine(h)}\nConversation: a\\u{202E}b\n\n`);
   });
 
   it('is refused while a turn runs, and Auto never comes on during it', async () => {
@@ -818,8 +855,8 @@ describe('a turn with Auto', () => {
     setAuto(view, true, id);
     await until('a toast', () => view.toasts.length === 1);
     expect(view.toasts[0]?.text).toBe(TEXT.autoWaitForTurn);
-    // ...and set by hand in the store, then carried into memory by a rename.
-    await store().updateMeta(id, { agentAuto: true });
+    // ...and set by hand in the store (later than any reset), then carried into memory by a rename.
+    await store().updateMeta(id, { agentAuto: true, agentAutoSince: Date.now() + 60_000 });
     view.send({ type: 'conversation.rename', conversationId: id, title: 'renamed' });
     await until('the meta in memory', () => view.active().meta.agentAuto === true);
 
@@ -1062,7 +1099,7 @@ describe('Auto for a new conversation', () => {
     const view = h.attach();
     setAuto(view, true);
     await until('the draft flag', () => view.state?.draftAgentAuto === true);
-    expect(autoDialogs(h)[0]?.detail).toContain('In the new conversation (work)');
+    expect(autoDialogs(h)[0]?.detail).toContain(`${workLine(h)}\nConversation: new\n\n`);
 
     // The first folder is now another one; nothing told the controller.
     const [work, second] = h.env.folderList;
@@ -1206,9 +1243,9 @@ describe('the setting', () => {
     const id = view.active().meta.id;
     changeSettings(h, { agentAuto: false });
     await until('the stored flag to clear', () => storedMeta(id)?.agentAuto === false);
-    // The conversation's flag comes back behind the controller's back: the setting alone, read
-    // live by the turn, keeps Auto away.
-    await store().updateMeta(id, { agentAuto: true });
+    // The conversation's flag comes back behind the controller's back, later than the reset: the
+    // setting alone, read live by the turn, keeps Auto away.
+    await store().updateMeta(id, { agentAuto: true, agentAutoSince: Date.now() + 60_000 });
     view.send({ type: 'conversation.rename', conversationId: id, title: 'renamed' });
     await until('the meta in memory', () => view.active().meta.agentAuto === true);
     await answer(view, 'deny', 'network');
@@ -1849,5 +1886,884 @@ describe('a read-only turn never has Auto', () => {
     view.send({ type: 'turn.cancel', conversationId: id });
     await h.idle();
     expect(context.auto).toBe(false);
+  });
+});
+
+// ---- what may be turned on, and the dialog's text -------------------------------------------------------
+
+describe('what Auto may be turned on for', () => {
+  it('only the conversation the view shows: another one is refused, with no dialog', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    view.send({ type: 'conversation.new' });
+    await until('the draft', () => view.state?.active === null);
+    setAuto(view, true, id);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.autoNotShown });
+    expect(autoDialogs(h)).toEqual([]);
+    expect(storedMeta(id)).not.toHaveProperty('agentAuto');
+    // Off stays allowed for any conversation.
+    setAuto(view, false, id);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(view.toasts).toHaveLength(1);
+  });
+
+  it('is refused for a conversation whose folder is not open, with no dialog', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    h.env.folderList = [{ key: SECOND_FOLDER, name: 'second', path: join(h.root, 'second') }];
+    setAuto(view, true, id);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.conversationFolderClosed });
+    expect(autoDialogs(h)).toEqual([]);
+    expect(storedMeta(id)).not.toHaveProperty('agentAuto');
+  });
+
+  it('is refused for a draft with no folder open, with no dialog', async () => {
+    const h = await harness([text()], { noFolder: true });
+    const view = h.attach();
+    setAuto(view, true);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.noFolder });
+    expect(autoDialogs(h)).toEqual([]);
+    expect(view.current().draftAgentAuto).toBe(false);
+  });
+
+  it('checks again after the dialog: trust revoked meanwhile keeps it off', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    const release = holdDialog(h, AUTO_TITLE);
+    setAuto(view, true, id);
+    await until('the dialog', () => autoDialogs(h).length === 1);
+    h.env.trustedValue = false;
+    h.controller.environmentChanged();
+    release();
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.autoChangedDuringDialog });
+    await store().flush();
+    expect(storedMeta(id)).not.toHaveProperty('agentAuto');
+    expect(view.active().meta).not.toHaveProperty('agentAuto');
+  });
+
+  it('checks again after the dialog: a conversation deleted meanwhile gets nothing', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    const release = holdDialog(h, AUTO_TITLE);
+    setAuto(view, true, id);
+    await until('the dialog', () => autoDialogs(h).length === 1);
+    view.send({ type: 'conversation.delete', conversationId: id });
+    await until('the conversation to go', () => storedMeta(id) === undefined);
+    release();
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.autoChangedDuringDialog });
+    await store().flush();
+    expect(store().list()).toEqual([]);
+    expect(stores.landed.some((patch) => patch['agentAuto'] === true)).toBe(false);
+  });
+});
+
+describe('the dialog that turns Auto on', () => {
+  it('cuts a long title to 60 characters', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    const long = 'x'.repeat(200);
+    view.send({ type: 'conversation.rename', conversationId: id, title: long });
+    await until('the rename', () => view.active().meta.title === long);
+    await turnOn(h, view);
+    const [names] = autoDialogs(h)[0]?.detail.split('\n\n') ?? [];
+    expect(names).toBe(`${workLine(h)}\nConversation: ${'x'.repeat(59)}…`);
+  });
+
+  it('a title of quotes, line breaks and bidi controls cannot reach the folder line', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    const title = 'a"\n"Folder: elsewhere\u202E\r\n\u2066"\u2028b';
+    view.send({ type: 'conversation.rename', conversationId: id, title });
+    await until('the rename', () => view.active().meta.title === title);
+    await turnOn(h, view);
+    const detail = autoDialogs(h)[0]?.detail ?? '';
+    const [names = '', sentence] = detail.split('\n\n');
+    const lines = names.split('\n');
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toBe(workLine(h));
+    expect(lines[1]?.startsWith('Conversation: a"')).toBe(true);
+    expect(lines[1]).not.toMatch(/[\u202A-\u202E\u2066-\u2069\u2028\u2029\r]/);
+    expect(sentence?.startsWith('Agent turns in this conversation run')).toBe(true);
+  });
+});
+
+// ---- a conversation loading while Auto is turned off ------------------------------------------------------
+
+describe('a conversation that loads while Auto is turned off', () => {
+  it.each(['the setting', 'the switch'] as const)(
+    'stays off when %s turns it off during the load',
+    async (how) => {
+      const h = await harness([text('one'), text('two'), bashScenario()]);
+      const view = h.attach();
+      const id = await conversation(h, view, 'first');
+      await turnOn(h, view);
+      // Another conversation in the view: the first one is released from memory.
+      view.send({ type: 'conversation.new' });
+      await until('the draft', () => view.state?.active === null);
+      await conversation(h, view, 'second');
+
+      const load = gate();
+      stores.holdLoad = load.promise;
+      const loads = stores.loads;
+      view.send({ type: 'conversation.open', conversationId: id });
+      // The snapshot, with Auto on, has been read.
+      await until('the load to read', () => stores.loads > loads);
+      if (how === 'the setting') changeSettings(h, { agentAuto: false });
+      else setAuto(view, false, id);
+      await until('the off to land', () => stores.landed.some(isOffWrite));
+      expect(storedMeta(id)?.agentAuto).toBe(false);
+      stores.holdLoad = undefined;
+      load.release();
+      await until('the first conversation', () => view.state?.active?.meta.id === id);
+      if (how === 'the setting') changeSettings(h, { agentAuto: true });
+
+      expect(view.active().meta.agentAuto).not.toBe(true);
+      expect(summaryAuto(view, id)).not.toBe(true);
+      expect(storedMeta(id)?.agentAuto).toBe(false);
+      send(view, 'agent');
+      await answer(view, 'allow-once', 'command');
+      await finishedTurn(h, view);
+      expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+      expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+      view.expectMirror();
+    },
+  );
+});
+
+// ---- offs and ons whose writes overlap --------------------------------------------------------------------
+
+describe('Auto turned off, on and off again while the writes overlap', () => {
+  /** Auto off for the host everywhere, and an Agent turn asks for its command. */
+  async function expectOff(h: Harness, view: TestView, id: ConversationId): Promise<void> {
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(summaryAuto(view, id)).not.toBe(true);
+    send(view, 'agent');
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(summaryAuto(view, id)).not.toBe(true);
+    view.expectMirror();
+  }
+
+  it.each(['fails', 'succeeds'] as const)(
+    'off in flight, on through the dialog, off again whose write %s after the earlier ones landed',
+    async (last) => {
+      const h = await harness([text(), bashScenario()]);
+      const view = h.attach();
+      const id = await conversation(h, view);
+      await turnOn(h, view);
+
+      const firstOff = gate();
+      const on = gate();
+      const secondOff = gate();
+      let offWrites = 0;
+      stores.failLater = (patch) => {
+        if (!isOffWrite(patch)) return undefined;
+        offWrites += 1;
+        return offWrites === 2 && last === 'fails' ? secondOff.promise : undefined;
+      };
+      stores.holdMeta = (patch) => {
+        if (patch['agentAuto'] === true) return on.promise;
+        if (!isOffWrite(patch)) return undefined;
+        return offWrites === 1 ? firstOff.promise : secondOff.promise;
+      };
+
+      setAuto(view, false, id);
+      await until('Auto to be off', () => view.active().meta.agentAuto === false);
+      setAuto(view, true, id);
+      await until('the on to be written', () => storedMeta(id)?.agentAuto === true);
+      expect(autoDialogs(h)).toHaveLength(2);
+      setAuto(view, false, id);
+      await until('the second off', () => offWrites === 2);
+
+      firstOff.release();
+      await until('the first off to land', () => stores.landed.filter(isOffWrite).length === 1);
+      on.release();
+      await until('the on to land', () => stores.landed.some((p) => p['agentAuto'] === true));
+      // The window the guard protects: the on has landed, the later off has not.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      expect(view.active().meta.agentAuto).not.toBe(true);
+      expect(summaryAuto(view, id)).not.toBe(true);
+      view.expectMirror();
+      secondOff.release();
+      if (last === 'fails') {
+        await until('a toast', () => view.toasts.length === 1);
+        expect(view.toasts[0]?.text).toBe(TEXT.autoOffNotSaved);
+        // The store kept the on.
+        expect(storedMeta(id)?.agentAuto).toBe(true);
+      } else {
+        await until('the second off to land', () => stores.landed.filter(isOffWrite).length === 2);
+        expect(storedMeta(id)?.agentAuto).toBe(false);
+        expect(view.toasts).toEqual([]);
+      }
+      stores.failLater = undefined;
+      stores.holdMeta = undefined;
+      await expectOff(h, view, id);
+    },
+  );
+
+  it('a retry write in flight across a later off does not end that off', async () => {
+    const h = await harness([text(), bashScenario()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    await turnOn(h, view);
+    // An off that cannot be saved: the store keeps on.
+    stores.failMeta = isOffWrite;
+    setAuto(view, false, id);
+    await until('a toast', () => view.toasts.length === 1);
+    stores.failMeta = undefined;
+
+    // A rename carries the off along (a retry), and is held.
+    const retry = gate();
+    stores.holdMeta = (patch) => (patch['title'] === 'renamed' ? retry.promise : undefined);
+    view.send({ type: 'conversation.rename', conversationId: id, title: 'renamed' });
+    await until('the retry to be written', () => storedMeta(id)?.title === 'renamed');
+    // On through the dialog, saved; then off again, not saved.
+    await turnOn(h, view);
+    stores.failMeta = isOffWrite;
+    setAuto(view, false, id);
+    await until('a second toast', () => view.toasts.length === 2);
+    expect(storedMeta(id)?.agentAuto).toBe(true);
+
+    retry.release();
+    await until('the retry to land', () => stores.landed.some((p) => p['title'] === 'renamed'));
+    stores.failMeta = undefined;
+    stores.holdMeta = undefined;
+    await expectOff(h, view, id);
+  });
+});
+
+// ---- settings that narrow Auto during a turn -------------------------------------------------------------
+
+describe('settings changed during a turn with Auto', () => {
+  it('alwaysAskCommands turned on: the next command asks, and the composer says so at once', async () => {
+    const h = await harness([
+      text(),
+      agentScenario(
+        commandSteps('echo one', 'one.txt', 'toolu_1'),
+        webFetchSteps('toolu_2'),
+        commandSteps('echo two', 'two.txt', 'toolu_3'),
+      ),
+    ]);
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the web prompt', () => pendingPrompt(view)?.category === 'network');
+    expect(toolCalls(view)[0]).toMatchObject({ name: 'Bash', approval: 'auto' });
+    changeSettings(h, { alwaysAskCommands: true });
+    expect(view.current().agentAuto).toEqual({ offered: true, commands: false });
+    await answer(view, 'deny', 'network');
+    const prompt = await answer(view, 'allow-once', 'command');
+    expect(prompt.detail).toBe('echo two');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['auto', 'user', 'user']);
+  });
+
+  it('auto.webTools turned off: the next web call asks', async () => {
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          webFetchSteps('toolu_1'),
+          writeSteps('.vscode/settings.json', '{}', 'toolu_2'),
+          webFetchSteps('toolu_3'),
+        ),
+      ],
+      { settings: { agentAutoWebTools: true } },
+    );
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the protected prompt', () => pendingPrompt(view)?.category === 'protected-path');
+    expect(toolCalls(view)[0]).toMatchObject({ name: 'WebFetch', approval: 'auto' });
+    changeSettings(h, { agentAutoWebTools: false });
+    await answer(view, 'deny', 'protected-path');
+    await answer(view, 'deny', 'network');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['auto', 'user', 'user']);
+  });
+
+  it('alwaysAskCommands turned off: commands still ask for the rest of the turn', async () => {
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          commandSteps('echo two', 'two.txt', 'toolu_2'),
+        ),
+      ],
+      { settings: { alwaysAskCommands: true } },
+    );
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the command prompt', () => pendingPrompt(view)?.category === 'command');
+    changeSettings(h, { alwaysAskCommands: false });
+    await answer(view, 'allow-once', 'command');
+    const prompt = await answer(view, 'allow-once', 'command');
+    expect(prompt.detail).toBe('echo two');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['user', 'user']);
+  });
+
+  it('auto.webTools turned on: web calls still ask for the rest of the turn', async () => {
+    const h = await harness([
+      text(),
+      agentScenario(webFetchSteps('toolu_1'), webFetchSteps('toolu_2')),
+    ]);
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the web prompt', () => pendingPrompt(view)?.category === 'network');
+    changeSettings(h, { agentAutoWebTools: true });
+    await answer(view, 'deny', 'network');
+    await until('the second web prompt', () => toolCalls(view)[0]?.status !== 'running');
+    await answer(view, 'deny', 'network');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['user', 'user']);
+  });
+});
+
+// ---- the reset of Auto on the whole machine --------------------------------------------------------------
+
+/** What the file of the reset holds, or undefined when it is missing or cannot be read. */
+function storedReset(dir: string): unknown {
+  try {
+    return JSON.parse(readFileSync(join(dir, AUTO_RESET_FILE), 'utf8')) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The stored time of the last reset, when the file holds a valid one. */
+function storedResetValue(dir: string): number | undefined {
+  const value = storedReset(dir);
+  if (typeof value !== 'object' || value === null) return undefined;
+  const lastSeenOff = (value as { lastSeenOff?: unknown }).lastSeenOff;
+  return typeof lastSeenOff === 'number' ? lastSeenOff : undefined;
+}
+
+describe('the setting turned off and on again in another window', () => {
+  it.each(['saved', 'not saved'] as const)(
+    'leaves a conversation of a closed workspace off when it is opened again (the clearing %s)',
+    async (clearing) => {
+      const first = await harness([text()]);
+      const view = first.attach();
+      const id = await conversation(first, view);
+      await turnOn(first, view);
+      const since = storedMeta(id)?.agentAutoSince ?? 0;
+      expect(since).toBeGreaterThan(0);
+      await first.controller.dispose();
+
+      // Another workspace, on the same machine: it sees the setting off, then on again.
+      const other = await createHarness({
+        globalStorage: first.globalStorage,
+        realDefaults: true,
+        noStart: true,
+      });
+      harnesses.push(other);
+      other.env.settingsValue = { ...DEFAULT_SETTINGS };
+      await other.controller.start();
+      changeSettings(other, { agentAuto: false });
+      changeSettings(other, { agentAuto: true });
+      await until(
+        'the reset to be stored',
+        () => (storedResetValue(first.globalStorage) ?? 0) > since,
+      );
+      await other.dispose();
+
+      // The first workspace again: its store was never swept. When the clearing of its flag cannot be
+      // saved, the store keeps saying on, and the conversation is off all the same.
+      if (clearing === 'not saved') stores.failMeta = isOffWrite;
+      const again = await createHarness({
+        reuse: first,
+        realDefaults: true,
+        noStart: true,
+        sequence: [bashScenario(), bashScenario()],
+      });
+      harnesses.unshift(again);
+      again.env.settingsValue = { ...DEFAULT_SETTINGS };
+      await again.controller.start();
+      const shown = again.attach();
+      expect(summaryAuto(shown, id)).not.toBe(true);
+      if (clearing === 'saved') {
+        await until('the stored flag to clear', () => storedMeta(id)?.agentAuto === false);
+      } else {
+        await until('the clearing to fail', () =>
+          again.logger.has('warn', 'Auto could not be turned off in a stored conversation'),
+        );
+        expect(storedMeta(id)?.agentAuto).toBe(true);
+      }
+      shown.send({ type: 'conversation.open', conversationId: id });
+      await until('the conversation', () => shown.state?.active?.meta.id === id);
+      expect(shown.active().meta.agentAuto).not.toBe(true);
+      send(shown, 'agent');
+      await answer(shown, 'allow-once', 'command');
+      await finishedTurn(again, shown);
+      expect(toolCalls(shown)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+
+      // On again only through the dialog, and then it works.
+      await turnOn(again, shown);
+      expect(autoDialogs(again)).toHaveLength(1);
+      expect(storedMeta(id)?.agentAutoSince).toBeGreaterThan(
+        storedResetValue(first.globalStorage) ?? Infinity,
+      );
+      await agentTurn(again, shown, 'again');
+      expect(toolCalls(shown).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });
+    },
+  );
+
+  it('warns once when the reset cannot be saved, and an environment change saves it later', async () => {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const file = join(h.globalStorage, AUTO_RESET_FILE);
+    // The file can no longer be read, so it is not written over.
+    await fs.rm(file, { force: true });
+    await fs.mkdir(file);
+    const warnings = () => view.toasts.filter((toast) => toast.text === TEXT.autoResetNotSaved);
+    changeSettings(h, { agentAuto: false });
+    await until('the warning', () => warnings().length === 1);
+    expect(warnings()[0]).toEqual({ level: 'warning', text: TEXT.autoResetNotSaved });
+    // Retries do not warn again.
+    changeSettings(h, { agentAuto: true });
+    changeSettings(h, { agentAuto: false });
+    h.controller.environmentChanged();
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(warnings()).toHaveLength(1);
+    expect((await fs.stat(file)).isDirectory()).toBe(true);
+    // Once the file can be written, the next environment change saves the reset.
+    await fs.rm(file, { recursive: true });
+    changeSettings(h, { agentAuto: true });
+    await until('the reset to be saved', () => (storedResetValue(h.globalStorage) ?? 0) > 0);
+    expect(warnings()).toHaveLength(1);
+  });
+
+  it('works with no global storage: in memory only, and nothing throws', async () => {
+    const h = await harness([text(), bashScenario(), bashScenario()], {
+      beforeStart: (made) => {
+        made.env.globalStorage = undefined;
+      },
+    });
+    const view = h.attach();
+    const id = await conversation(h, view);
+    await turnOn(h, view);
+    changeSettings(h, { agentAuto: false });
+    changeSettings(h, { agentAuto: true });
+    expect(view.active().meta.agentAuto).toBe(false);
+    send(view, 'agent');
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'user' });
+    await turnOn(h, view);
+    await agentTurn(h, view, 'again');
+    expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });
+    expect(storedMeta(id)?.agentAuto).toBe(true);
+    expect(storedReset(h.globalStorage)).toBeUndefined();
+    expect(h.logger.entries.filter((entry) => entry.level === 'error')).toEqual([]);
+  });
+
+  it.each(['missing', 'corrupt', 'unreadable'] as const)(
+    'a %s file when the workspace is opened again: only a missing one means never reset',
+    async (how) => {
+      const first = await harness([text()]);
+      const view = first.attach();
+      const id = await conversation(first, view);
+      await turnOn(first, view);
+      const since = storedMeta(id)?.agentAutoSince ?? 0;
+      await first.controller.dispose();
+
+      const file = join(first.globalStorage, AUTO_RESET_FILE);
+      await fs.rm(file, { force: true });
+      if (how === 'corrupt') await fs.writeFile(file, '{"lastSeenOff": "no"');
+      // A directory where the file should be: it cannot be read, and must not be written over.
+      if (how === 'unreadable') await fs.mkdir(file);
+
+      const again = await createHarness({
+        reuse: first,
+        realDefaults: true,
+        noStart: true,
+        sequence: [bashScenario()],
+      });
+      harnesses.unshift(again);
+      again.env.settingsValue = { ...DEFAULT_SETTINGS };
+      await again.controller.start();
+      const shown = again.attach();
+      shown.send({ type: 'conversation.open', conversationId: id });
+      await until('the conversation', () => shown.state?.active?.meta.id === id);
+
+      if (how === 'missing') {
+        // Never reset: the conversation keeps its Auto, and the file is written.
+        expect(shown.active().meta.agentAuto).toBe(true);
+        await until('the file to be written', () => storedResetValue(first.globalStorage) === 0);
+        await agentTurn(again, shown);
+        expect(toolCalls(shown)).toMatchObject([{ name: 'Bash', approval: 'auto' }]);
+        return;
+      }
+      // Fails closed: a reset now, so the conversation is off and its flag is cleared.
+      expect(shown.active().meta.agentAuto).not.toBe(true);
+      expect(summaryAuto(shown, id)).not.toBe(true);
+      await until('the stored flag to clear', () => storedMeta(id)?.agentAuto === false);
+      if (how === 'corrupt') {
+        // Written again, with the reset later than the conversation's Auto.
+        await until(
+          'the file to be written',
+          () => (storedResetValue(first.globalStorage) ?? 0) > since,
+        );
+        await turnOn(again, shown);
+        expect(storedMeta(id)?.agentAutoSince).toBeGreaterThan(
+          storedResetValue(first.globalStorage) ?? Infinity,
+        );
+        return;
+      }
+      // Not written over, and Auto cannot be turned on while the time cannot be recorded.
+      expect((await fs.stat(file)).isDirectory()).toBe(true);
+      setAuto(shown, true, id);
+      await until('a toast', () => shown.toasts.length === 1);
+      expect(shown.toasts[0]).toEqual({ level: 'warning', text: TEXT.autoNotSaved });
+      await again.controller.dispose();
+      expect(storedMeta(id)?.agentAuto).toBe(false);
+    },
+  );
+});
+
+// ---- the draft's Auto after a folder change, and an off while the first message is sent -------------------
+
+describe('a draft with Auto', () => {
+  it.each(['reordered', 'replaced'] as const)(
+    'loses it at once when the folders are %s and its first message would go elsewhere',
+    async (how) => {
+      const h = await harness([text()], {
+        beforeStart: (made) => {
+          made.env.folderList = [
+            ...made.env.folderList,
+            { key: SECOND_FOLDER, name: 'second', path: join(made.root, 'second') },
+          ];
+        },
+      });
+      await fs.mkdir(join(h.root, 'second'), { recursive: true });
+      const view = h.attach();
+      setAuto(view, true);
+      await until('the draft flag', () => view.state?.draftAgentAuto === true);
+      const [work, second] = h.env.folderList;
+      if (!work || !second) throw new Error('two folders expected');
+      h.env.folderList =
+        how === 'reordered'
+          ? [second, work]
+          : [{ key: 'folder-3' as FolderKey, name: 'third', path: join(h.root, 'third') }, work];
+      h.controller.environmentChanged();
+      expect(view.current().draftAgentAuto).toBe(false);
+      view.expectMirror();
+    },
+  );
+
+  it('turned off while its first message creates the conversation: no Auto, and the command asks', async () => {
+    const h = await harness([bashScenario()]);
+    const view = h.attach();
+    setAuto(view, true);
+    await until('the draft flag', () => view.state?.draftAgentAuto === true);
+    const creation = gate();
+    stores.holdCreate = creation.promise;
+    send(view, 'agent');
+    await until('the flag to be used', () => view.state?.draftAgentAuto === false);
+    // The view still shows the draft, so the off names no conversation.
+    setAuto(view, false);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    creation.release();
+    await until('the conversation', () => view.state?.active !== null);
+    const id = view.active().meta.id;
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(summaryAuto(view, id)).not.toBe(true);
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+    expect(userMessages(view)[0]).not.toHaveProperty('auto');
+    await until('the store', () => storedMeta(id)?.agentAuto === false);
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(view.current().draftAgentAuto).toBe(false);
+    expect(view.toasts).toEqual([]);
+    view.expectMirror();
+  });
+});
+
+// ---- second verification round ----------------------------------------------------------------------------
+
+describe('settings that narrow Auto, changed back during the turn', () => {
+  it('alwaysAskCommands on and off again before the next command: it still asks, the next turn does not', async () => {
+    const h = await harness([
+      text(),
+      agentScenario(
+        commandSteps('echo one', 'one.txt', 'toolu_1'),
+        webFetchSteps('toolu_2'),
+        commandSteps('echo two', 'two.txt', 'toolu_3'),
+      ),
+      bashScenario('echo three', 'three.txt'),
+    ]);
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the web prompt', () => pendingPrompt(view)?.category === 'network');
+    changeSettings(h, { alwaysAskCommands: true });
+    changeSettings(h, { alwaysAskCommands: false });
+    await answer(view, 'deny', 'network');
+    const prompt = await answer(view, 'allow-once', 'command');
+    expect(prompt.detail).toBe('echo two');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['auto', 'user', 'user']);
+    // The next turn follows the settings as they are now.
+    await agentTurn(h, view, 'next');
+    expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });
+  });
+
+  it('auto.webTools off and on again before the next web call: it still asks, the next turn does not', async () => {
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          webFetchSteps('toolu_1'),
+          writeSteps('.vscode/settings.json', '{}', 'toolu_2'),
+          webFetchSteps('toolu_3'),
+        ),
+        agentScenario(webFetchSteps('toolu_4')),
+      ],
+      { settings: { agentAutoWebTools: true } },
+    );
+    const view = h.attach();
+    await conversation(h, view);
+    await turnOn(h, view);
+    send(view, 'agent');
+    await until('the protected prompt', () => pendingPrompt(view)?.category === 'protected-path');
+    changeSettings(h, { agentAutoWebTools: false });
+    changeSettings(h, { agentAutoWebTools: true });
+    await answer(view, 'deny', 'protected-path');
+    await answer(view, 'deny', 'network');
+    await finishedTurn(h, view);
+    expect(toolCalls(view).map((call) => call.approval)).toEqual(['auto', 'user', 'user']);
+    await agentTurn(h, view, 'next');
+    expect(toolCalls(view).at(-1)).toMatchObject({ name: 'WebFetch', approval: 'auto' });
+  });
+});
+
+/** The lines of the first paragraph of the dialog for a draft in a folder with this name and path. */
+async function dialogHead(folder: { name?: string; path?: string }): Promise<string[]> {
+  const h = await harness([text()], {
+    beforeStart: (made) => {
+      const [work] = made.env.folderList;
+      if (!work) throw new Error('a folder expected');
+      made.env.folderList = [{ ...work, ...folder }];
+    },
+  });
+  const view = h.attach();
+  setAuto(view, true);
+  await until('the draft flag', () => view.state?.draftAgentAuto === true);
+  const [names = ''] = autoDialogs(h)[0]?.detail.split('\n\n') ?? [];
+  return names.split('\n');
+}
+
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+// eslint-disable-next-line no-control-regex
+const RAW_CONTROL = /[\u0000-\u0009\u000B-\u001F\u007F-\u009F\u2028\u2029\u2063]/;
+
+describe('the shown path', () => {
+  it('shows the home directory as ~, at a path boundary only', () => {
+    expect(shownPath('/home/someone', '/home/someone')).toBe('~');
+    expect(shownPath('/home/someone/work/app', '/home/someone')).toBe('~/work/app');
+    expect(shownPath('/home/someoneelse/app', '/home/someone')).toBe('/home/someoneelse/app');
+    expect(shownPath('/Users/anna/x', '/Users/ann')).toBe('/Users/anna/x');
+    expect(shownPath('C:\\Users\\me\\app', 'C:\\Users\\me')).toBe('~\\app');
+    expect(shownPath('/srv/app', '/')).toBe('/srv/app');
+    expect(shownPath('/srv/app', '')).toBe('/srv/app');
+  });
+
+  it('compares a Windows home without regard to the case of the drive letter', () => {
+    expect(shownPath('c:\\Users\\me\\app', 'C:\\Users\\me')).toBe('~\\app');
+    expect(shownPath('c:\\users\\me', 'C:\\Users\\me')).toBe('~');
+    // The boundary rule holds, and the original text after the home is kept as it is.
+    expect(shownPath('c:\\Users\\mee\\app', 'C:\\Users\\me')).toBe('c:\\Users\\mee\\app');
+    expect(shownPath('c:\\Users\\me\\App', 'C:\\Users\\me')).toBe('~\\App');
+    // A case that differs on a system with a case-sensitive path stays different.
+    expect(shownPath('/users/me/app', '/Users/me')).toBe('/users/me/app');
+  });
+
+  it('keeps 120 code points whole and cuts 121 in the middle, both ends intact', () => {
+    const whole = `/${'a'.repeat(59)}${'b'.repeat(60)}`;
+    expect(Array.from(whole)).toHaveLength(120);
+    expect(shownPath(whole, '/home/someone')).toBe(whole);
+    const long = `/root${'m'.repeat(100)}the-very-end-of-the-path-is-here`;
+    const chars = Array.from(long);
+    expect(chars.length).toBeGreaterThan(120);
+    const shown = shownPath(long, '/home/someone');
+    expect(shown).toBe(`${chars.slice(0, 40).join('')}…${chars.slice(-79).join('')}`);
+    expect(Array.from(shown)).toHaveLength(120);
+    expect(shown.startsWith('/root')).toBe(true);
+    expect(shown.endsWith('the-very-end-of-the-path-is-here')).toBe(true);
+    const exact = `/${'c'.repeat(120)}`;
+    expect(Array.from(exact)).toHaveLength(121);
+    expect(shownPath(exact, '')).toBe(`/${'c'.repeat(39)}…${'c'.repeat(79)}`);
+  });
+
+  it('cuts a path of emoji by code point, never leaving half of one', () => {
+    const shown = shownPath(`/${'😀'.repeat(130)}`, '');
+    expect(shown).toBe(`/${'😀'.repeat(39)}…${'😀'.repeat(79)}`);
+    expect(shown).not.toMatch(LONE_SURROGATE);
+  });
+});
+
+describe('the folder line of the dialog', () => {
+  it('two folders with the same name give two different dialogs', async () => {
+    const h = await harness([text()], {
+      beforeStart: (made) => {
+        made.env.folderList = [
+          ...made.env.folderList,
+          { key: SECOND_FOLDER, name: 'work', path: join(made.root, 'elsewhere', 'work') },
+        ];
+      },
+    });
+    const view = h.attach();
+    h.ui.confirmAnswer = false;
+    setAuto(view, true);
+    await until('the first dialog', () => autoDialogs(h).length === 1);
+    view.send({ type: 'conversation.new', folder: SECOND_FOLDER });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    setAuto(view, true);
+    await until('the second dialog', () => autoDialogs(h).length === 2);
+    const [one, two] = autoDialogs(h).map((dialog) => dialog.detail.split('\n')[0]);
+    expect(one).toBe(workLine(h));
+    expect(two).toBe(`Folder: ${shownPath(join(h.root, 'elsewhere', 'work'), homedir())}`);
+    expect(one).not.toBe(two);
+  });
+
+  it('the first paragraph is the folder path and the conversation, and the folder name is not shown', async () => {
+    const lines = await dialogHead({
+      name: 'app (~/work/app)\nFolder: elsewhere\u202E\r\n\u2066\u2028b',
+    });
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^Folder: \//);
+    expect(lines[1]).toBe('Conversation: new');
+    expect(lines.join('\n')).not.toContain('app (~/work/app)');
+    expect(lines.join('\n')).not.toContain('elsewhere');
+  });
+
+  it('two folders whose paths differ only by a line break, or only by U+2063, show differently', async () => {
+    const base = '/srv/project';
+    const heads = await Promise.all(
+      [`${base}/a b`, `${base}/a\nb`, `${base}/a\r\nb`, `${base}/a\tb`, `${base}/a\u2063b`].map(
+        async (path) => dialogHead({ path }),
+      ),
+    );
+    const folders = heads.map((lines) => lines[0]);
+    for (const lines of heads) {
+      expect(lines).toHaveLength(2);
+      expect(lines.join('\n')).not.toMatch(RAW_CONTROL);
+    }
+    expect(new Set(folders).size).toBe(folders.length);
+    expect(folders[1]).toBe('Folder: /srv/project/a\\u{000A}b');
+    expect(folders[4]).toBe('Folder: /srv/project/a\\u{2063}b');
+  });
+
+  it('a path longer than 120 code points is cut in the middle in the dialog', async () => {
+    const path = `/start${'x'.repeat(130)}/the-end`;
+    const [folder] = await dialogHead({ path });
+    const chars = Array.from(path);
+    expect(folder).toBe(`Folder: ${chars.slice(0, 40).join('')}…${chars.slice(-79).join('')}`);
+  });
+});
+
+describe('the title in the dialog', () => {
+  /** The `Conversation:` line of the dialog for a conversation with this title. */
+  async function titleLine(title: string): Promise<string | undefined> {
+    const h = await harness([text()]);
+    const view = h.attach();
+    const id = await conversation(h, view);
+    view.send({ type: 'conversation.rename', conversationId: id, title });
+    await until('the rename', () => view.active().meta.title === title);
+    await turnOn(h, view);
+    return autoDialogs(h)[0]?.detail.split('\n')[1];
+  }
+
+  it('shows 60 characters whole and cuts 61 to 59 and an ellipsis', async () => {
+    expect(await titleLine('y'.repeat(60))).toBe(`Conversation: ${'y'.repeat(60)}`);
+    expect(await titleLine('z'.repeat(61))).toBe(`Conversation: ${'z'.repeat(59)}…`);
+  });
+
+  it('cuts a title of emoji without leaving half of one', async () => {
+    const line = await titleLine('😀'.repeat(61));
+    expect(line).toBe(`Conversation: ${'😀'.repeat(59)}…`);
+    expect(line).not.toMatch(
+      /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+    );
+  });
+});
+
+describe('the reset read again when the dialog is confirmed', () => {
+  it('turns off a conversation it outdates, and the confirmed one is later than it', async () => {
+    const h = await harness([text('a'), text('b'), bashScenario()]);
+    const first = h.attach();
+    const a = await conversation(h, first, 'first');
+    await turnOn(h, first);
+    const sinceA = storedMeta(a)?.agentAutoSince ?? 0;
+    const second = h.attach();
+    const b = await conversation(h, second, 'second');
+
+    const release = holdDialog(h, AUTO_TITLE);
+    setAuto(second, true, b);
+    await until('the dialog', () => autoDialogs(h).length === 2);
+    // Another window reset Auto after A was turned on.
+    const reset = sinceA + 1;
+    await fs.writeFile(
+      join(h.globalStorage, AUTO_RESET_FILE),
+      JSON.stringify({ lastSeenOff: reset, highestStamp: reset }),
+    );
+    release();
+    await until('B to have Auto', () => second.state?.active?.meta.agentAuto === true);
+    expect(first.active().meta.agentAuto).toBe(false);
+    expect(summaryAuto(first, a)).toBe(false);
+    expect(storedMeta(b)?.agentAutoSince).toBeGreaterThan(reset);
+    await agentTurn(h, second);
+    expect(toolCalls(second)).toMatchObject([{ name: 'Bash', approval: 'auto' }]);
+  });
+});
+
+describe('a conversation built while it loads', () => {
+  it('takes a change written during the load', async () => {
+    const h = await harness([text('one'), text('two')]);
+    const view = h.attach();
+    const id = await conversation(h, view, 'first');
+    view.send({ type: 'conversation.new' });
+    await until('the draft', () => view.state?.active === null);
+    await conversation(h, view, 'second');
+
+    const load = gate();
+    stores.holdLoad = load.promise;
+    const loads = stores.loads;
+    view.send({ type: 'conversation.open', conversationId: id });
+    await until('the load to read', () => stores.loads > loads);
+    view.send({ type: 'conversation.rename', conversationId: id, title: 'renamed meanwhile' });
+    await until('the rename to land', () =>
+      stores.landed.some((patch) => patch['title'] === 'renamed meanwhile'),
+    );
+    stores.holdLoad = undefined;
+    load.release();
+    await until('the conversation', () => view.state?.active?.meta.id === id);
+    expect(view.active().meta.title).toBe('renamed meanwhile');
+    expect(summaryAuto(view, id)).not.toBe(true);
+    view.expectMirror();
   });
 });

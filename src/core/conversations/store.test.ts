@@ -142,6 +142,26 @@ describe('agentAuto', () => {
     expect((await again.load(parent.id))?.meta.agentAuto).toBe(true);
     expect((await again.load(meta.id))?.meta).not.toHaveProperty('agentAuto');
   });
+
+  it('keeps when it was turned on, only together with it, and a branch does not inherit it', async () => {
+    const { store } = await open();
+    const created = await store.create({ ...base, agentAuto: true, agentAutoSince: 1_234 });
+    expect(created).toMatchObject({ agentAuto: true, agentAutoSince: 1_234 });
+    const without = await store.create({ ...base, agentAutoSince: 1_234 });
+    expect(without).not.toHaveProperty('agentAuto');
+    expect(without).not.toHaveProperty('agentAutoSince');
+    await store.putMessage(created.id, userMessage('m1', 't1', 'q'));
+    await store.putMessage(created.id, assistantMessage('m2', 't1', [text('a')]));
+    const { meta } = await store.fork({ parentId: created.id, atMessageId: 'm2' as MessageId });
+    expect(meta).not.toHaveProperty('agentAutoSince');
+    await store.flush();
+
+    const { store: again } = await open();
+    expect((await again.load(created.id))?.meta).toMatchObject({
+      agentAuto: true,
+      agentAutoSince: 1_234,
+    });
+  });
 });
 
 describe('folding', () => {

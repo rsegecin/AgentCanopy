@@ -200,6 +200,13 @@ export class TurnRun {
   private cancelRequested = false;
   /** Auto was turned off during this turn: it no longer applies, whatever the meta says later. */
   private autoRevoked = false;
+  /**
+   * The settings that narrow Auto, latched for this turn: once commands were seen to ask
+   * (`alwaysAskCommands` on) or web tools to ask (`agentAutoWebTools` off), they keep asking until the
+   * turn ends, whatever the settings do later. Set in `observeSettings`.
+   */
+  private commandsAsk = false;
+  private webAsks = false;
   /** Set when the run is wrapping up; late callbacks then leave the conversation alone. */
   private closed = false;
   private handle: TurnHandle | undefined;
@@ -263,6 +270,9 @@ export class TurnRun {
     this.folderKey = input.folder.key;
     this.mode = input.mode;
     this.profile = input.profile;
+    // The turn starts from its own snapshot of the settings, narrowed by what they are now.
+    this.observeSettings(input.settings);
+    this.observeSettings(services.deps.env.settings());
     this.logger = services.deps.logger;
     this.clock = services.deps.clock ?? { now: () => Date.now() };
     this.runDir = join(services.storageDir, 'run', `turn-${this.turnId}`);
@@ -295,9 +305,19 @@ export class TurnRun {
   }
 
   /**
+   * Takes in settings seen now (the controller calls it on every change of the environment, and the
+   * policy context on every read): a setting that narrows Auto narrows it for the rest of the turn.
+   * One-way: nothing seen here can loosen the turn again.
+   */
+  observeSettings(settings: Settings): void {
+    if (settings.alwaysAskCommands) this.commandsAsk = true;
+    if (!settings.agentAutoWebTools) this.webAsks = true;
+  }
+
+  /**
    * Whether Auto applies to a decision made now. It started with the turn and only gets narrower:
-   * revoked, turned off in the conversation, or the setting turned off. The setting is the only one
-   * read live, and only to take Auto away; every other setting is the turn's snapshot.
+   * revoked, turned off in the conversation, or the setting turned off. The setting is read live, and
+   * only to take Auto away; the other settings that narrow it are narrowed live in `policyContext`.
    */
   private autoApplies(): boolean {
     return (
@@ -1348,6 +1368,14 @@ export class TurnRun {
     const { meta } = this.runtime.data;
     // Live: read when the policy approves, so an Auto turned off while it awaited something counts.
     const autoApplies = (): boolean => this.autoApplies();
+    const latched = (): Settings => {
+      this.observeSettings(this.services.deps.env.settings());
+      return {
+        ...this.input.settings,
+        alwaysAskCommands: this.commandsAsk,
+        agentAutoWebTools: !this.webAsks,
+      };
+    };
     return {
       ...(this.projectConfig ? { projectConfig: this.projectConfig } : {}),
       // A turn without Auto (an Ask or Plan turn, among others) never shows the policy a conversation
@@ -1356,7 +1384,12 @@ export class TurnRun {
         this.input.auto || meta.agentAuto !== true ? meta : { ...meta, agentAuto: false },
       mode: this.input.mode,
       folder: this.input.folder,
-      settings: this.input.settings,
+      // The turn's settings, narrowed at the moment of deciding by every setting that narrows Auto
+      // seen during the turn: one turned to ask more takes effect at once and stays so for the turn;
+      // one loosened waits for the next turn.
+      get settings(): Settings {
+        return latched();
+      },
       get auto() {
         return autoApplies();
       },

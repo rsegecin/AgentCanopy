@@ -107,8 +107,8 @@ export const ViewStateSchema = z.object({
   /** Attachments queued for this view's next message, whether or not a conversation exists yet. */
   draftAttachments: z.array(AttachmentSchema),
   /**
-   * The user turned Auto on for the conversation this view is about to start. Its first message, if
-   * it is an Agent message, creates the conversation with Auto on. Gone when the view moves on.
+   * The user turned Auto on for the conversation this view is about to start. Its first message, in
+   * any mode, creates the conversation with Auto on. Gone when the view moves on.
    */
   draftAgentAuto: z.boolean(),
   /** Results of the composer's file search (typing `@`), or null when no search is open. */

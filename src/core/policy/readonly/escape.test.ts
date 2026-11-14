@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { displayName, escapeForDisplay } from './escape';
+import { displayName, escapeForDisplay, escapeOneLine } from './escape';
 
 describe('escapeForDisplay', () => {
   it('leaves plain text, newline and tab alone', () => {
@@ -30,9 +30,30 @@ describe('escapeForDisplay', () => {
     }
   });
 
+  it('escapes invisible characters that make different texts look alike', () => {
+    const codes = [
+      0x034f, 0x180e, 0x2061, 0x2062, 0x2063, 0x2064, 0xfe00, 0xfe0f, 0xe0000, 0xe0001, 0xe007f,
+    ];
+    for (const code of codes) {
+      const escaped = escapeForDisplay(`x${String.fromCodePoint(code)}y`);
+      expect(escaped).toBe(`x\\u{${code.toString(16).toUpperCase().padStart(4, '0')}}y`);
+    }
+  });
+
   it('does not touch characters next to the ranges', () => {
-    const plain = '\u00a0\u202f\u2065\u206a\u2061\u200a\u00ae';
+    const plain =
+      '\u00a0\u202f\u2065\u206a\u200a\u00ae\u034e\u0350\u180d\u180f\u2065\ufdff\ufe10\u{dffff}\u{e0080}';
     expect(escapeForDisplay(plain)).toBe(plain);
+  });
+});
+
+describe('escapeOneLine', () => {
+  it('writes out line feed, carriage return, tab and the separators, and keeps plain text', () => {
+    expect(escapeOneLine('a\nb\r\nc\td\u2028e\u2029f')).toBe(
+      'a\\u{000A}b\\u{000D}\\u{000A}c\\u{0009}d\\u{2028}e\\u{2029}f',
+    );
+    expect(escapeOneLine('src/a b/ü.ts')).toBe('src/a b/ü.ts');
+    expect(escapeOneLine('a\nb')).not.toBe(escapeOneLine('a b'));
   });
 });
 
