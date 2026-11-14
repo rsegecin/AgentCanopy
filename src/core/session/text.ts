@@ -13,6 +13,7 @@ export const TEXT = {
   noProvider: 'No agent provider is available.',
   checkingProvider: 'AgentCanopy is still checking Claude Code. Try again in a moment.',
   turnRunning: 'A turn is already running in this conversation.',
+  messageAlreadyQueued: 'A message is already waiting for this turn. Edit or remove it first.',
   conversationGone: 'That conversation no longer exists.',
   conversationFolderClosed:
     'This conversation belongs to a folder that is not open in this window.',

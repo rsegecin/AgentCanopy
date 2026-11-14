@@ -114,6 +114,15 @@ export class UiState {
     this.update({ drafts });
   }
 
+  /**
+   * Puts text the host sent in front of the draft, so nothing the user typed is lost: the text, a
+   * blank line, then the draft; just the text when the draft is blank.
+   */
+  prefillDraft(key: string, text: string): void {
+    const current = this.snapshot.drafts[key] ?? '';
+    this.setDraft(key, current.trim() === '' ? text : `${text}\n\n${current}`);
+  }
+
   setExpanded(id: string, expanded: boolean): void {
     const next = { ...this.snapshot.expanded };
     if (expanded) next[id] = true;

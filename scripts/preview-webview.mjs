@@ -422,6 +422,7 @@ const state = {
     ],
     plan,
     activity: 'Working…',
+    queued: null,
   },
   checkpoints: [
     {
@@ -757,6 +758,26 @@ function page(origin, query) {
       };
       if (planVariant === 'ready') state.review = { ...state.review, configChanges: [], busy: false };
     }
+    // ?queued=running: an Agent message waits behind the running turn (Stop and Send both show; the chip offers Send now).
+    // ?queued=stopped: the turn was stopped, so the message is held and the chip offers Send.
+    const queuedVariant = params.get('queued');
+    if ((queuedVariant === 'running' || queuedVariant === 'stopped') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'agent' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      state.review = { ...state.review, configChanges: [], busy: false };
+      if (queuedVariant === 'stopped') {
+        a.turns = a.turns.map((t) => (t.id === 't3' ? { ...t, status: 'interrupted', endedAt: Date.now() } : t));
+        a.activity = null;
+      }
+      a.queued = {
+        text: 'Also add a test for the burst limit, and update the README section on rate limiting. Keep the existing public API as it is.',
+        mode: 'agent',
+        model: 'sonnet',
+        attachments: [{ kind: 'file', path: 'src/server/rate-limit.ts' }],
+        queuedAt: Date.now(),
+      };
+    }
     const sent = [];
     window.__sent = sent;
     // ?collapsed=1: the user has collapsed the changes card.
@@ -820,7 +841,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped)`,
   );
 } else {
   const chrome =
@@ -861,6 +882,8 @@ if (!process.argv.includes('--check')) {
     { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
     { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
     { name: 'chat-changes-busy-dark', query: '?tab=chat&busy=1', size: '520,900' },
+    { name: 'chat-queued-running-dark', query: '?tab=chat&queued=running', size: '520,900' },
+    { name: 'chat-queued-stopped-dark', query: '?tab=chat&queued=stopped', size: '520,900' },
     { name: 'chat-empty-config-dark', query: '?tab=chat&empty=1', size: '520,700' },
     {
       name: 'chat-panel-changes-light',

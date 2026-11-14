@@ -1,21 +1,31 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { AssistantMessage, MessagePart, PatchOp, ToolCallView } from '../../shared';
+import { applyPatch } from '../../shared';
+import type { AssistantMessage, MessagePart, PatchOp, ToolCallView, ViewState } from '../../shared';
+import type { TurnObserver } from '../contracts';
 import { createConversationStore } from '../conversations/store';
+import { BUSY_MESSAGE } from '../workspace/tracker/tracker';
 import {
   createHarness,
+  createPlanTestPolicy,
   createTestPolicy,
   fixtureSteps,
   finishedTurn,
+  imageReference,
   lastTurn,
+  pasteImageMessage,
+  pngBytes,
   resultStep,
   sendAndFinish,
   streamedText,
   textScenario,
   until,
   type Harness,
+  type ScenarioSpec,
+  type TestView,
 } from './test-support';
+import { TEXT } from './text';
 
 const harnesses: Harness[] = [];
 async function harness(...args: Parameters<typeof createHarness>): Promise<Harness> {
@@ -677,5 +687,613 @@ describe('draft attachments', () => {
     expect(record.stdin).not.toContain('escape');
     expect(view.current().draftAttachments).toEqual([]);
     expect(lastTurn(view).status).toBe('completed');
+  });
+});
+
+describe('a message sent while a turn runs', () => {
+  /** A turn that completes by itself after `ms`. */
+  const slow = (ms = 500): ScenarioSpec => ({
+    scenario: { steps: [...streamedText(['working']), { sleep: ms }, ...resultStep('first')] },
+  });
+  const hanging: ScenarioSpec = {
+    scenario: { steps: [...streamedText(['working']), { hang: true }] },
+  };
+  const failing = (ms = 300): ScenarioSpec => ({
+    scenario: { steps: [...streamedText(['x']), { sleep: ms }, { stderr: 'boom' }, { exit: 3 }] },
+  });
+  const answer = (text: string): ScenarioSpec => ({ scenario: textScenario(text) });
+
+  async function harnessFor(...sequence: ScenarioSpec[]): Promise<Harness> {
+    return harness({ policy: createPlanTestPolicy(), sequence });
+  }
+
+  function sendIn(view: TestView, text: string, mode: 'ask' | 'plan' | 'agent' = 'agent'): void {
+    const active = view.state?.active;
+    view.send({
+      type: 'turn.send',
+      ...(active ? { conversationId: active.meta.id } : {}),
+      text,
+      mode,
+      model: 'default',
+    });
+  }
+
+  /** Starts a first turn and waits until it runs. */
+  async function startRunning(
+    h: Harness,
+    view: TestView,
+    mode: 'ask' | 'plan' | 'agent' = 'agent',
+  ): Promise<ConversationIdOf> {
+    sendIn(view, 'first', mode);
+    await until('the first turn to run', () => h.requests.length === 1);
+    await until('the conversation to be shown', () => view.state?.active != null);
+    return view.active().meta.id;
+  }
+  type ConversationIdOf = ReturnType<TestView['active']>['meta']['id'];
+
+  /** The first state the view had that satisfies `predicate`, by replaying what the host sent. */
+  function firstState(view: TestView, predicate: (state: ViewState) => boolean) {
+    let state: ViewState | undefined;
+    for (const message of view.messages) {
+      if (message.type === 'init') state = message.state;
+      else if (message.type === 'patch' && state) state = applyPatch(state, message.ops);
+      else continue;
+      if (state && predicate(state)) return state;
+    }
+    return undefined;
+  }
+
+  const userTexts = (view: TestView): string[] =>
+    view.active().messages.flatMap((message) => (message.role === 'user' ? [message.text] : []));
+
+  async function pickFile(h: Harness, view: TestView, path: string): Promise<void> {
+    const before = h.ui.callsOf('pickPaths').length;
+    h.ui.picked = [path];
+    view.send({ type: 'context.pick', what: 'file' });
+    await until('the picked file', () => h.ui.callsOf('pickPaths').length === before + 1);
+  }
+
+  async function settle(h: Harness, view: TestView, turns: number): Promise<void> {
+    await until('the turns to exist', () => (view.state?.active?.turns.length ?? 0) >= turns);
+    await finishedTurn(h, view);
+  }
+
+  it.each(['agent', 'plan'] as const)(
+    'is queued in %s mode and becomes the next turn when the turn completes',
+    async (mode) => {
+      const h = await harnessFor(slow(), answer('second answer'));
+      const view = h.attach();
+      const id = await startRunning(h, view, mode);
+      const before = view.active();
+      await pickFile(h, view, 'src/a.ts');
+      expect(view.current().draftAttachments).toHaveLength(1);
+
+      sendIn(view, 'second', mode);
+      await until('the message to be queued', () => view.state?.active?.queued != null);
+      expect(view.active().queued).toMatchObject({
+        text: 'second',
+        mode,
+        model: 'default',
+        attachments: [{ kind: 'file', path: 'src/a.ts' }],
+      });
+      expect(view.current().draftAttachments).toEqual([]);
+      expect(view.toasts).toEqual([]);
+      expect(view.active().messages).toHaveLength(before.messages.length);
+      expect(view.active().turns).toHaveLength(1);
+      expect(h.requests).toHaveLength(1);
+      expect(h.controller.runningTurns()).toBe(1);
+      // Nothing was written to the conversation store for it.
+      const store = createConversationStore({ dir: join(h.storage, 'conversations') });
+      await store.init();
+      const stored = await store.load(id);
+      expect(stored?.messages.filter((message) => message.role === 'user')).toHaveLength(1);
+      expect(stored?.turns).toHaveLength(1);
+      await store.flush();
+      view.expectMirror();
+
+      await until('the second turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+      const second = await finishedTurn(h, view);
+      expect(second.status).toBe('completed');
+      expect(view.active().queued).toBeNull();
+      expect(h.requests).toHaveLength(2);
+      expect(userTexts(view)).toEqual(['first', 'second']);
+      const user = view.active().messages.filter((message) => message.role === 'user')[1];
+      expect(user?.role === 'user' && user.attachments).toEqual([
+        { kind: 'file', path: 'src/a.ts' },
+      ]);
+
+      // The first turn had completed, and the queued message was not shown as a message before.
+      const atSecond = firstState(
+        view,
+        (state) =>
+          state.active?.messages.some((m) => m.role === 'user' && m.text === 'second') === true,
+      );
+      expect(atSecond?.active?.turns[0]?.status).toBe('completed');
+      view.expectMirror();
+    },
+  );
+
+  it('refuses an Ask message as before and queues nothing', async () => {
+    const h = await harnessFor(hanging);
+    const view = h.attach();
+    await startRunning(h, view, 'ask');
+    sendIn(view, 'second', 'ask');
+    await until('a toast', () => view.toasts.length > 0);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.turnRunning }]);
+    expect(view.active().queued).toBeNull();
+    expect(h.requests).toHaveLength(1);
+    view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    expect((await finishedTurn(h, view)).status).toBe('interrupted');
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it('refuses a second one while one is queued and keeps its attachments in the draft', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    await pickFile(h, view, 'src/a.ts');
+    sendIn(view, 'second');
+    await until('the first to be queued', () => view.state?.active?.queued != null);
+    const queued = view.active().queued;
+    await pickFile(h, view, 'src/b.ts');
+    sendIn(view, 'third');
+    await until('a toast', () => view.toasts.length > 0);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.messageAlreadyQueued }]);
+    expect(view.active().queued).toEqual(queued);
+    expect(view.current().draftAttachments).toEqual([{ kind: 'file', path: 'src/b.ts' }]);
+    expect(userTexts(view)).toEqual(['first']);
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
+  });
+
+  it('is kept when the turn is stopped, and "Send now" then sends it', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'turn.cancel', conversationId: id });
+    expect((await finishedTurn(h, view)).status).toBe('interrupted');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(view.active().queued?.text).toBe('second');
+    expect(h.requests).toHaveLength(1);
+    expect(view.active().turns).toHaveLength(1);
+
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    expect(view.active().queued).toBeNull();
+    expect(userTexts(view)).toEqual(['first', 'second']);
+    expect(lastTurn(view).status).toBe('completed');
+    view.expectMirror();
+  });
+
+  it('is kept when the turn ends in an error', async () => {
+    const h = await harnessFor(failing(), answer('after'));
+    const view = h.attach();
+    await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    await until('the error', () => view.state?.active?.turns[0]?.status === 'error');
+    await h.idle();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(view.active().queued?.text).toBe('second');
+    expect(h.requests).toHaveLength(1);
+    expect(view.active().turns).toHaveLength(1);
+  });
+
+  it('"Send now" stops the turn and waits for it before the new turn begins', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    expect(view.active().turns.map((turn) => turn.status)).toEqual(['interrupted', 'completed']);
+    expect(userTexts(view)).toEqual(['first', 'second']);
+    const atSecond = firstState(
+      view,
+      (state) =>
+        state.active?.messages.some((m) => m.role === 'user' && m.text === 'second') === true,
+    );
+    expect(atSecond?.active?.turns[0]?.status).toBe('interrupted');
+    expect(view.active().queued).toBeNull();
+    expect(h.requests).toHaveLength(2);
+  });
+
+  it('"Send now" twice gives one turn', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(view.active().turns).toHaveLength(2);
+    expect(h.requests).toHaveLength(2);
+    expect(userTexts(view)).toEqual(['first', 'second']);
+  });
+
+  it('"Send now" while the turn is ending on its own still gives one turn', async () => {
+    // The first turn has its result and is held in its wrap-up, so it ends as completed no matter
+    // what arrives meanwhile. Its end sends the queued message while "Send now" is waiting for it.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let wrappingUp = false;
+    const observer: TurnObserver = {
+      afterTurn: async () => {
+        wrappingUp = true;
+        await held;
+        return [];
+      },
+    };
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      observers: [observer],
+      sequence: [answer('first answer'), answer('after')],
+    });
+    const view = h.attach();
+    sendIn(view, 'first');
+    await until('the first turn to wrap up', () => wrappingUp);
+    await until('the conversation to be shown', () => view.state?.active != null);
+    const id = view.active().meta.id;
+    expect(h.controller.runningTurns()).toBe(1);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(h.requests).toHaveLength(1);
+    release();
+
+    await settle(h, view, 2);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(view.active().turns.map((turn) => turn.status)).toEqual(['completed', 'completed']);
+    expect(h.requests).toHaveLength(2);
+    expect(userTexts(view)).toEqual(['first', 'second']);
+    expect(view.active().queued).toBeNull();
+    expect(view.toasts).toEqual([]);
+  });
+
+  it('can be removed, and then nothing is sent', async () => {
+    const h = await harnessFor(slow(300), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.remove', conversationId: id });
+    expect(view.active().queued).toBeNull();
+    expect((await finishedTurn(h, view)).status).toBe('completed');
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.requests).toHaveLength(1);
+    expect(view.active().turns).toHaveLength(1);
+    // Removing again, or sending, does nothing.
+    view.send({ type: 'queue.remove', conversationId: id });
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    expect(h.requests).toHaveLength(1);
+    view.expectMirror();
+  });
+
+  it('is taken back for editing: attachments return to the draft of the view that asked, without duplicates, and the text is sent back', async () => {
+    const h = await harnessFor(slow(600), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    const image = pngBytes('queued-image');
+    await pickFile(h, view, 'src/a.ts');
+    view.send(pasteImageMessage(image));
+    await pickFile(h, view, 'src/c.ts');
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    expect(view.current().draftAttachments).toEqual([]);
+    // The draft already holds two of the queued attachments (a file and an image), and another file.
+    await pickFile(h, view, 'src/b.ts');
+    await pickFile(h, view, 'src/a.ts');
+    view.send(pasteImageMessage(image));
+    expect(view.current().draftAttachments).toEqual([
+      { kind: 'file', path: 'src/b.ts' },
+      { kind: 'file', path: 'src/a.ts' },
+      imageReference(image),
+    ]);
+    view.send({ type: 'queue.edit', conversationId: id });
+    expect(view.active().queued).toBeNull();
+    expect(view.current().draftAttachments).toEqual([
+      { kind: 'file', path: 'src/b.ts' },
+      { kind: 'file', path: 'src/a.ts' },
+      imageReference(image),
+      { kind: 'file', path: 'src/c.ts' },
+    ]);
+    expect(view.events.filter((event) => event.kind === 'prefill-composer')).toEqual([
+      { kind: 'prefill-composer', text: 'second' },
+    ]);
+    await finishedTurn(h, view);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.requests).toHaveLength(1);
+    view.expectMirror();
+  });
+
+  it('is taken back by the view that asked, not the one that queued it', async () => {
+    const h = await harnessFor(slow(600), answer('after'));
+    const first = h.attach();
+    const id = await startRunning(h, first);
+    await pickFile(h, first, 'src/a.ts');
+    sendIn(first, 'second');
+    await until('the message to be queued', () => first.state?.active?.queued != null);
+
+    const second = h.attach({ conversationId: id });
+    await until('the second view to show it', () => second.state?.active?.meta.id === id);
+    const elsewhere = h.attach();
+    // A view that does not show the conversation changes nothing.
+    elsewhere.send({ type: 'queue.edit', conversationId: id });
+    expect(first.active().queued?.text).toBe('second');
+    expect(elsewhere.events).toEqual([]);
+    expect(elsewhere.current().draftAttachments).toEqual([]);
+
+    second.send({ type: 'queue.edit', conversationId: id });
+    expect(second.active().queued).toBeNull();
+    expect(first.active().queued).toBeNull();
+    expect(second.current().draftAttachments).toEqual([{ kind: 'file', path: 'src/a.ts' }]);
+    expect(first.current().draftAttachments).toEqual([]);
+    expect(second.events.filter((event) => event.kind === 'prefill-composer')).toEqual([
+      { kind: 'prefill-composer', text: 'second' },
+    ]);
+    expect(first.events.filter((event) => event.kind === 'prefill-composer')).toEqual([]);
+    await finishedTurn(h, first);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it('is not taken back while it is being sent', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    await pickFile(h, view, 'src/a.ts');
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    const queued = view.active().queued;
+    const map = Reflect.get(h.controller, 'queued') as Map<string, { sending: boolean }>;
+    const entry = map.get(id);
+    if (!entry) throw new Error('nothing is queued');
+    entry.sending = true;
+
+    view.send({ type: 'queue.edit', conversationId: id });
+    expect(view.active().queued).toEqual(queued);
+    expect(view.current().draftAttachments).toEqual([]);
+    expect(view.events.filter((event) => event.kind === 'prefill-composer')).toEqual([]);
+
+    entry.sending = false;
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
+  });
+
+  it('starts when the turn completes even if every view was closed', async () => {
+    const h = await harnessFor(slow(400), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.dispose();
+    await until('the second turn to start', () => h.requests.length === 2);
+    await h.idle();
+
+    const again = h.attach({ conversationId: id });
+    await until('the conversation to open', () => again.state?.active?.meta.id === id);
+    expect(again.active().turns.map((turn) => turn.status)).toEqual(['completed', 'completed']);
+    expect(again.active().queued).toBeNull();
+    expect(userTexts(again)).toEqual(['first', 'second']);
+  });
+
+  it('survives the conversation being released from memory', async () => {
+    const h = await harnessFor(hanging, answer('other'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    const queued = view.active().queued;
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
+
+    view.send({ type: 'conversation.new' });
+    await until('a new draft', () => view.state?.active === null);
+    await sendAndFinish(h, view, 'elsewhere');
+    expect(view.active().meta.id).not.toBe(id);
+    const runtimes: unknown = Reflect.get(Reflect.get(h.controller, 'state') as object, 'runtimes');
+    expect((runtimes as Map<string, unknown>).has(id)).toBe(false);
+
+    view.send({ type: 'conversation.open', conversationId: id });
+    await until('the first conversation', () => view.state?.active?.meta.id === id);
+    expect(view.active().queued).toEqual(queued);
+    view.expectMirror();
+  });
+
+  it('is dropped when the conversation is deleted', async () => {
+    const h = await harnessFor(slow(300), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'conversation.delete', conversationId: id });
+    await until('the conversation to go', () => view.current().conversations.length === 0);
+    await h.idle();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(h.requests).toHaveLength(1);
+    const queued: unknown = Reflect.get(h.controller, 'queued');
+    expect((queued as Map<string, unknown>).size).toBe(0);
+  });
+
+  it('is not inherited by a branch', async () => {
+    const h = await harnessFor(answer('first answer'), hanging, answer('after'));
+    const view = h.attach();
+    await sendAndFinish(h, view, 'one', { mode: 'agent' });
+    const parent = view.active();
+    const assistantId = parent.messages[1]?.id;
+    sendIn(view, 'two');
+    await until('the second turn to run', () => h.requests.length === 2);
+    sendIn(view, 'three');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'turn.cancel', conversationId: parent.meta.id });
+    await finishedTurn(h, view);
+
+    view.send({
+      type: 'conversation.fork',
+      conversationId: parent.meta.id,
+      messageId: assistantId,
+    });
+    await until('the branch to open', () => view.state?.active?.meta.id !== parent.meta.id);
+    expect(view.active().queued).toBeNull();
+    view.send({ type: 'conversation.open', conversationId: parent.meta.id });
+    await until('the parent', () => view.state?.active?.meta.id === parent.meta.id);
+    expect(view.active().queued?.text).toBe('three');
+    view.expectMirror();
+  });
+
+  it('stays queued when sending it is refused, and goes out when it is allowed again', async () => {
+    const h = await harnessFor(slow(300), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    // The workspace stops being trusted while the turn runs: the dispatch is refused.
+    h.env.trustedValue = false;
+    await finishedTurn(h, view);
+    await until('the refusal', () => view.toasts.length > 0);
+    expect(view.toasts[0]?.text).toBe(TEXT.untrustedRefusal);
+    expect(view.active().queued?.text).toBe('second');
+    expect(h.requests).toHaveLength(1);
+
+    h.env.trustedValue = true;
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    expect(view.active().queued).toBeNull();
+    expect(userTexts(view)).toEqual(['first', 'second']);
+  });
+
+  it('is reported in the view that pressed "Send now", not in one that moved on', async () => {
+    const h = await harnessFor(hanging, answer('after'));
+    const first = h.attach();
+    const id = await startRunning(h, first);
+    sendIn(first, 'second');
+    await until('the message to be queued', () => first.state?.active?.queued != null);
+    first.send({ type: 'conversation.new' });
+    await until('a new draft', () => first.state?.active === null);
+    const second = h.attach({ conversationId: id });
+    await until('the second view to show it', () => second.state?.active?.meta.id === id);
+
+    h.env.trustedValue = false;
+    second.send({ type: 'queue.sendNow', conversationId: id });
+    await until('the refusal', () => second.toasts.length > 0);
+    expect(second.toasts).toEqual([{ level: 'warning', text: TEXT.untrustedRefusal }]);
+    expect(first.toasts).toEqual([]);
+    expect(second.active().queued?.text).toBe('second');
+    expect(h.requests).toHaveLength(1);
+  });
+
+  it('starts by itself while the view that queued it shows another conversation', async () => {
+    const h = await harnessFor(slow(400), answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'second');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    view.send({ type: 'conversation.new' });
+    await until('a new draft', () => view.state?.active === null);
+
+    await until('the second turn to start', () => h.requests.length === 2);
+    await h.idle();
+    expect(view.toasts).toEqual([]);
+    view.send({ type: 'conversation.open', conversationId: id });
+    await until('the conversation', () => view.state?.active?.meta.id === id);
+    expect(view.active().turns.map((turn) => turn.status)).toEqual(['completed', 'completed']);
+    expect(view.active().queued).toBeNull();
+    expect(userTexts(view)).toEqual(['first', 'second']);
+  });
+
+  it('stays queued while an Agent turn of another conversation runs in the folder', async () => {
+    const h = await harnessFor(slow(700), hanging, answer('after'));
+    const view = h.attach();
+    const id = await startRunning(h, view, 'plan');
+    sendIn(view, 'agent work');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    const other = h.attach();
+    sendIn(other, 'other work');
+    await until('the other turn to run', () => h.requests.length === 2);
+    await until('the other conversation', () => other.state?.active != null);
+    const otherId = other.active().meta.id;
+
+    await until(
+      'the first turn to complete',
+      () => view.state?.active?.turns[0]?.status === 'completed',
+    );
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    // The tracker would have refused an Agent turn now: no turn was created and nothing was told.
+    expect(h.requests).toHaveLength(2);
+    expect(view.active().turns).toHaveLength(1);
+    expect(view.active().queued?.text).toBe('agent work');
+    expect(view.toasts).toEqual([]);
+
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await until('the refusal', () => view.toasts.length > 0);
+    expect(view.toasts).toEqual([{ level: 'warning', text: BUSY_MESSAGE }]);
+    expect(view.active().queued?.text).toBe('agent work');
+    expect(h.requests).toHaveLength(2);
+
+    other.send({ type: 'turn.cancel', conversationId: otherId });
+    await until('the other turn to end', () => h.controller.runningTurns() === 0);
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await settle(h, view, 2);
+    expect(view.active().queued).toBeNull();
+    expect(userTexts(view)).toEqual(['first', 'agent work']);
+    expect(h.requests).toHaveLength(3);
+    expect(view.toasts).toHaveLength(1);
+  });
+
+  it('cannot be queued again while the conversation is being deleted', async () => {
+    // The wrap-up of the stopped turn is held, so the deletion waits for it.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let wrappingUp = false;
+    const observer: TurnObserver = {
+      afterTurn: async () => {
+        wrappingUp = true;
+        await held;
+        return [];
+      },
+    };
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      observers: [observer],
+      sequence: [hanging],
+    });
+    const view = h.attach();
+    const id = await startRunning(h, view);
+    sendIn(view, 'queued before');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+
+    view.send({ type: 'conversation.delete', conversationId: id });
+    await until('the stopped turn to wrap up', () => wrappingUp);
+    expect(h.controller.runningTurns()).toBe(1);
+    const reserved = Reflect.get(h.controller, 'reserved') as Set<string>;
+    expect(reserved.has(id)).toBe(true);
+    const queued = Reflect.get(h.controller, 'queued') as Map<string, unknown>;
+    expect(queued.size).toBe(0);
+
+    sendIn(view, 'queued during');
+    await until('a refusal', () => view.toasts.length > 0);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.turnRunning }]);
+    expect(queued.size).toBe(0);
+
+    release();
+    await until('the conversation to go', () => view.current().conversations.length === 0);
+    await h.idle();
+    expect(queued.size).toBe(0);
+    expect((Reflect.get(h.controller, 'runs') as Map<string, unknown>).has(id)).toBe(false);
+    expect(reserved.has(id)).toBe(false);
+    expect(h.requests).toHaveLength(1);
+    expect(view.toasts).toHaveLength(1);
   });
 });

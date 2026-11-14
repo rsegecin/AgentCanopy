@@ -106,7 +106,10 @@
   display: flex;
   gap: 2px;
 }
-.composer-bar .button {
+.composer-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
   margin-left: auto;
 }
 
@@ -186,4 +189,41 @@
 }
 .composer-modes .plan-lock {
   padding: 1px 8px;
+}
+
+/* The message queued behind a running turn, directly above the composer. */
+.queued-message {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: none;
+  padding: 6px 8px;
+  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
+}
+.queued-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 0.9em;
+}
+.queued-label {
+  font-weight: 600;
+}
+.queued-text {
+  max-height: 4.5em;
+  margin: 0;
+  line-height: 1.5;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.queued-status {
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.queued-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
 }

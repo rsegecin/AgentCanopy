@@ -11,6 +11,7 @@ import {
   makeTurn,
 } from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
+import type { QueuedMessage, ViewState } from '../../../shared';
 import { Composer } from './Composer';
 
 const box = () => screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Message' });
@@ -95,10 +96,10 @@ describe('Composer sending', () => {
     expect(box().value).toBe('half-written');
   });
 
-  it('prefills and focuses from host events', () => {
+  it('focuses on host events and leaves the draft to the App', () => {
     const { host } = renderWithHost(<Composer />);
     host.emit({ type: 'event', event: { kind: 'prefill-composer', text: 'from a fork' } });
-    expect(box().value).toBe('from a fork');
+    expect(box().value).toBe('');
     expect(document.activeElement).toBe(box());
     (document.activeElement as HTMLElement).blur();
     host.emit({ type: 'event', event: { kind: 'focus-composer' } });
@@ -107,27 +108,209 @@ describe('Composer sending', () => {
 });
 
 describe('Composer while a turn runs', () => {
-  const running = () =>
+  const runningIn = (
+    mode: 'ask' | 'plan' | 'agent',
+    over: Parameters<typeof makeActive>[1] = {},
+    extra: Partial<ViewState> = {},
+  ) =>
     makeState({
       active: makeActive('c1', {
+        meta: { mode },
         turns: [makeTurn({ status: 'running' })],
         messages: [assistantMessage('a1', [])],
+        ...over,
       }),
+      ...extra,
     });
+  const running = () => runningIn('ask');
+  const send = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+  const queuedMessage = (): QueuedMessage => ({
+    text: 'first',
+    mode: 'agent',
+    model: 'default',
+    attachments: [],
+    queuedAt: 1_700_000_000_000,
+  });
 
-  it('turns Send into Stop, which posts turn.cancel', () => {
+  it('shows Stop next to Send, and Stop posts turn.cancel', () => {
     const { host } = renderWithHost(<Composer />, running());
-    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    expect(send()).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: 'Stop' }));
     expect(host.postedOf('turn.cancel')).toEqual([
       { type: 'turn.cancel', conversationId: convId('c1') },
     ]);
   });
 
-  it('does not send on Enter while running', () => {
+  it('shows Stop while the turn is preparing, and not when it is idle', () => {
+    const { init } = renderWithHost(
+      <Composer />,
+      makeState({
+        active: makeActive('c1', { turns: [makeTurn({ status: 'preparing' })] }),
+      }),
+    );
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    init(makeState({ active: makeActive('c1', { turns: [makeTurn()] }) }), 1);
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    expect(send()).toBeTruthy();
+  });
+
+  it.each(['agent', 'plan'] as const)(
+    'sends with Send and with Enter in %s mode while running, and clears the draft',
+    (mode) => {
+      const { host } = renderWithHost(<Composer />, runningIn(mode));
+      type('next');
+      expect(send().disabled).toBe(false);
+      fireEvent.click(send());
+      expect(host.postedOf('turn.send')).toEqual([
+        { type: 'turn.send', conversationId: convId('c1'), text: 'next', mode, model: 'default' },
+      ]);
+      expect(box().value).toBe('');
+      type('and then');
+      enter();
+      expect(host.postedOf('turn.send')).toHaveLength(2);
+      expect(box().value).toBe('');
+    },
+  );
+
+  it('disables Send in Ask mode while running, with the reason, and keeps the text on Enter', () => {
     const { host } = renderWithHost(<Composer />, running());
     type('next');
+    expect(send().disabled).toBe(true);
     enter();
+    fireEvent.click(send());
+    expect(host.postedOf('turn.send')).toHaveLength(0);
+    expect(box().value).toBe('next');
+    const hint = screen.getByText(
+      'Switch to Agent or Plan to queue a message while the agent works.',
+    );
+    expect(hint.getAttribute('role')).toBe('status');
+    expect(box().getAttribute('aria-describedby')).toBe(hint.id);
+    expect(send().getAttribute('aria-describedby')).toBe(hint.id);
+  });
+
+  it('does not show the Ask hint when nothing runs', () => {
+    renderWithHost(<Composer />);
+    type('next');
+    expect(send().disabled).toBe(false);
+    expect(screen.queryByText(/Switch to Agent or Plan/)).toBeNull();
+  });
+
+  it.each(['agent', 'plan'] as const)(
+    'disables Send in %s mode while a message is queued, with the reason, and keeps the text on Enter',
+    (mode) => {
+      const { host } = renderWithHost(<Composer />, runningIn(mode, { queued: queuedMessage() }));
+      type('second');
+      expect(send().disabled).toBe(true);
+      enter();
+      fireEvent.click(send());
+      expect(host.postedOf('turn.send')).toHaveLength(0);
+      expect(box().value).toBe('second');
+      const hint = screen.getByText('A message is already queued. Edit or remove it first.');
+      expect(hint.getAttribute('role')).toBe('status');
+      expect(box().getAttribute('aria-describedby')).toBe(hint.id);
+      expect(send().getAttribute('aria-describedby')).toBe(hint.id);
+    },
+  );
+
+  it.each(['agent', 'plan'] as const)(
+    'sends with Send and with Enter in %s mode while a held message exists and no turn runs',
+    (mode) => {
+      const { host } = renderWithHost(
+        <Composer />,
+        makeState({
+          active: makeActive('c1', {
+            meta: { mode },
+            turns: [makeTurn({ status: 'interrupted' })],
+            queued: queuedMessage(),
+          }),
+        }),
+      );
+      type('second');
+      expect(send().disabled).toBe(false);
+      expect(
+        screen.queryByText('A message is already queued. Edit or remove it first.'),
+      ).toBeNull();
+      fireEvent.click(send());
+      expect(host.postedOf('turn.send')).toEqual([
+        { type: 'turn.send', conversationId: convId('c1'), text: 'second', mode, model: 'default' },
+      ]);
+      expect(box().value).toBe('');
+      type('third');
+      enter();
+      expect(host.postedOf('turn.send')).toHaveLength(2);
+    },
+  );
+
+  it('does not block Ask mode for an idle conversation that has a held message', () => {
+    const { host } = renderWithHost(
+      <Composer />,
+      makeState({
+        active: makeActive('c1', {
+          turns: [makeTurn({ status: 'interrupted' })],
+          queued: queuedMessage(),
+        }),
+      }),
+    );
+    type('question');
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(1);
+  });
+
+  describe('which hint is shown when several apply', () => {
+    const config = {
+      review: { entries: [], configChanges: [makeConfigChange('k1')], busy: false },
+    };
+    const hints = () =>
+      screen
+        .queryAllByRole('status')
+        .map((el) => el.textContent)
+        .filter((text) => text !== '');
+
+    it('puts the provider problem before everything else', () => {
+      renderWithHost(
+        <Composer />,
+        runningIn('agent', { queued: queuedMessage() }, { ...config, trusted: false }),
+      );
+      expect(hints()).toHaveLength(1);
+      expect(hints()[0]).toMatch(/not trusted/);
+      expect(box().getAttribute('aria-describedby')).toBe(screen.getByRole('status').id);
+    });
+
+    it('puts the configuration changes before an already queued message', () => {
+      renderWithHost(<Composer />, runningIn('agent', { queued: queuedMessage() }, config));
+      expect(hints()).toEqual([
+        'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.',
+      ]);
+    });
+
+    it('puts an already queued message before the Ask hint', () => {
+      renderWithHost(<Composer />, runningIn('ask', { queued: queuedMessage() }));
+      expect(hints()).toEqual(['A message is already queued. Edit or remove it first.']);
+      expect(send().disabled).toBe(true);
+    });
+
+    it('does not let configuration changes block Plan or Ask, so the next hint shows', () => {
+      renderWithHost(<Composer />, runningIn('ask', {}, config));
+      expect(hints()).toEqual([
+        'Switch to Agent or Plan to queue a message while the agent works.',
+      ]);
+    });
+  });
+
+  it('applies the configuration block while running too', () => {
+    const { host } = renderWithHost(
+      <Composer />,
+      runningIn(
+        'agent',
+        {},
+        {
+          review: { entries: [], configChanges: [makeConfigChange('k1')], busy: false },
+        },
+      ),
+    );
+    type('next');
+    enter();
+    expect(send().disabled).toBe(true);
     expect(host.postedOf('turn.send')).toHaveLength(0);
   });
 
@@ -142,6 +325,14 @@ describe('Composer while a turn runs', () => {
     renderWithHost(<Composer />);
     box().focus();
     fireEvent.keyDown(box(), { key: 'Escape' });
+    expect(document.activeElement).toBe(box());
+  });
+
+  it('keeps focus in the composer when Stop goes away while it has focus', () => {
+    const { init } = renderWithHost(<Composer />, running());
+    screen.getByRole('button', { name: 'Stop' }).focus();
+    init(makeState({ active: makeActive('c1', { turns: [makeTurn()] }) }), 1);
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
     expect(document.activeElement).toBe(box());
   });
 });

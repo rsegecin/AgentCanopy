@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   MAX_IMAGES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
+  MAX_IMAGE_BYTES_PER_MESSAGE,
   type AssistantMessage,
   type Attachment,
 } from '../../shared';
@@ -9,12 +10,15 @@ import { sha256Hex } from '../util';
 import { decodeBase64, matchesImageSignature } from './images';
 import {
   createHarness,
+  createPlanTestPolicy,
   finishedTurn,
   imageReference,
   pasteImageMessage,
   pngBytes,
   sendAndFinish,
   sleep,
+  streamedText,
+  resultStep,
   textScenario,
   until,
   type Harness,
@@ -439,5 +443,152 @@ describe('a view that is slow to send', () => {
     expect(draftOf(one)).toEqual([imageReference(A)]);
     expect(h.requests[0]?.images).toHaveLength(1);
     expect(Buffer.from(h.requests[0]?.images?.[0]?.data ?? []).equals(B)).toBe(true);
+  });
+});
+
+describe('an image in a message queued behind a running turn', () => {
+  it('is held after pruning and is sent with the dispatched turn', async () => {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: [
+        {
+          scenario: {
+            steps: [...streamedText(['working']), { sleep: 500 }, ...resultStep('first')],
+          },
+        },
+        answer('seen'),
+      ],
+    });
+    const view = h.attach();
+    view.send({ type: 'turn.send', text: 'first', mode: 'agent', model: 'default' });
+    await until('the first turn to run', () => h.requests.length === 1);
+    await until('the conversation to be shown', () => view.state?.active != null);
+
+    view.send(pasteImageMessage(A));
+    view.send({
+      type: 'turn.send',
+      conversationId: view.active().meta.id,
+      text: 'what is this?',
+      mode: 'agent',
+      model: 'default',
+    });
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    expect(view.active().queued?.attachments).toEqual([imageReference(A)]);
+    expect(draftOf(view)).toEqual([]);
+
+    // Something that prunes: another view comes and goes. The bytes stay, the queued message needs them.
+    h.attach().dispose();
+    expect(heldImages(h).size).toBe(1);
+
+    await until('the second turn', () => h.requests.length === 2);
+    await until('the queue to empty', () => view.state?.active?.queued === null);
+    await finishedTurn(h, view);
+    const request = h.requests[1];
+    expect(request?.images).toHaveLength(1);
+    expect(Buffer.from(request?.images?.[0]?.data ?? []).equals(A)).toBe(true);
+    expect(userAttachments(view, 1)).toEqual([imageReference(A)]);
+    expect(heldImages(h).size).toBe(0);
+    view.expectMirror();
+  });
+
+  it('is released when the queued message is removed', async () => {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: [
+        { scenario: { steps: [...streamedText(['working']), { hang: true }] } },
+        answer('seen'),
+      ],
+    });
+    const view = h.attach();
+    view.send({ type: 'turn.send', text: 'first', mode: 'agent', model: 'default' });
+    await until('the first turn to run', () => h.requests.length === 1);
+    await until('the conversation to be shown', () => view.state?.active != null);
+    const id = view.active().meta.id;
+    view.send(pasteImageMessage(A));
+    view.send({
+      type: 'turn.send',
+      conversationId: id,
+      text: 'two',
+      mode: 'agent',
+      model: 'default',
+    });
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    expect(heldImages(h).size).toBe(1);
+
+    // Taking it back for editing returns the image to the draft, still held.
+    view.send({ type: 'queue.edit', conversationId: id });
+    expect(draftOf(view)).toEqual([imageReference(A)]);
+    expect(heldImages(h).size).toBe(1);
+    view.send({
+      type: 'turn.send',
+      conversationId: id,
+      text: 'two again',
+      mode: 'agent',
+      model: 'default',
+    });
+    await until('the message to be queued again', () => view.state?.active?.queued != null);
+    view.send({ type: 'queue.remove', conversationId: id });
+    expect(heldImages(h).size).toBe(0);
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
+  });
+
+  /** A running turn, a message with image `queued` waiting behind it, and then `draft` pasted into the draft. */
+  async function queuedWithFullDraft(queued: Buffer, draft: Buffer[]) {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: [
+        { scenario: { steps: [...streamedText(['working']), { hang: true }] } },
+        answer('seen'),
+      ],
+    });
+    const view = h.attach();
+    view.send({ type: 'turn.send', text: 'first', mode: 'agent', model: 'default' });
+    await until('the first turn to run', () => h.requests.length === 1);
+    await until('the conversation to be shown', () => view.state?.active != null);
+    const id = view.active().meta.id;
+    view.send(pasteImageMessage(queued));
+    view.send({
+      type: 'turn.send',
+      conversationId: id,
+      text: 'two',
+      mode: 'agent',
+      model: 'default',
+    });
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    for (const bytes of draft) view.send(pasteImageMessage(bytes));
+    return { h, view, id };
+  }
+
+  it('is not put back into a draft that already holds the most images, and its bytes are released', async () => {
+    const draft = Array.from({ length: MAX_IMAGES_PER_MESSAGE }, (_, i) => pngBytes(`full${i}`));
+    const { h, view, id } = await queuedWithFullDraft(A, draft);
+    expect(draftOf(view)).toHaveLength(MAX_IMAGES_PER_MESSAGE);
+    expect(heldImages(h).size).toBe(MAX_IMAGES_PER_MESSAGE + 1);
+
+    view.send({ type: 'queue.edit', conversationId: id });
+    expect(view.active().queued).toBeNull();
+    expect(draftOf(view)).toEqual(draft.map((bytes) => imageReference(bytes)));
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.imageLimit }]);
+    expect(heldImages(h).size).toBe(MAX_IMAGES_PER_MESSAGE);
+    expect(heldImages(h).has(sha256Hex(A))).toBe(false);
+    expect(view.events.filter((event) => event.kind === 'prefill-composer')).toEqual([
+      { kind: 'prefill-composer', text: 'two' },
+    ]);
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
+  });
+
+  it('is not put back into a draft that would pass the combined size, and its bytes are released', async () => {
+    const big = pngBytes('big', MAX_IMAGE_BYTES_PER_MESSAGE - 1024);
+    const { h, view, id } = await queuedWithFullDraft(pngBytes('second', 2048), [big]);
+    expect(draftOf(view)).toEqual([imageReference(big)]);
+
+    view.send({ type: 'queue.edit', conversationId: id });
+    expect(draftOf(view)).toEqual([imageReference(big)]);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.imagesTooLarge }]);
+    expect(heldImages(h).size).toBe(1);
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await finishedTurn(h, view);
   });
 });

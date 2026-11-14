@@ -6,7 +6,7 @@ import {
   MessageSchema,
   TurnSchema,
 } from './conversation';
-import { ConversationIdSchema, FolderKeySchema, RelPathSchema } from './ids';
+import { ConversationIdSchema, FolderKeySchema, RelPathSchema, TimestampSchema } from './ids';
 import { ModeSchema } from './modes';
 import { PlanDocSchema } from './plan';
 import { PromptSchema } from './prompts';
@@ -18,6 +18,19 @@ import {
   ReviewEntrySchema,
 } from './workspace';
 
+/**
+ * A message the user sent while a turn was running in the conversation. The host sends it when that
+ * turn has ended as completed; after a stop or an error it waits for the user. Kept in memory only.
+ */
+export const QueuedMessageSchema = z.object({
+  text: z.string().min(1),
+  mode: ModeSchema,
+  model: z.string(),
+  attachments: z.array(AttachmentSchema),
+  queuedAt: TimestampSchema,
+});
+export type QueuedMessage = z.infer<typeof QueuedMessageSchema>;
+
 export const ActiveConversationSchema = z.object({
   meta: ConversationMetaSchema,
   turns: z.array(TurnSchema),
@@ -27,6 +40,8 @@ export const ActiveConversationSchema = z.object({
   plan: PlanDocSchema.nullable(),
   /** One-line description of what the turn is doing, while one runs. */
   activity: z.string().nullable(),
+  /** The message waiting for the running turn to end, if there is one. At most one per conversation. */
+  queued: QueuedMessageSchema.nullable(),
 });
 export type ActiveConversation = z.infer<typeof ActiveConversationSchema>;
 

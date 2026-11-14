@@ -194,6 +194,7 @@ export function makeActive(
     prompts: [],
     plan: null,
     activity: null,
+    queued: null,
     ...rest,
   };
 }

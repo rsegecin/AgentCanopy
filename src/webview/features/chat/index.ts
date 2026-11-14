@@ -2,6 +2,7 @@ import { PromptPart } from './PromptCards';
 import { registerPartRenderer } from './registry';
 
 export { Composer } from './Composer';
+export { QueuedMessage } from './QueuedMessage';
 export { DiagramBlock } from './DiagramBlock';
 export { CodeBlock } from './CodeBlock';
 export { Markdown } from './Markdown';

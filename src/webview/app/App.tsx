@@ -1,7 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef } from 'react';
 import type { KeyboardEvent } from 'react';
 import { Banners } from '../features/banners/Banners';
-import { Composer, MessageList } from '../features/chat';
+import { Composer, MessageList, QueuedMessage } from '../features/chat';
 import { HistoryList } from '../features/history/HistoryList';
 import '../features/plan';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
@@ -91,7 +91,8 @@ export function App() {
         if (event.kind === 'prefill-composer') {
           // The composer is not mounted while another tab is open, so it cannot take this itself.
           const id = store.getSnapshot().state?.active?.meta.id;
-          ui.setDraft(id ?? NEW_CONVERSATION_KEY, event.text);
+          // It goes in front of what the user typed, never over it.
+          ui.prefillDraft(id ?? NEW_CONVERSATION_KEY, event.text);
         }
         // Once the chat tab has rendered, the composer is there to take focus.
         setTimeout(() => {
@@ -168,6 +169,7 @@ export function App() {
             <>
               <MessageList />
               <ChangesDock />
+              <QueuedMessage />
               <Composer />
             </>
           )}

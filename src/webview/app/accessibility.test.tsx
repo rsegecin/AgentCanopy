@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlanDoc, Prompt, ReviewEntry, ViewState } from '../../shared';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
 import { Composer } from '../features/chat/Composer';
+import { QueuedMessage } from '../features/chat/QueuedMessage';
 import { MessageList } from '../features/chat/MessageList';
 import { PromptPart } from '../features/chat/PromptCards';
 import { registerPartRenderer } from '../features/chat/registry';
@@ -277,7 +278,7 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement?.textContent).toBe('Checkpoint history');
   });
 
-  it('keeps focus in the composer when Send is replaced by Stop', () => {
+  it('keeps focus in the composer when Send is disabled by a turn starting, and Stop appears next to it', () => {
     const idle = makeState({ active: makeActive('c1', { turns: [makeTurn()] }) });
     const busy = makeState({
       active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }),
@@ -286,10 +287,44 @@ describe('focus after the focused control goes away', () => {
     fireEvent.change(composer(), { target: { value: 'hello' } });
     screen.getByRole('button', { name: 'Send' }).focus();
     init(busy, 1);
-    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
-    // Stop takes the place of Send; either way focus is still in the composer, not on the page.
+    // Both buttons are there; Ask mode cannot queue, so Send is disabled and focus moves to the textarea.
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement?.closest('form')).toBe(composer().closest('form'));
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('keeps focus in the composer when the focused Stop goes away at the end of the turn', () => {
+    const busy = makeState({
+      active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }),
+    });
+    const { init } = renderWithHost(<Composer />, busy);
+    screen.getByRole('button', { name: 'Stop' }).focus();
+    init(makeState({ active: makeActive('c1', { turns: [makeTurn()] }) }), 1);
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('moves focus from the queued message to the composer when it is sent or removed', () => {
+    const withQueued = (queued: boolean) =>
+      makeState({
+        active: makeActive('c1', {
+          meta: { mode: 'agent' },
+          turns: [makeTurn({ status: 'running' })],
+          queued: queued
+            ? { text: 'next', mode: 'agent', model: 'default', attachments: [], queuedAt: 1 }
+            : null,
+        }),
+      });
+    const { init } = renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      withQueued(true),
+    );
+    screen.getByRole('button', { name: 'Send now, queued message' }).focus();
+    init(withQueued(false), 1);
+    expect(document.activeElement).toBe(composer());
   });
 
   it('keeps focus on an answer control of the plan when the host records the answer', () => {
@@ -549,6 +584,45 @@ describe('keyboard, names, roles and states', () => {
         expect(link.getAttribute('tabindex')).toBe('0');
       }
     }
+  });
+
+  it('names the queued message region and its buttons, and points a disabled Send at its reason', () => {
+    renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      makeState({
+        active: makeActive('c1', {
+          meta: { mode: 'agent' },
+          turns: [makeTurn({ status: 'running' })],
+          queued: {
+            text: 'next',
+            mode: 'agent',
+            model: 'default',
+            attachments: [],
+            queuedAt: 1,
+          },
+        }),
+        review: { entries: [], configChanges: [makeConfigChange('k1')], busy: false },
+      }),
+    );
+    const chip = screen.getByRole('region', { name: 'Queued message' });
+    expect(within(chip).getByRole('button', { name: 'Edit queued message' })).toBeTruthy();
+    expect(within(chip).getByRole('button', { name: 'Remove queued message' })).toBeTruthy();
+    const now = within(chip).getByRole<HTMLButtonElement>('button', {
+      name: 'Send now, queued message',
+    });
+    expect(now.disabled).toBe(true);
+    expect(document.getElementById(now.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
+      'Sent when the agent finishes, once you decide on the configuration changes.',
+    );
+    // Stop and Send are both in the composer, and Send is disabled with its own reason.
+    const form = screen.getByRole('form', { name: 'Message composer' });
+    expect(within(form).getByRole('button', { name: 'Stop' })).toBeTruthy();
+    const send = within(form).getByRole<HTMLButtonElement>('button', { name: 'Send' });
+    expect(send.disabled).toBe(true);
+    expect(document.getElementById(send.getAttribute('aria-describedby') ?? '')).not.toBeNull();
   });
 
   it('follows the tabs pattern: one tab in the tab order, each tab controls a panel', () => {

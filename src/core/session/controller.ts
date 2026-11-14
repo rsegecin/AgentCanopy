@@ -25,6 +25,7 @@ import type {
   OperationId,
   PromptId,
   ProviderStatus,
+  QueuedMessage,
   RelPath,
   RestorePreview,
   WebviewMessage,
@@ -131,6 +132,21 @@ interface TurnOptions {
   onStarted?: (run: TurnRun) => void;
   /** The message does not take the view's queued attachments. */
   noAttachments?: boolean;
+  /**
+   * The message is one that was queued behind a turn: it takes these attachments instead of the
+   * view's draft, and it is never queued again.
+   */
+  queuedInput?: { attachments: Attachment[] };
+}
+
+/** The message a conversation holds back while a turn runs in it. Kept in memory only. */
+interface QueuedEntry {
+  /** What the views show. */
+  readonly message: QueuedMessage;
+  /** The view that queued it. */
+  readonly viewId: string;
+  /** Set while it is being sent, so nothing else sends, edits or removes it. */
+  sending: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -188,8 +204,15 @@ class Controller implements AppController {
   private opening: Promise<void> | undefined;
   private readonly runs = new Map<ConversationId, TurnRun>();
   /**
-   * Bytes of pasted images by id (the content hash), kept only while some view's draft refers to
-   * them; a turn takes its own copies when the message is sent.
+   * At most one message per conversation, waiting for the turn that runs in it. Outlives the
+   * conversation's runtime: a conversation that no view shows is released from memory.
+   */
+  private readonly queued = new Map<ConversationId, QueuedEntry>();
+  /** Conversations whose queued message is being sent now by a "Send now". */
+  private readonly sendingNow = new Set<ConversationId>();
+  /**
+   * Bytes of pasted images by id (the content hash), kept only while some view's draft or a queued
+   * message refers to them; a turn takes its own copies when the message is sent.
    */
   private readonly imageBytes = new Map<string, Buffer>();
   private readonly prompts = new Map<PromptId, PendingPrompt>();
@@ -271,6 +294,8 @@ class Controller implements AppController {
     } catch (error) {
       this.logger.warn('the tool server could not stop', { error: redact(String(error)) });
     }
+    this.queued.clear();
+    this.sendingNow.clear();
     for (const view of this.state.views.values()) view.dispose();
     this.state.views.clear();
     this.listeners.clear();
@@ -792,6 +817,8 @@ class Controller implements AppController {
    *
    * What a compromised webview can still do WITHOUT a native dialog, as the residual risk:
    * - start a turn (`turn.send`), in any mode the policy offers, with text and attachments of its own;
+   * - queue one message per conversation behind a turn that runs there (`turn.send` again), and later
+   *   send it, take it back for editing or remove it (`queue.*`): no more than `turn.send` allows;
    * - hand the host pasted image data, which is checked (type, size, signature), kept in memory only
    *   while a draft refers to it, and sent with the next message;
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
@@ -853,6 +880,15 @@ class Controller implements AppController {
         return;
       case 'turn.cancel':
         await this.runs.get(message.conversationId)?.cancel();
+        return;
+      case 'queue.edit':
+        this.editQueued(view, message.conversationId);
+        return;
+      case 'queue.remove':
+        this.removeQueued(message.conversationId);
+        return;
+      case 'queue.sendNow':
+        await this.sendQueuedNow(view, message.conversationId);
         return;
 
       case 'context.pick':
@@ -1007,6 +1043,7 @@ class Controller implements AppController {
           prompts: data.prompts,
           plan,
           activity: null,
+          queued: this.queued.get(id)?.message ?? null,
         });
       })
       .finally(() => {
@@ -1100,22 +1137,32 @@ class Controller implements AppController {
       });
       if (!confirmed || view.disposed) return;
     }
-    const run = this.runs.get(id);
-    if (run) {
-      await run.cancel();
-      await run.done;
-    }
-    for (const shown of this.state.views.values()) {
-      if (shown.activeId === id) {
-        shown.navigation += 1;
-        this.state.showDraft(shown);
+    // Nothing may start or be queued in the conversation until it is gone.
+    this.reserved.add(id);
+    try {
+      // Before the turn is stopped: a turn that ends on its own meanwhile must not send it.
+      this.queued.delete(id);
+      const run = this.runs.get(id);
+      if (run) {
+        await run.cancel();
+        await run.done;
       }
+      this.queued.delete(id);
+      for (const shown of this.state.views.values()) {
+        if (shown.activeId === id) {
+          shown.navigation += 1;
+          this.state.showDraft(shown);
+        }
+      }
+      const planId = store.list().find((meta) => meta.id === id)?.planId;
+      await store.delete(id);
+      if (planId !== undefined) await this.deletePlan(planId);
+    } finally {
+      this.reserved.delete(id);
     }
-    const planId = store.list().find((meta) => meta.id === id)?.planId;
-    await store.delete(id);
-    if (planId !== undefined) await this.deletePlan(planId);
     this.state.runtimes.delete(id);
     this.state.previews.delete(id);
+    this.pruneImages();
     for (const shown of this.state.views.values()) {
       const search = shown.state.search;
       if (!search) continue;
@@ -1281,17 +1328,25 @@ class Controller implements AppController {
 
   // ---- turns ---------------------------------------------------------------------------------------------
 
+  /**
+   * Starts a turn for a message. Resolves to whether a run has started; a refusal says why in a toast
+   * (logged instead when no view is given: a queued message is sent without any view attached).
+   */
   private async sendTurn(
-    view: ViewRecord,
+    view: ViewRecord | undefined,
     message: SendMessage,
     options: TurnOptions = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { env } = this.deps;
-    const refuse = (text: string): void => this.state.toast(view, 'warning', text);
+    const refuse = (text: string): false => {
+      if (view) this.state.toast(view, 'warning', text);
+      else this.logger.info('a queued message was not sent', { reason: text });
+      return false;
+    };
     let runtime: ConvRuntime | undefined;
-    const giveUp = (text: string): void => {
+    const giveUp = (text: string): false => {
       if (runtime) this.state.release(runtime.id);
-      refuse(text);
+      return refuse(text);
     };
 
     if (!env.trusted()) return refuse(TEXT.untrustedRefusal);
@@ -1314,8 +1369,22 @@ class Controller implements AppController {
       runtime = await this.getRuntime(message.conversationId);
       if (!runtime) return refuse(TEXT.conversationGone);
     }
-    if (this.disposed) return undefined;
-    if (view.creating || (runtime && this.isBusy(runtime.id))) {
+    if (this.disposed) return false;
+    if (view?.creating || (runtime && this.isBusy(runtime.id))) {
+      // A turn runs in the conversation and nothing else holds it: Agent and Plan messages wait for it.
+      if (
+        view &&
+        runtime &&
+        !view.creating &&
+        !options.gate &&
+        !options.queuedInput &&
+        message.mode !== 'ask' &&
+        this.runs.has(runtime.id) &&
+        !this.reserved.has(runtime.id) &&
+        (this.forkHolds.get(runtime.id) ?? 0) === 0
+      ) {
+        return this.queueMessage(view, runtime, message);
+      }
       return giveUp(TEXT.turnRunning);
     }
 
@@ -1323,7 +1392,7 @@ class Controller implements AppController {
     const existing = runtime;
     const folder = existing
       ? folders.find((candidate) => candidate.key === existing.data.meta.folder)
-      : (folders.find((candidate) => candidate.key === view.draftFolder) ?? folders[0]);
+      : (folders.find((candidate) => candidate.key === view?.draftFolder) ?? folders[0]);
     let conversation: ConversationMeta;
     if (existing) {
       conversation = existing.data.meta;
@@ -1367,13 +1436,14 @@ class Controller implements AppController {
       }
       if (outcome === false || this.disposed) {
         if (runtime) this.state.release(runtime.id);
-        return undefined;
+        return false;
       }
       promptText = outcome.promptText;
     }
 
     const creating = runtime === undefined;
     if (!runtime) {
+      if (!view) return refuse(TEXT.conversationGone);
       view.creating = true;
       try {
         const title = titleOf(message.text);
@@ -1384,7 +1454,7 @@ class Controller implements AppController {
           mode: message.mode,
           ...(title !== undefined ? { title } : {}),
         });
-        if (this.disposed) return undefined;
+        if (this.disposed) return false;
         runtime = this.state.addRuntime({
           meta,
           turns: [],
@@ -1392,6 +1462,7 @@ class Controller implements AppController {
           prompts: [],
           plan: null,
           activity: null,
+          queued: null,
         });
       } finally {
         view.creating = false;
@@ -1400,30 +1471,20 @@ class Controller implements AppController {
 
     // The sending view's attachments go into the message. They are taken before the view shows the
     // new conversation, which would clear them.
-    const taken = options.noAttachments ? [] : [...view.state.draftAttachments];
+    const fromDraft = !options.queuedInput && !options.noAttachments && view !== undefined;
+    const taken = options.queuedInput
+      ? [...options.queuedInput.attachments]
+      : fromDraft
+        ? [...view.state.draftAttachments]
+        : [];
     // Images travel as bytes: look them up now, before the draft is cleared. One whose bytes are gone
     // is left out of the message.
-    const images: TurnImage[] = [];
-    const attachments: Attachment[] = [];
-    for (const attachment of taken) {
-      if (attachment.kind !== 'image') {
-        attachments.push(attachment);
-        continue;
-      }
-      const bytes = this.imageBytes.get(attachment.id);
-      if (bytes) {
-        images.push({ mediaType: attachment.mediaType, data: new Uint8Array(bytes) });
-        attachments.push(attachment);
-      } else {
-        this.logger.warn('an attached image was no longer available');
-        refuse(TEXT.imageGone);
-      }
-    }
-    if (taken.length > 0) {
+    const { attachments, images } = this.resolveAttachments(taken, refuse);
+    if (fromDraft && taken.length > 0) {
       view.apply([{ op: 'set', path: ['draftAttachments'], value: [] }]);
     }
     this.pruneImages();
-    if (creating && view.activeId === undefined) this.state.showConversation(view, runtime);
+    if (creating && view && view.activeId === undefined) this.state.showConversation(view, runtime);
 
     const run = new TurnRun(this.turnServices(store, plans, policy, storageDir), {
       runtime,
@@ -1443,7 +1504,31 @@ class Controller implements AppController {
     this.fireRunningChanged();
     run.start();
     options.onStarted?.(run);
-    return undefined;
+    return true;
+  }
+
+  /** Splits attachments into what the message lists and the bytes of its images; one with no bytes is left out. */
+  private resolveAttachments(
+    taken: readonly Attachment[],
+    refuse: (text: string) => void,
+  ): { attachments: Attachment[]; images: TurnImage[] } {
+    const images: TurnImage[] = [];
+    const attachments: Attachment[] = [];
+    for (const attachment of taken) {
+      if (attachment.kind !== 'image') {
+        attachments.push(attachment);
+        continue;
+      }
+      const bytes = this.imageBytes.get(attachment.id);
+      if (bytes) {
+        images.push({ mediaType: attachment.mediaType, data: new Uint8Array(bytes) });
+        attachments.push(attachment);
+      } else {
+        this.logger.warn('an attached image was no longer available');
+        refuse(TEXT.imageGone);
+      }
+    }
+    return { attachments, images };
   }
 
   private turnServices(
@@ -1476,6 +1561,9 @@ class Controller implements AppController {
           }
         : {}),
       onEnded: (run) => {
+        const status = this.state.runtimes
+          .get(run.conversationId)
+          ?.data.turns.find((turn) => turn.id === run.turnId)?.status;
         this.collectGarbageSoon(run.folderKey);
         this.runs.delete(run.conversationId);
         this.syncReviewBusyAll();
@@ -1485,8 +1573,213 @@ class Controller implements AppController {
         this.state.refreshSummaries();
         this.state.release(run.conversationId);
         this.fireRunningChanged();
+        // Only after a turn that completed: after a stop or an error the message waits for the user.
+        if (status === 'completed') {
+          this.dispatchQueued(run.conversationId).catch((error: unknown) => {
+            this.logger.error('a queued message could not be sent', {
+              error: redact(String(error)),
+            });
+          });
+        }
       },
     };
+  }
+
+  // ---- the message queued behind a running turn --------------------------------------------------------
+
+  /**
+   * Holds the message of a send that came while a turn runs in the conversation. Nothing is stored
+   * and no toast is shown. Resolves to false: no run has started.
+   */
+  private queueMessage(view: ViewRecord, runtime: ConvRuntime, message: SendMessage): false {
+    const id = runtime.id;
+    if (this.queued.has(id)) {
+      // The draft stays as it is.
+      this.state.toast(view, 'warning', TEXT.messageAlreadyQueued);
+      return false;
+    }
+    const taken = [...view.state.draftAttachments];
+    // The bytes of images stay held in `imageBytes`, which the queued message now refers to.
+    const { attachments } = this.resolveAttachments(taken, (text) =>
+      this.state.toast(view, 'warning', text),
+    );
+    const entry: QueuedEntry = {
+      message: {
+        text: message.text,
+        mode: message.mode,
+        model: message.model,
+        attachments,
+        queuedAt: (this.deps.clock ?? { now: () => Date.now() }).now(),
+      },
+      viewId: view.id,
+      sending: false,
+    };
+    this.queued.set(id, entry);
+    if (taken.length > 0) {
+      view.apply([{ op: 'set', path: ['draftAttachments'], value: [] }]);
+    }
+    this.pruneImages();
+    this.showQueued(id, entry.message);
+    return false;
+  }
+
+  /** Shows the queued message of a conversation (or none) in every view that shows it. */
+  private showQueued(id: ConversationId, message: QueuedMessage | null): void {
+    const runtime = this.state.runtimes.get(id);
+    if (runtime) this.state.mutate(runtime, [{ op: 'set', path: ['queued'], value: message }]);
+  }
+
+  /**
+   * The view a queued message is reported in: the one that queued it while it still shows the
+   * conversation, else one that shows it. A view that moved on is not told about it.
+   */
+  private viewForQueued(id: ConversationId, entry: QueuedEntry): ViewRecord | undefined {
+    const queuedBy = this.state.views.get(entry.viewId);
+    if (queuedBy && !queuedBy.disposed && queuedBy.activeId === id) return queuedBy;
+    for (const candidate of this.state.views.values()) {
+      if (candidate.activeId === id) return candidate;
+    }
+    return undefined;
+  }
+
+  /**
+   * Sends the queued message of a conversation through `sendTurn`. Safe to call from anywhere and
+   * more than once: whoever gets there first marks it as being sent. When the conversation is busy
+   * or an Agent message meets pending configuration changes it stays queued, and `by` (an explicit
+   * Send) is told why. When no run starts it stays queued.
+   */
+  private async dispatchQueued(
+    id: ConversationId,
+    by?: ViewRecord,
+    expected?: QueuedEntry,
+  ): Promise<void> {
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending || this.disposed) return;
+    if (expected !== undefined && entry !== expected) return;
+    const meta =
+      this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+    let reason: string | undefined;
+    if (this.isBusy(id)) {
+      reason = TEXT.turnRunning;
+    } else if (
+      entry.message.mode === 'agent' &&
+      meta !== undefined &&
+      this.agentRunningIn(meta.folder)
+    ) {
+      // The tracker would refuse the turn after it was created: keep the message for the user's Send.
+      reason = BUSY_MESSAGE;
+    } else if (
+      entry.message.mode === 'agent' &&
+      meta !== undefined &&
+      (this.tracker?.configChanges(meta.folder).length ?? 0) > 0
+    ) {
+      reason = CONFIG_PENDING_MESSAGE;
+    }
+    if (reason !== undefined) {
+      if (by) this.state.toast(by, 'warning', reason);
+      return;
+    }
+    // Synchronously, before any await.
+    entry.sending = true;
+    let started = false;
+    try {
+      started = await this.sendTurn(
+        by ?? this.viewForQueued(id, entry),
+        {
+          type: 'turn.send',
+          conversationId: id,
+          text: entry.message.text,
+          mode: entry.message.mode,
+          model: entry.message.model,
+        },
+        { queuedInput: { attachments: entry.message.attachments } },
+      );
+    } catch (error) {
+      this.logger.error('a queued message could not be sent', { error: redact(String(error)) });
+    } finally {
+      entry.sending = false;
+    }
+    if (started && this.queued.get(id) === entry) {
+      this.queued.delete(id);
+      this.showQueued(id, null);
+      this.pruneImages();
+    }
+  }
+
+  /** "Send now": a turn that runs is stopped and waited for first. */
+  private async sendQueuedNow(view: ViewRecord, id: ConversationId): Promise<void> {
+    const entry = this.queued.get(id);
+    if (!entry || this.sendingNow.has(id)) return;
+    this.sendingNow.add(id);
+    try {
+      const run = this.runs.get(id);
+      if (run) {
+        await run.cancel();
+        await run.done;
+      }
+      await this.dispatchQueued(id, view, entry);
+    } finally {
+      this.sendingNow.delete(id);
+    }
+  }
+
+  private removeQueued(id: ConversationId): void {
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending) return;
+    this.queued.delete(id);
+    this.showQueued(id, null);
+    this.pruneImages();
+  }
+
+  /**
+   * Takes the message back into the composer of the view that asked: its attachments return to that
+   * view's draft, under the limits of a paste, and the host sends the text back. A view that does not
+   * show the conversation changes nothing.
+   */
+  private editQueued(view: ViewRecord, id: ConversationId): void {
+    if (view.activeId !== id) return;
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending) return;
+    this.queued.delete(id);
+    this.showQueued(id, null);
+    this.restoreAttachments(view, entry.message.attachments);
+    this.pruneImages();
+    // The event must reach the view after the patches that change its draft.
+    view.flush();
+    view.event({ kind: 'prefill-composer', text: entry.message.text });
+  }
+
+  /** Puts attachments back into a draft; an image that would break the limits of a paste is left out. */
+  private restoreAttachments(view: ViewRecord, attachments: readonly Attachment[]): void {
+    const additions: Attachment[] = [];
+    let count = 0;
+    let total = 0;
+    const held = new Set<string>();
+    for (const attachment of view.state.draftAttachments) {
+      if (attachment.kind !== 'image') continue;
+      count += 1;
+      total += attachment.bytes;
+      held.add(attachment.id);
+    }
+    for (const attachment of attachments) {
+      if (attachment.kind !== 'image') {
+        additions.push(attachment);
+      } else if (!held.has(attachment.id)) {
+        if (count >= MAX_IMAGES_PER_MESSAGE) {
+          this.state.toast(view, 'warning', TEXT.imageLimit);
+          continue;
+        }
+        if (total + attachment.bytes > MAX_IMAGE_BYTES_PER_MESSAGE) {
+          this.state.toast(view, 'warning', TEXT.imagesTooLarge);
+          continue;
+        }
+        held.add(attachment.id);
+        count += 1;
+        total += attachment.bytes;
+        additions.push(attachment);
+      }
+    }
+    this.attach(view, additions);
   }
 
   /** A turn runs in the conversation, or one is about to start (a plan was approved, a session is being copied). */
@@ -2751,12 +3044,17 @@ class Controller implements AppController {
     this.attach(view, [{ kind: 'image', id, mediaType, bytes: bytes.length }]);
   }
 
-  /** Forgets the bytes of every image that no view's draft refers to any more. */
+  /** Forgets the bytes of every image that no view's draft and no queued message refers to any more. */
   private pruneImages(): void {
     if (this.imageBytes.size === 0) return;
     const wanted = new Set<string>();
     for (const view of this.state.views.values()) {
       for (const attachment of view.state.draftAttachments) {
+        if (attachment.kind === 'image') wanted.add(attachment.id);
+      }
+    }
+    for (const entry of this.queued.values()) {
+      for (const attachment of entry.message.attachments) {
         if (attachment.kind === 'image') wanted.add(attachment.id);
       }
     }

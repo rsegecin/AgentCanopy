@@ -6,6 +6,7 @@ import { Icon, IconButton } from '../../app/components';
 import { useApp, usePost } from '../../app/context';
 import { useFocusRecovery } from '../../app/focus';
 import { useViewState } from '../../app/store';
+import { isTurnRunning } from '../../app/turns';
 import { NEW_CONVERSATION_KEY, useUi } from '../../app/ui-state';
 import { LOCK_HINT } from '../plan/lock-hint';
 import { AttachmentChip } from './AttachmentChip';
@@ -22,6 +23,8 @@ const MAX_DRAFT = 200_000;
 
 const CONFIG_BLOCK_HINT =
   'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
+const QUEUED_HINT = 'A message is already queued. Edit or remove it first.';
+const ASK_RUNNING_HINT = 'Switch to Agent or Plan to queue a message while the agent works.';
 
 interface Blocker {
   message: string;
@@ -87,6 +90,7 @@ export function Composer() {
   );
   const turns = useViewState((s) => s.active?.turns);
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
+  const hasQueued = useViewState((s) => s.active?.queued != null);
 
   const conversationId = meta?.id;
   const draftKey = conversationId ?? NEW_CONVERSATION_KEY;
@@ -94,8 +98,7 @@ export function Composer() {
   const newMode = useUi((s) => s.newMode);
   const newModel = useUi((s) => s.newModel);
 
-  const lastTurn = turns?.[turns.length - 1];
-  const running = lastTurn?.status === 'running' || lastTurn?.status === 'preparing';
+  const running = isTurnRunning(turns);
   const blocker = findBlocker(trusted, folderCount, provider);
 
   const mode: Mode = meta?.mode ?? newMode ?? defaults.mode;
@@ -106,14 +109,34 @@ export function Composer() {
 
   // Only sending in Agent mode waits for the decision: typing, attaching and switching mode do not.
   const configBlocked = configPending && mode === 'agent';
+  // The host queues one message per conversation and has no queue for Ask, so those sends are not
+  // posted: the draft would be cleared for a message the host refuses. With no turn running the host
+  // accepts an ordinary send (a message held after Stop stays queued behind that new turn).
+  const queuedBlocked = hasQueued && running;
+  const askBlocked = running && mode === 'ask';
+  // One hint at a time, the most basic reason first.
+  const hint: 'config' | 'queued' | 'ask' | null =
+    blocker !== null
+      ? null
+      : configBlocked
+        ? 'config'
+        : queuedBlocked
+          ? 'queued'
+          : askBlocked
+            ? 'ask'
+            : null;
+  const sendBlocked = blocker !== null || hint !== null;
   const textarea = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
-  // Send turns into Stop (and back) while the focused button is replaced: keep focus in the composer.
+  // Stop appears next to Send while a turn runs and goes away when it ends, and Send is disabled once
+  // its draft is sent: keep focus in the composer when the focused button goes.
   useFocusRecovery(form, { fallback: 'textarea' });
   const stopButton = useRef<HTMLButtonElement>(null);
   const radioName = useId();
   const noticeId = useId();
   const configHintId = useId();
+  const queuedHintId = useId();
+  const askHintId = useId();
 
   const picker = useReferencePicker({
     draft,
@@ -136,11 +159,11 @@ export function Composer() {
     return store.onEvent((event) => {
       if (event.kind === 'focus-composer') textarea.current?.focus();
       else if (event.kind === 'prefill-composer') {
-        ui.setDraft(draftKey, event.text);
+        // The App writes the draft, from the conversation that is current when the event arrives.
         textarea.current?.focus();
       }
     });
-  }, [store, ui, draftKey]);
+  }, [store]);
 
   // Images being read from a paste. Send waits for them, so the message does not leave without its image.
   const [pendingPastes, setPendingPastes] = useState(0);
@@ -171,7 +194,7 @@ export function Composer() {
 
   const send = () => {
     const text = draft.trim();
-    if (blocker !== null || configBlocked || running || text === '' || pendingPastes > 0) return;
+    if (sendBlocked || text === '' || pendingPastes > 0) return;
     setPasteProblem(null);
     post({
       type: 'turn.send',
@@ -217,7 +240,15 @@ export function Composer() {
         : null;
 
   const textareaDescription =
-    blocker !== null ? noticeId : configBlocked ? configHintId : undefined;
+    blocker !== null
+      ? noticeId
+      : hint === 'config'
+        ? configHintId
+        : hint === 'queued'
+          ? queuedHintId
+          : hint === 'ask'
+            ? askHintId
+            : undefined;
   const contextTarget = conversationId !== undefined ? { conversationId } : {};
   const contextDisabled = blocker !== null;
 
@@ -265,11 +296,29 @@ export function Composer() {
           </div>
         )}
 
-        {configBlocked && blocker === null && (
+        {hint === 'config' && (
           <p className="composer-note composer-note--warning">
             <Icon name="warning" />
             <span id={configHintId} role="status">
               {CONFIG_BLOCK_HINT}
+            </span>
+          </p>
+        )}
+
+        {hint === 'queued' && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span id={queuedHintId} role="status">
+              {QUEUED_HINT}
+            </span>
+          </p>
+        )}
+
+        {hint === 'ask' && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span id={askHintId} role="status">
+              {ASK_RUNNING_HINT}
             </span>
           </p>
         )}
@@ -440,31 +489,30 @@ export function Composer() {
             />
           </div>
 
-          {running && conversationId !== undefined ? (
-            <button
-              ref={stopButton}
-              type="button"
-              className="button button--stop"
-              onClick={() => {
-                post({ type: 'turn.cancel', conversationId });
-              }}
-            >
-              <Icon name="debug-stop" />
-              <span>Stop</span>
-            </button>
-          ) : (
+          <div className="composer-actions">
+            {running && conversationId !== undefined && (
+              <button
+                ref={stopButton}
+                type="button"
+                className="button button--stop"
+                onClick={() => {
+                  post({ type: 'turn.cancel', conversationId });
+                }}
+              >
+                <Icon name="debug-stop" />
+                <span>Stop</span>
+              </button>
+            )}
             <button
               type="submit"
               className="button"
-              disabled={
-                blocker !== null || configBlocked || draft.trim() === '' || pendingPastes > 0
-              }
+              disabled={sendBlocked || draft.trim() === '' || pendingPastes > 0}
               aria-describedby={textareaDescription}
             >
               <Icon name="send" />
               <span>Send</span>
             </button>
-          )}
+          </div>
         </div>
       </div>
     </form>

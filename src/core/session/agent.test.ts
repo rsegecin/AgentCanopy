@@ -422,6 +422,44 @@ describe('Agent mode with the default policy and tracker', () => {
     view.expectMirror();
   });
 
+  it('keeps a message queued behind a turn that left configuration changes pending, until they are dealt with', async () => {
+    const h = await harness({
+      sequence: [writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'), textScenarioSpec()],
+    });
+    const view = h.attach();
+    sendAgent(view);
+    // The turn waits for the answer: send the next message meanwhile.
+    await until('the prompt', () => pendingPrompt(view) !== undefined);
+    sendAgent(view, 'queued');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+    const [change] = view.current().review.configChanges;
+
+    // The turn completed, but an Agent message does not start while the change is pending.
+    await sleep(150);
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(1);
+    expect(view.toasts).toEqual([]);
+
+    view.send({ type: 'queue.sendNow', conversationId: view.active().meta.id });
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(1);
+
+    view.send({ type: 'config.keep', changeId: change?.id });
+    await until('the change to go', () => view.current().review.configChanges.length === 0);
+    view.send({ type: 'queue.sendNow', conversationId: view.active().meta.id });
+    await until('the second turn', () => view.active().turns.length === 2);
+    const next = await finishedTurn(h, view);
+    expect(next.status).toBe('completed');
+    expect(view.active().queued).toBeNull();
+    expect(h.requests).toHaveLength(2);
+    view.expectMirror();
+  });
+
   it('lets the user keep a configuration change, which unblocks the next turn', async () => {
     const h = await harness({
       sequence: [writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'), textScenarioSpec()],

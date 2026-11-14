@@ -31,6 +31,7 @@ export type PatchOp = z.infer<typeof PatchOpSchema>;
 /** Something that happens once and is not state. */
 export const ViewEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('focus-composer') }),
+  /** Text for the composer. It goes in front of what the user has already typed, never over it. */
   z.object({ kind: z.literal('prefill-composer'), text: z.string() }),
   z.object({
     kind: z.literal('show-tab'),
@@ -102,6 +103,17 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     model: z.string().min(1).max(200),
   }),
   z.object({ type: z.literal('turn.cancel'), conversationId }),
+
+  // The message queued behind a running turn
+  /**
+   * Takes the queued message back for editing: the host drops it, returns its attachments to this
+   * view's draft and sends the text back with a `prefill-composer` event. Nothing happens when the
+   * message is already being sent.
+   */
+  z.object({ type: z.literal('queue.edit'), conversationId }),
+  z.object({ type: z.literal('queue.remove'), conversationId }),
+  /** Sends the queued message now. A turn that is running is stopped first and waited for. */
+  z.object({ type: z.literal('queue.sendNow'), conversationId }),
 
   // Composer context
   z.object({
