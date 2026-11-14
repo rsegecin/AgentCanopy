@@ -450,10 +450,10 @@ describe('reference picker and the rest of the composer', () => {
       }),
     );
     expect(screen.getByText('The agent is waiting for your answer above.')).toBeTruthy();
-    // Stop is offered next to Send, and Ask mode cannot queue a message while the turn runs.
+    // Stop is offered next to Send, and an Ask message sent while the turn runs is a side question.
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
     typeText('next');
-    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(false);
   });
 
   it.each([

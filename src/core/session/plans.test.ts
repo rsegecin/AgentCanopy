@@ -7,6 +7,7 @@ import type { AssistantMessage, ConversationId, PlanDoc, Prompt } from '../../sh
 import type { TurnPolicy, TurnRequest } from '../contracts';
 import type * as PlansModule from '../plans';
 import { createConversationStore } from '../conversations/store';
+import type { ConversationStore } from '../conversations/store';
 import {
   createPlanStore,
   renderExecutionPrompt,
@@ -1191,6 +1192,29 @@ describe('plans and conversations', () => {
     for (const card of cards) {
       expect(card.kind === 'plan-update' && card.planId).toBe(branch.meta.planId);
     }
+    view.expectMirror();
+  });
+
+  it('removes the copy again when it cannot be recorded on the branch', async () => {
+    const { h, view, plan } = await withPlan();
+    const parentId = view.active().meta.id;
+    const store = Reflect.get(h.controller, 'store') as ConversationStore;
+    const original = store.updateMeta.bind(store);
+    let refused = false;
+    store.updateMeta = (id, patch) => {
+      if (id === parentId || patch.planId === undefined) return original(id, patch);
+      refused = true;
+      return Promise.reject(new Error('no space left'));
+    };
+    const answerId = assistants(view)[0]?.id;
+    view.send({ type: 'conversation.fork', conversationId: parentId, messageId: answerId });
+    await until('the branch', () => view.state?.active?.meta.id !== parentId);
+
+    expect(refused).toBe(true);
+    expect(view.active().meta.planId).toBeUndefined();
+    expect(view.active().plan).toBeNull();
+    expect(await fs.readdir(join(h.storage, 'plans'))).toEqual([`${plan.id}.json`]);
+    expect(await planStoreOf(h).get(plan.id)).toEqual(plan);
     view.expectMirror();
   });
 

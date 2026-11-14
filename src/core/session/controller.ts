@@ -10,6 +10,8 @@ import {
   WebviewMessageSchema,
 } from '../../shared';
 import type {
+  AsideAnchor,
+  AssistantMessage,
   Attachment,
   Banner,
   CheckpointSummary,
@@ -23,6 +25,7 @@ import type {
   PlanId,
   PromptAnswer,
   OperationId,
+  PatchOp,
   PromptId,
   ProviderStatus,
   QueuedMessage,
@@ -47,7 +50,7 @@ import type {
 import { createFileSearch } from '../context';
 import type { FileSearch } from '../context';
 import { createConversationStore } from '../conversations/store';
-import type { ConversationStore } from '../conversations/store';
+import type { ConversationData, ConversationStore } from '../conversations/store';
 import {
   createPlanStore,
   renderExecutionPrompt,
@@ -90,6 +93,7 @@ export function checkpointLabel(operation: CheckpointSummary): string {
 
 /** Where a review message goes: a toast in one view, or in every view of a folder. */
 type Report = (level: 'info' | 'warning' | 'error', text: string) => void;
+import { asideOps, asidesOf } from './asides';
 import { REFRESH_ACTION, SIGN_IN_ACTION, bannerKey, computeBanners } from './banners';
 import { decodeBase64, matchesImageSignature } from './images';
 import { isInside, resolveInsideWorkspace } from './paths';
@@ -210,6 +214,8 @@ class Controller implements AppController {
   private readonly queued = new Map<ConversationId, QueuedEntry>();
   /** Conversations whose queued message is being sent now by a "Send now". */
   private readonly sendingNow = new Set<ConversationId>();
+  /** Conversations whose side question is being created: its branch exists, its run may not yet. */
+  private readonly asking = new Set<ConversationId>();
   /**
    * Bytes of pasted images by id (the content hash), kept only while some view's draft or a queued
    * message refers to them; a turn takes its own copies when the message is sent.
@@ -238,6 +244,7 @@ class Controller implements AppController {
     this.state = new SessionState(
       () => this.store?.list() ?? [],
       (view) => this.syncViewScope(view),
+      (runtime, ops) => this.forwardAside(runtime, ops),
     );
   }
 
@@ -819,6 +826,9 @@ class Controller implements AppController {
    * - start a turn (`turn.send`), in any mode the policy offers, with text and attachments of its own;
    * - queue one message per conversation behind a turn that runs there (`turn.send` again), and later
    *   send it, take it back for editing or remove it (`queue.*`): no more than `turn.send` allows;
+   * - ask one side question at a time per conversation (`turn.send` in Ask mode while a turn runs
+   *   there), which creates a branch (a copy of the finished turns) in storage and runs a read-only
+   *   turn in it alongside the running one;
    * - hand the host pasted image data, which is checked (type, size, signature), kept in memory only
    *   while a draft refers to it, and sent with the next message;
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
@@ -1032,7 +1042,10 @@ class Controller implements AppController {
         if (!data) return undefined;
         const existing = this.state.runtimes.get(id);
         if (existing) return existing;
-        const plan = await this.loadPlan(data.meta.planId);
+        const [plan, branches] = await Promise.all([
+          this.loadPlan(data.meta.planId),
+          this.loadAsideBranches(store, id),
+        ]);
         const raced = this.state.runtimes.get(id);
         if (raced) return raced;
         this.state.previews.set(id, previewOf(data.messages));
@@ -1044,6 +1057,10 @@ class Controller implements AppController {
           plan,
           activity: null,
           queued: this.queued.get(id)?.message ?? null,
+          // A branch held in memory is newer than what was read from the store.
+          asides: asidesOf(
+            branches.map((branch) => this.state.runtimes.get(branch.meta.id)?.data ?? branch),
+          ),
         });
       })
       .finally(() => {
@@ -1051,6 +1068,28 @@ class Controller implements AppController {
       });
     this.loading.set(id, load);
     return load;
+  }
+
+  /** The stored branches that hold a side question of a conversation. One that cannot be read is left out. */
+  private async loadAsideBranches(
+    store: ConversationStore,
+    parentId: ConversationId,
+  ): Promise<ConversationData[]> {
+    const ids = store
+      .list()
+      .filter((meta) => meta.aside?.parentId === parentId)
+      .map((meta) => meta.id);
+    const loaded = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return await store.load(id);
+        } catch (error) {
+          this.logger.warn('a side question could not be read', { error: redact(String(error)) });
+          return undefined;
+        }
+      }),
+    );
+    return loaded.filter((branch): branch is ConversationData => branch !== undefined);
   }
 
   private async loadPlan(planId: PlanId | undefined): Promise<PlanDoc | null> {
@@ -1137,6 +1176,7 @@ class Controller implements AppController {
       });
       if (!confirmed || view.disposed) return;
     }
+    const asideParent = (this.state.runtimes.get(id)?.data.meta ?? meta)?.aside?.parentId;
     // Nothing may start or be queued in the conversation until it is gone.
     this.reserved.add(id);
     try {
@@ -1162,6 +1202,7 @@ class Controller implements AppController {
     }
     this.state.runtimes.delete(id);
     this.state.previews.delete(id);
+    this.dropAside(asideParent, id);
     this.pruneImages();
     for (const shown of this.state.views.values()) {
       const search = shown.state.search;
@@ -1282,13 +1323,16 @@ class Controller implements AppController {
     }
   }
 
-  /** A branch gets its own copy of the plan of the conversation it came from. */
+  /**
+   * A branch gets its own copy of the plan of the conversation it came from. Resolves to false when
+   * the copy failed (logged); true when it was made or there was nothing to copy.
+   */
   private async copyPlanToBranch(
     parentId: ConversationId,
     branchId: ConversationId,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const planId = this.store?.list().find((meta) => meta.id === parentId)?.planId;
-    if (planId === undefined || !this.plans || !this.store) return;
+    if (planId === undefined || !this.plans || !this.store) return true;
     try {
       // The plan as it stood at the fork point. A branch that keeps no turn has no plan; one that
       // keeps every turn gets all of it; otherwise it is cut by the time the last kept turn ended.
@@ -1297,17 +1341,23 @@ class Controller implements AppController {
         this.store.load(parentId),
       ]);
       const lastKept = branch?.meta.fork?.lastKeptParentTurnId;
-      if (lastKept === undefined || !parent) return;
+      if (lastKept === undefined || !parent) return true;
       const keptTurn = parent.turns.find((turn) => turn.id === lastKept);
-      if (!keptTurn) return;
+      if (!keptTurn) return true;
       const wholePlan = parent.turns[parent.turns.length - 1]?.id === lastKept;
       const copy = await this.plans.copy(
         planId,
         branchId,
         wholePlan ? {} : { upToTime: keptTurn.endedAt ?? keptTurn.startedAt },
       );
-      if (!copy) return;
-      await this.store.updateMeta(branchId, { planId: copy.id });
+      if (!copy) return true;
+      try {
+        await this.store.updateMeta(branchId, { planId: copy.id });
+      } catch (error) {
+        // Not recorded on the branch, the copy would be left behind: it goes again.
+        await this.deletePlan(copy.id);
+        throw error;
+      }
       // The copied messages still name the parent's plan; point their plan cards at the copy.
       for (const message of branch?.messages ?? []) {
         if (message.role !== 'assistant') continue;
@@ -1319,10 +1369,12 @@ class Controller implements AppController {
           ),
         });
       }
+      return true;
     } catch (error) {
       this.logger.warn('the plan could not be copied to the branch', {
         error: redact(String(error)),
       });
+      return false;
     }
   }
 
@@ -1371,19 +1423,27 @@ class Controller implements AppController {
     }
     if (this.disposed) return false;
     if (view?.creating || (runtime && this.isBusy(runtime.id))) {
-      // A turn runs in the conversation and nothing else holds it: Agent and Plan messages wait for it.
+      // A turn runs in the conversation and nothing else holds it: Agent and Plan messages wait for
+      // it, and a question in Ask mode runs alongside it as a side question.
       if (
         view &&
         runtime &&
         !view.creating &&
         !options.gate &&
         !options.queuedInput &&
-        message.mode !== 'ask' &&
         this.runs.has(runtime.id) &&
         !this.reserved.has(runtime.id) &&
         (this.forkHolds.get(runtime.id) ?? 0) === 0
       ) {
-        return this.queueMessage(view, runtime, message);
+        if (message.mode !== 'ask') return this.queueMessage(view, runtime, message);
+        // The run is wrapping up a turn that has already ended, so the conversation looks idle and
+        // there is nothing to anchor a side question to: the question waits and goes out as an
+        // ordinary turn.
+        if (!this.hasRunningTurn(runtime)) return this.queueMessage(view, runtime, message);
+        // A side question has no side questions of its own.
+        if (runtime.data.meta.aside !== undefined) return giveUp(TEXT.turnRunning);
+        if (this.asideBusy(runtime.id)) return giveUp(TEXT.asideRunning);
+        return this.startAside(view, store, runtime, message);
       }
       return giveUp(TEXT.turnRunning);
     }
@@ -1463,6 +1523,7 @@ class Controller implements AppController {
           plan: null,
           activity: null,
           queued: null,
+          asides: [],
         });
       } finally {
         view.creating = false;
@@ -1583,6 +1644,184 @@ class Controller implements AppController {
         }
       },
     };
+  }
+
+  // ---- side questions ----------------------------------------------------------------------------------
+
+  /** The conversation's last turn has not ended yet. */
+  private hasRunningTurn(runtime: ConvRuntime): boolean {
+    return runtime.data.turns.some(
+      (turn) => turn.status === 'running' || turn.status === 'preparing',
+    );
+  }
+
+  /** A side question of the conversation is being created or still runs. */
+  private asideBusy(parentId: ConversationId): boolean {
+    if (this.asking.has(parentId)) return true;
+    return [...this.runs.values()].some((run) => {
+      const aside = this.state.runtimes.get(run.conversationId)?.data.meta.aside;
+      // A later turn of a branch that was opened as a conversation is not a side question.
+      return (
+        aside?.parentId === parentId && (aside.turnId === undefined || aside.turnId === run.turnId)
+      );
+    });
+  }
+
+  /**
+   * A question asked in Ask mode while a turn runs in the conversation. It runs alongside that turn,
+   * in a branch of the turns that have finished, which is not opened in the view: the parent shows it
+   * as a card at the place it was asked. Nothing of the parent changes. Resolves to whether the side
+   * question's run has started; when it has not, the branch is deleted again.
+   */
+  private async startAside(
+    view: ViewRecord,
+    store: ConversationStore,
+    parent: ConvRuntime,
+    message: SendMessage,
+  ): Promise<boolean> {
+    const parentId = parent.id;
+    const { turns, messages } = parent.data;
+    const running = turns.findLast(
+      (turn) => turn.status === 'running' || turn.status === 'preparing',
+    );
+    const user = running
+      ? messages.find((candidate) => candidate.role === 'user' && candidate.turnId === running.id)
+      : undefined;
+    if (!running || !user) {
+      // Not expected: `sendTurn` queues the message when no turn is running.
+      this.state.toast(view, 'warning', TEXT.turnRunning);
+      return false;
+    }
+    const assistant = messages.find(
+      (candidate): candidate is AssistantMessage =>
+        candidate.role === 'assistant' && candidate.turnId === running.id,
+    );
+    const anchor: AsideAnchor = assistant
+      ? { messageId: assistant.id, afterParts: assistant.parts.length }
+      : { messageId: user.id, afterParts: 0 };
+
+    // Synchronously, before any await: a second send meanwhile is refused.
+    this.asking.add(parentId);
+    let branchId: ConversationId | undefined;
+    let started = false;
+    try {
+      try {
+        // At the user message of the running turn: the branch keeps only the turns that finished.
+        const { meta } = await store.fork({ parentId, atMessageId: user.id });
+        branchId = meta.id;
+        const title = titleOf(message.text);
+        await store.updateMeta(branchId, {
+          aside: { parentId, anchor },
+          mode: 'ask',
+          model: message.model,
+          ...(title !== undefined ? { title } : {}),
+        });
+        // Like any branch, it has its own copy of the plan (the parent's is read, never changed).
+        if (!(await this.copyPlanToBranch(parentId, branchId))) {
+          throw new Error('the plan could not be copied');
+        }
+      } catch (error) {
+        this.logger.warn('a side question could not be created', { error: redact(String(error)) });
+        this.state.toast(view, 'warning', TEXT.asideFailed);
+        return false;
+      }
+      if (this.disposed) return false;
+
+      let run: TurnRun | undefined;
+      started = await this.sendTurn(
+        view,
+        {
+          type: 'turn.send',
+          conversationId: branchId,
+          text: message.text,
+          mode: 'ask',
+          model: message.model,
+        },
+        {
+          onStarted: (startedRun) => {
+            run = startedRun;
+          },
+        },
+      );
+      if (!started || run === undefined) return started;
+      try {
+        await this.updateMeta(store, branchId, {
+          aside: { parentId, anchor, turnId: run.turnId },
+        });
+      } catch (error) {
+        this.logger.warn('a side question could not be marked', { error: redact(String(error)) });
+        // Unmarked, it would run unseen (no card, no Stop) and refuse the next side question: it is
+        // stopped, and its branch goes in `finally`.
+        await run.cancel();
+        await run.done;
+        started = false;
+        this.state.toast(view, 'warning', TEXT.asideFailed);
+        return false;
+      }
+      // A run that ended before its branch was marked has released the branch already.
+      if (!this.state.runtimes.has(branchId)) await this.showStoredAside(store, branchId);
+      return true;
+    } finally {
+      this.asking.delete(parentId);
+      if (!started && branchId !== undefined) await this.discardAside(store, branchId);
+    }
+  }
+
+  /** Deletes the branch of a side question whose run did not start, and its plan, so nothing empty is left. */
+  private async discardAside(store: ConversationStore, branchId: ConversationId): Promise<void> {
+    // Read first: the branch's own copy of the plan goes even when the branch cannot be deleted.
+    const metas = store.list();
+    const branch = metas.find((meta) => meta.id === branchId);
+    const parentPlanId = metas.find((meta) => meta.id === branch?.fork?.parentId)?.planId;
+    const planId = branch?.planId;
+    try {
+      await store.delete(branchId);
+    } catch (error) {
+      this.logger.warn('an unused side question could not be deleted', {
+        error: redact(String(error)),
+      });
+    }
+    // Never the parent's plan, which a branch only ever has a copy of.
+    if (planId !== undefined && planId !== parentPlanId) await this.deletePlan(planId);
+    this.state.release(branchId);
+    this.state.previews.delete(branchId);
+    this.state.refreshSummaries();
+  }
+
+  /** Brings the parent's card in step with a branch that is not in memory. */
+  private async showStoredAside(store: ConversationStore, branchId: ConversationId): Promise<void> {
+    let branch: ConversationData | undefined;
+    try {
+      branch = await store.load(branchId);
+    } catch (error) {
+      this.logger.warn('a side question could not be read', { error: redact(String(error)) });
+    }
+    if (!branch || this.state.runtimes.has(branchId)) return;
+    const parentId = branch.meta.aside?.parentId;
+    const parent = parentId !== undefined ? this.state.runtimes.get(parentId) : undefined;
+    if (!parent) return;
+    this.state.mutate(parent, asideOps(parent.data.asides, branch, []));
+  }
+
+  /**
+   * After a side question's branch changed in memory: the card in its parent follows, in every view
+   * that shows the parent. A parent that is not in memory rebuilds its cards when it is loaded.
+   */
+  private forwardAside(branch: ConvRuntime, ops: readonly PatchOp[]): void {
+    const parentId = branch.data.meta.aside?.parentId;
+    if (parentId === undefined || parentId === branch.id) return;
+    const parent = this.state.runtimes.get(parentId);
+    if (!parent) return;
+    this.state.mutate(parent, asideOps(parent.data.asides, branch.data, ops));
+  }
+
+  /** A deleted branch's card leaves its parent. */
+  private dropAside(parentId: ConversationId | undefined, branchId: ConversationId): void {
+    if (parentId === undefined) return;
+    const parent = this.state.runtimes.get(parentId);
+    const index = parent?.data.asides.findIndex((aside) => aside.conversationId === branchId) ?? -1;
+    if (parent && index >= 0)
+      this.state.mutate(parent, [{ op: 'delete', path: ['asides', index] }]);
   }
 
   // ---- the message queued behind a running turn --------------------------------------------------------

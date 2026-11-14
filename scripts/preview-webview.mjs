@@ -423,6 +423,7 @@ const state = {
     plan,
     activity: 'Working…',
     queued: null,
+    asides: [],
   },
   checkpoints: [
     {
@@ -554,6 +555,79 @@ const state = {
     { id: 'b1', level: 'info', text: 'This is a preview with sample data.', dismissible: true },
   ],
 };
+
+// Side questions of the running Agent turn: asked while it was writing its last message (m6), after
+// its first part. `streaming` is mid-answer; `done` has finished. Used by ?aside=running|done.
+const asideAnchor = { messageId: 'm6', afterParts: 1 };
+const asideSamples = {
+  streaming: shared.AsideSchema.parse({
+    conversationId: 'c-aside-1',
+    anchor: asideAnchor,
+    question: 'Which header does the limiter key on today?',
+    parts: [
+      tool(
+        'toolu_a1',
+        'Grep',
+        { pattern: 'x-api-key', path: 'src' },
+        { resultPreview: 'src/server/rate-limit.ts:31' },
+      ),
+      {
+        kind: 'text',
+        text: 'It keys on the `x-api-key` header, falling back to the client IP when that is missing. The lookup is in `src/server/rate-limit.ts:31`, and the',
+      },
+    ],
+    prompts: [],
+    status: 'running',
+  }),
+  done: shared.AsideSchema.parse({
+    conversationId: 'c-aside-1',
+    anchor: asideAnchor,
+    question: 'Which header does the limiter key on today?',
+    parts: [
+      tool(
+        'toolu_a1',
+        'Grep',
+        { pattern: 'x-api-key', path: 'src' },
+        { resultPreview: 'src/server/rate-limit.ts:31' },
+      ),
+      {
+        kind: 'text',
+        text: 'It keys on the `x-api-key` header, falling back to the client IP when that is missing. The lookup is in `src/server/rate-limit.ts:31`.\n\n- Keys are hashed before they are stored.\n- Anonymous clients share one bucket per IP.',
+      },
+    ],
+    prompts: [],
+    status: 'completed',
+  }),
+};
+// Side questions in History: one under its parent, one whose parent is gone.
+const asideSummaries = [
+  shared.ConversationSummarySchema.parse({
+    ...meta,
+    id: 'c-aside-1',
+    title: 'Which header does the limiter key on today?',
+    mode: 'ask',
+    updatedAt: now - 20000,
+    preview: 'It keys on the x-api-key header…',
+    running: false,
+    pendingPrompts: 0,
+    planId: undefined,
+    fork: { parentId: conv, atMessageId: 'm5', exactness: 'reconstructed', lost: [] },
+    aside: { parentId: conv, anchor: asideAnchor },
+  }),
+  shared.ConversationSummarySchema.parse({
+    ...meta,
+    id: 'c-aside-2',
+    title: 'Is the build cache shared between branches?',
+    mode: 'ask',
+    updatedAt: now - 95000000,
+    preview: 'No, each branch has its own cache.',
+    running: false,
+    pendingPrompts: 0,
+    planId: undefined,
+    fork: { parentId: 'c-deleted', atMessageId: 'm1', exactness: 'reconstructed', lost: [] },
+    aside: { parentId: 'c-deleted', anchor: { messageId: 'm1', afterParts: 0 } },
+  }),
+];
 
 const restorePreview = shared.RestorePreviewSchema.parse({
   token: 'preview-token-1',
@@ -778,6 +852,51 @@ function page(origin, query) {
         queuedAt: Date.now(),
       };
     }
+    // ?aside=running: a side question streams in the middle of the running turn's message, and the
+    // composer is in Ask mode: it shows the hint "A side question is already running" and Send is disabled.
+    // ?aside=done: the same, with the side question finished: the composer shows the note that a message
+    // in Ask mode is asked as a side question, and Send is enabled.
+    // ?aside=history: the conversations list has two side questions (use with ?tab=history).
+    const asideVariant = params.get('aside');
+    if ((asideVariant === 'running' || asideVariant === 'done') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'ask' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      state.review = { ...state.review, configChanges: [], busy: false };
+      a.messages = a.messages.map((m) =>
+        m.id === 'm6'
+          ? {
+              ...m,
+              parts: [
+                m.parts[0],
+                { kind: 'text', text: 'The limit is raised. Now I am updating the tests that pinned the old value.' },
+                m.parts[1] && { ...m.parts[1], call: { ...m.parts[1].call, status: 'done', approval: 'policy', endedAt: Date.now() } },
+              ].filter(Boolean),
+            }
+          : m,
+      );
+      a.asides = [${JSON.stringify(asideSamples)}[asideVariant === 'running' ? 'streaming' : 'done']];
+    }
+    // ?sendMode=ask: the parent's turn runs in Agent mode and the user has switched the composer to Ask
+    // while it runs. No side question runs, so the composer shows the note "Asked as a side question: the
+    // agent keeps working and does not see it." The choice is view-local (in memory, not part of the
+    // state), so the boot script clicks the radio once the composer is on the page.
+    const sendMode = params.get('sendMode');
+    if ((sendMode === 'ask' || sendMode === 'plan') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'agent' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      state.review = { ...state.review, configChanges: [], busy: false };
+      const pick = setInterval(() => {
+        const radio = document.querySelector('input[type="radio"][value="' + sendMode + '"]');
+        if (!radio) return;
+        clearInterval(pick);
+        radio.click();
+      }, 50);
+    }
+    if (asideVariant === 'history') {
+      state.conversations = [...state.conversations, ...${JSON.stringify(asideSummaries)}];
+    }
     const sent = [];
     window.__sent = sent;
     // ?collapsed=1: the user has collapsed the changes card.
@@ -841,7 +960,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask)`,
   );
 } else {
   const chrome =
@@ -890,7 +1009,11 @@ if (!process.argv.includes('--check')) {
       query: '?tab=chat&theme=light&kind=panel',
       size: '1100,900',
     },
+    { name: 'chat-aside-streaming-dark', query: '?tab=chat&aside=running', size: '520,1500' },
+    { name: 'chat-aside-switch-dark', query: '?tab=chat&sendMode=ask', size: '520,1500' },
+    { name: 'chat-aside-done-light', query: '?tab=chat&aside=done&theme=light', size: '520,1500' },
     { name: 'history-light', query: '?tab=history&theme=light', size: '520,700' },
+    { name: 'history-aside-dark', query: '?tab=history&aside=history', size: '520,700' },
     { name: 'checkpoints-dark', query: '?tab=checkpoints', size: '520,700' },
     {
       name: 'restore-preview-light',

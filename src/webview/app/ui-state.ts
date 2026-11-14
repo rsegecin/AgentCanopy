@@ -48,6 +48,12 @@ export interface UiSnapshot {
   /** Mode and model picked while no conversation is open. */
   newMode: Mode | undefined;
   newModel: string | undefined;
+  /**
+   * The mode the user chose for the next send in a conversation while a turn runs there (the host
+   * refuses to change the conversation's mode then). In memory only: never saved, and not for a
+   * reload to restore.
+   */
+  sendMode: Readonly<Record<string, Mode>>;
   /** Selections in pending question prompts, per prompt id and then per question index. */
   questions: Readonly<Record<string, readonly QuestionDraft[]>>;
   /** Pending review entries ticked "Include in Reject All", by path. */
@@ -87,6 +93,7 @@ export class UiState {
       expanded: parsed.expanded,
       newMode: parsed.newMode,
       newModel: parsed.newModel,
+      sendMode: {},
       questions: parsed.questions,
       reviewInclude: parsed.reviewInclude,
       restoreSelection: parsed.restoreSelection,
@@ -136,6 +143,19 @@ export class UiState {
 
   setNewModel(model: string): void {
     this.update({ newModel: model });
+  }
+
+  /** Sets the mode for the next send in one conversation, without changing the conversation's mode. */
+  setSendMode(conversationId: string, mode: Mode): void {
+    if (this.snapshot.sendMode[conversationId] === mode) return;
+    this.update({ sendMode: { ...this.snapshot.sendMode, [conversationId]: mode } });
+  }
+
+  clearSendMode(conversationId: string): void {
+    if (!(conversationId in this.snapshot.sendMode)) return;
+    const next = { ...this.snapshot.sendMode };
+    delete next[conversationId];
+    this.update({ sendMode: next });
   }
 
   /** Records the selection for one question of a prompt. Only the newest prompts are kept. */

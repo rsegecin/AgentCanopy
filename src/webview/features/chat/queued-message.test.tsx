@@ -64,6 +64,7 @@ describe('QueuedMessage content', () => {
   it.each([
     ['agent', 'Agent'],
     ['plan', 'Plan'],
+    ['ask', 'Ask'],
   ] as const satisfies readonly (readonly [Mode, string])[])(
     'shows the label, the %s mode and the whole text',
     (mode, label) => {
@@ -165,6 +166,25 @@ describe('QueuedMessage status line', () => {
       state({ status: 'interrupted', config: true, queued: queued({ mode: 'plan' }) }),
     );
     expect(status().textContent).toBe('Not sent: the turn was stopped.');
+  });
+
+  it('shows an Ask message like a Plan message: no configuration or folder conditions', () => {
+    const ask = queued({ mode: 'ask' });
+    const first = renderWithHost(
+      <QueuedMessage />,
+      state({ status: 'running', config: true, busy: true, queued: ask }),
+    );
+    expect(status().textContent).toBe('Sent when the agent finishes.');
+    first.unmount();
+    const second = renderWithHost(
+      <QueuedMessage />,
+      state({ status: 'interrupted', config: true, busy: true, queued: ask }),
+    );
+    expect(status().textContent).toBe('Not sent: the turn was stopped.');
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Send queued message' }).disabled,
+    ).toBe(false);
+    second.unmount();
   });
 
   it('follows the state when the turn ends', () => {
@@ -324,5 +344,76 @@ describe('QueuedMessage focus', () => {
     box().focus();
     init(state({ queued: null }), 1);
     expect(document.activeElement).toBe(box());
+  });
+});
+
+describe('QueuedMessage Edit and the composer mode', () => {
+  const modeState = (stored: Mode, status: TurnStatus, queuedMode: Mode = 'agent') =>
+    makeState({
+      active: makeActive('c1', {
+        meta: { mode: stored },
+        turns: [makeTurn({ status, mode: stored })],
+        queued: queued({ mode: queuedMode }),
+      }),
+    });
+  const radio = (name: string) => screen.getByRole<HTMLInputElement>('radio', { name });
+  const edit = () => fireEvent.click(screen.getByRole('button', { name: 'Edit queued message' }));
+
+  it('restores the queued mode in the composer without posting setMode while a turn runs', () => {
+    const { host } = renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      modeState('plan', 'running'),
+    );
+    fireEvent.click(radio('Ask'));
+    expect(radio('Ask').checked).toBe(true);
+    edit();
+    expect(radio('Agent').checked).toBe(true);
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    expect(host.postedOf('queue.edit')).toEqual([
+      { type: 'queue.edit', conversationId: convId('c1') },
+    ]);
+  });
+
+  it('drops the choice when the queued mode is the stored one', () => {
+    const { host, services } = renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      modeState('agent', 'running'),
+    );
+    fireEvent.click(radio('Ask'));
+    edit();
+    expect(services.ui.getSnapshot().sendMode).toEqual({});
+    expect(radio('Agent').checked).toBe(true);
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+  });
+
+  it('posts setMode with the queued mode, then queue.edit, when no turn runs and the mode differs', () => {
+    const { host, services } = renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      modeState('plan', 'interrupted'),
+    );
+    edit();
+    expect(
+      host.posted.filter((m) => m.type === 'conversation.setMode' || m.type === 'queue.edit'),
+    ).toEqual([
+      { type: 'conversation.setMode', conversationId: convId('c1'), mode: 'agent' },
+      { type: 'queue.edit', conversationId: convId('c1') },
+    ]);
+    expect(services.ui.getSnapshot().sendMode).toEqual({});
+  });
+
+  it('posts only queue.edit when no turn runs and the mode is already the queued one', () => {
+    const { host } = renderWithHost(<QueuedMessage />, modeState('agent', 'interrupted'));
+    edit();
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    expect(host.postedOf('queue.edit')).toHaveLength(1);
   });
 });

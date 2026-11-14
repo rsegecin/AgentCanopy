@@ -9,6 +9,7 @@ import { useViewState } from '../../app/store';
 import { isTurnRunning } from '../../app/turns';
 import { NEW_CONVERSATION_KEY, useUi } from '../../app/ui-state';
 import { LOCK_HINT } from '../plan/lock-hint';
+import { chooseConversationMode } from './mode-choice';
 import { AttachmentChip } from './AttachmentChip';
 import { pastedImage, toBase64 } from './paste-image';
 import { ReferencePicker, useReferencePicker } from './reference-picker';
@@ -24,7 +25,10 @@ const MAX_DRAFT = 200_000;
 const CONFIG_BLOCK_HINT =
   'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
 const QUEUED_HINT = 'A message is already queued. Edit or remove it first.';
-const ASK_RUNNING_HINT = 'Switch to Agent or Plan to queue a message while the agent works.';
+const ASIDE_RUNNING_HINT = 'A side question is already running. Wait for it or stop it.';
+const ASIDE_OF_ASIDE_HINT = 'Wait for the answer or stop it.';
+const LOCK_RUNNING_HINT = 'The lock can be changed when the turn ends.';
+const ASIDE_NOTE = 'Asked as a side question: the agent keeps working and does not see it.';
 
 interface Blocker {
   message: string;
@@ -86,22 +90,41 @@ export function Composer() {
   const attachments = useViewState((s) => s.draftAttachments);
   const hasPlan = useViewState((s) => s.active?.plan != null);
   const hasPendingPrompt = useViewState(
-    (s) => s.active?.prompts.some((p) => p.state === 'pending') ?? false,
+    (s) =>
+      s.active !== null &&
+      (s.active.prompts.some((p) => p.state === 'pending') ||
+        s.active.asides.some((a) => a.prompts.some((p) => p.state === 'pending'))),
   );
   const turns = useViewState((s) => s.active?.turns);
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
   const hasQueued = useViewState((s) => s.active?.queued != null);
+  const asideRunning = useViewState(
+    (s) =>
+      s.active?.asides.some((a) => a.status === 'running' || a.status === 'preparing') ?? false,
+  );
 
   const conversationId = meta?.id;
   const draftKey = conversationId ?? NEW_CONVERSATION_KEY;
   const draft = useUi((s) => s.drafts[draftKey] ?? '');
   const newMode = useUi((s) => s.newMode);
   const newModel = useUi((s) => s.newModel);
+  const modeOverride = useUi((s) =>
+    conversationId !== undefined ? s.sendMode[conversationId] : undefined,
+  );
 
   const running = isTurnRunning(turns);
   const blocker = findBlocker(trusted, folderCount, provider);
 
-  const mode: Mode = meta?.mode ?? newMode ?? defaults.mode;
+  // The one mode the composer shows and sends in. In an open conversation it is the user's choice made
+  // while a turn ran (the host refuses to change the conversation's mode then), else the conversation's.
+  const mode: Mode = meta !== undefined ? (modeOverride ?? meta.mode) : (newMode ?? defaults.mode);
+  const storedMode = meta?.mode;
+  // The host sets the conversation's mode when a turn of that mode starts: the choice has arrived.
+  useEffect(() => {
+    if (conversationId !== undefined && modeOverride !== undefined && modeOverride === storedMode) {
+      ui.clearSendMode(conversationId);
+    }
+  }, [ui, conversationId, modeOverride, storedMode]);
   const model = meta?.model ?? newModel ?? defaults.model;
   const modelOptions = models.some((m) => m.id === model)
     ? models
@@ -109,22 +132,30 @@ export function Composer() {
 
   // Only sending in Agent mode waits for the decision: typing, attaching and switching mode do not.
   const configBlocked = configPending && mode === 'agent';
-  // The host queues one message per conversation and has no queue for Ask, so those sends are not
-  // posted: the draft would be cleared for a message the host refuses. With no turn running the host
-  // accepts an ordinary send (a message held after Stop stays queued behind that new turn).
-  const queuedBlocked = hasQueued && running;
-  const askBlocked = running && mode === 'ask';
+  // Never post a send the host will refuse for a reason the view state shows: the draft would be
+  // cleared for a message that does not go. The host queues one Agent or Plan message per
+  // conversation, answers an Ask send while a turn runs as a side question (one at a time, and not
+  // from a side question), and accepts an ordinary send when no turn runs (a message held after Stop
+  // stays queued behind that new turn).
+  const queuedBlocked = hasQueued && running && mode !== 'ask';
+  const askWhileRunning = running && mode === 'ask';
+  const asideOfAside = askWhileRunning && meta?.aside !== undefined;
+  const asideBlocked = askWhileRunning && asideRunning;
   // One hint at a time, the most basic reason first.
-  const hint: 'config' | 'queued' | 'ask' | null =
+  const hint: 'config' | 'queued' | 'aside-of-aside' | 'aside-running' | null =
     blocker !== null
       ? null
       : configBlocked
         ? 'config'
         : queuedBlocked
           ? 'queued'
-          : askBlocked
-            ? 'ask'
-            : null;
+          : asideOfAside
+            ? 'aside-of-aside'
+            : asideBlocked
+              ? 'aside-running'
+              : null;
+  // Sending in Ask mode while a turn runs is allowed: say what will happen to the question.
+  const asideNote = blocker === null && hint === null && askWhileRunning;
   const sendBlocked = blocker !== null || hint !== null;
   const textarea = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
@@ -136,7 +167,9 @@ export function Composer() {
   const noticeId = useId();
   const configHintId = useId();
   const queuedHintId = useId();
-  const askHintId = useId();
+  const asideHintId = useId();
+  const asideNoteId = useId();
+  const lockReasonId = useId();
 
   const picker = useReferencePicker({
     draft,
@@ -218,9 +251,11 @@ export function Composer() {
   };
 
   const changeMode = (next: Mode) => {
-    if (conversationId !== undefined) {
-      post({ type: 'conversation.setMode', conversationId, mode: next });
-    } else ui.setNewMode(next);
+    if (conversationId === undefined) {
+      ui.setNewMode(next);
+    } else if (meta !== undefined) {
+      chooseConversationMode(ui, post, meta.id, meta.mode, running, next);
+    }
   };
 
   const changeModel = (next: string) => {
@@ -246,9 +281,11 @@ export function Composer() {
         ? configHintId
         : hint === 'queued'
           ? queuedHintId
-          : hint === 'ask'
-            ? askHintId
-            : undefined;
+          : hint === 'aside-of-aside' || hint === 'aside-running'
+            ? asideHintId
+            : asideNote
+              ? asideNoteId
+              : undefined;
   const contextTarget = conversationId !== undefined ? { conversationId } : {};
   const contextDisabled = blocker !== null;
 
@@ -314,12 +351,19 @@ export function Composer() {
           </p>
         )}
 
-        {hint === 'ask' && (
+        {(hint === 'aside-of-aside' || hint === 'aside-running') && (
           <p className="composer-note">
             <Icon name="info" />
-            <span id={askHintId} role="status">
-              {ASK_RUNNING_HINT}
+            <span id={asideHintId} role="status">
+              {hint === 'aside-of-aside' ? ASIDE_OF_ASIDE_HINT : ASIDE_RUNNING_HINT}
             </span>
+          </p>
+        )}
+
+        {asideNote && (
+          <p className="composer-note">
+            <Icon name="comment" />
+            <span id={asideNoteId}>{ASIDE_NOTE}</span>
           </p>
         )}
 
@@ -411,7 +455,10 @@ export function Composer() {
               className={`button button--secondary plan-lock${planLocked ? ' plan-lock--on' : ''}`}
               aria-pressed={planLocked}
               title={LOCK_HINT}
+              disabled={running}
+              aria-describedby={running ? lockReasonId : undefined}
               onClick={() => {
+                if (running) return;
                 post({ type: 'plan.setLocked', conversationId, locked: !planLocked });
               }}
             >
@@ -432,6 +479,11 @@ export function Composer() {
         </div>
 
         {hasPlan && planHint !== null && <p className="composer-hint muted">{planHint}</p>}
+        {hasPlan && mode === 'plan' && conversationId !== undefined && running && (
+          <p id={lockReasonId} className="composer-hint muted">
+            {LOCK_RUNNING_HINT}
+          </p>
+        )}
 
         <div className="composer-bar">
           <label className="select-label">

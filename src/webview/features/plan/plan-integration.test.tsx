@@ -443,7 +443,7 @@ describe('Composer with a plan', () => {
     expect(screen.queryByRole('button', { name: 'Lock plan' })).toBeNull();
   });
 
-  it('keeps the lock usable while a turn runs', () => {
+  it('disables the lock while a turn runs, because the host refuses to change it then', () => {
     renderWithHost(
       <Composer />,
       stateWith(makePlanDoc(), {
@@ -451,6 +451,7 @@ describe('Composer with a plan', () => {
         turns: [makeTurn({ status: 'running' })],
       }),
     );
-    expect((lock() as HTMLButtonElement).disabled).toBe(false);
+    expect((lock() as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText('The lock can be changed when the turn ends.')).toBeTruthy();
   });
 });

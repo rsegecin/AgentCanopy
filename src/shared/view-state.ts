@@ -1,10 +1,13 @@
 import * as z from 'zod';
 import {
+  AsideAnchorSchema,
   AttachmentSchema,
   ConversationMetaSchema,
   ConversationSummarySchema,
+  MessagePartSchema,
   MessageSchema,
   TurnSchema,
+  TurnStatusSchema,
 } from './conversation';
 import { ConversationIdSchema, FolderKeySchema, RelPathSchema, TimestampSchema } from './ids';
 import { ModeSchema } from './modes';
@@ -31,6 +34,25 @@ export const QueuedMessageSchema = z.object({
 });
 export type QueuedMessage = z.infer<typeof QueuedMessageSchema>;
 
+/**
+ * A side question of the open conversation, as its card shows it: the question and the answer of the
+ * one turn that asked it. The host keeps it in step with the branch that holds it.
+ */
+export const AsideSchema = z.object({
+  /** The branch that holds the side question. Stop and "Open as conversation" act on it. */
+  conversationId: ConversationIdSchema,
+  anchor: AsideAnchorSchema,
+  question: z.string(),
+  /** The answer so far, in order. Grows while the side question's turn streams. */
+  parts: z.array(MessagePartSchema),
+  /** The prompts of that turn; a `prompt` part of `parts` refers to one of these. */
+  prompts: z.array(PromptSchema),
+  status: TurnStatusSchema,
+  /** Plain-language error when the turn failed. */
+  error: z.string().optional(),
+});
+export type Aside = z.infer<typeof AsideSchema>;
+
 export const ActiveConversationSchema = z.object({
   meta: ConversationMetaSchema,
   turns: z.array(TurnSchema),
@@ -42,6 +64,8 @@ export const ActiveConversationSchema = z.object({
   activity: z.string().nullable(),
   /** The message waiting for the running turn to end, if there is one. At most one per conversation. */
   queued: QueuedMessageSchema.nullable(),
+  /** Side questions asked in this conversation, oldest first. */
+  asides: z.array(AsideSchema),
 });
 export type ActiveConversation = z.infer<typeof ActiveConversationSchema>;
 

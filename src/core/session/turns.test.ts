@@ -499,7 +499,7 @@ describe('refusing to send', () => {
     await expectRefusal(h, 'Agent mode is not available yet.', 'agent');
   });
 
-  it('while a turn is running in the conversation', async () => {
+  it('while a turn is running in the conversation: an Ask message runs beside it as a side question', async () => {
     const h = await harness({
       scenario: { steps: [...streamedText(['working']), { hang: true }] },
     });
@@ -518,16 +518,16 @@ describe('refusing to send', () => {
       mode: 'ask',
       model: 'default',
     });
-    await until('a toast', () => view.toasts.length > 0);
-    expect(view.toasts[0]).toEqual({
-      level: 'warning',
-      text: 'A turn is already running in this conversation.',
-    });
+    await until('the side question', () => (view.state?.active?.asides.length ?? 0) === 1);
+    expect(view.toasts).toEqual([]);
     expect(view.active().messages).toHaveLength(messages);
     expect(view.active().turns).toHaveLength(1);
-    expect(h.controller.runningTurns()).toBe(1);
+    expect(h.controller.runningTurns()).toBe(2);
 
     view.send({ type: 'turn.cancel', conversationId: id });
+    await until('the turn to stop', () => view.state?.active?.turns[0]?.status === 'interrupted');
+    const side = view.active().asides[0]?.conversationId;
+    view.send({ type: 'turn.cancel', conversationId: side });
     const turn = await finishedTurn(h, view);
     expect(turn.status).toBe('interrupted');
   });
@@ -813,19 +813,23 @@ describe('a message sent while a turn runs', () => {
     },
   );
 
-  it('refuses an Ask message as before and queues nothing', async () => {
+  it('starts a side question for an Ask message and queues nothing', async () => {
     const h = await harnessFor(hanging);
     const view = h.attach();
     await startRunning(h, view, 'ask');
     sendIn(view, 'second', 'ask');
-    await until('a toast', () => view.toasts.length > 0);
-    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.turnRunning }]);
+    await until('the side question', () => (view.state?.active?.asides.length ?? 0) === 1);
+    await until('its run', () => h.requests.length === 2);
+    expect(view.toasts).toEqual([]);
     expect(view.active().queued).toBeNull();
-    expect(h.requests).toHaveLength(1);
+    expect(userTexts(view)).toEqual(['first']);
     view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    await until('the turn to stop', () => view.state?.active?.turns[0]?.status === 'interrupted');
+    expect(view.active().queued).toBeNull();
+    view.send({ type: 'turn.cancel', conversationId: view.active().asides[0]?.conversationId });
     expect((await finishedTurn(h, view)).status).toBe('interrupted');
     await new Promise((resolve) => setTimeout(resolve, 80));
-    expect(h.requests).toHaveLength(1);
+    expect(h.requests).toHaveLength(2);
   });
 
   it('refuses a second one while one is queued and keeps its attachments in the draft', async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
   PermissionChoice,
@@ -16,6 +16,7 @@ import type { QuestionDraft } from '../../app/ui-state';
 import { CommandLinesWarning, CommandText } from './CommandText';
 import { commandLines } from './command-lines';
 import { PromptPlaceholder } from './parts';
+import { PromptScope } from './prompt-scope';
 import type { PartRendererProps } from './registry';
 
 const MAX_ANSWER = 4000;
@@ -34,8 +35,9 @@ function PromptShell({
   plan?: boolean;
   children: ReactNode;
 }) {
+  const scope = useContext(PromptScope);
   const first = useViewState(
-    (s) => s.active?.prompts.find((p) => p.state === 'pending')?.id === prompt.id,
+    (s) => (scope ?? s.active?.prompts)?.find((p) => p.state === 'pending')?.id === prompt.id,
   );
   const needsAnswer = first && prompt.state === 'pending';
   const root = useRef<HTMLDivElement>(null);
@@ -444,7 +446,11 @@ function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
 
 /** The card for a `prompt` message part: a question form or a permission request. */
 export function PromptPart(props: PartRendererProps<'prompt'>) {
-  const prompt = useViewState((s) => s.active?.prompts.find((p) => p.id === props.part.promptId));
+  const scope = useContext(PromptScope);
+  const fromActive = useViewState((s) =>
+    scope === null ? s.active?.prompts.find((p) => p.id === props.part.promptId) : undefined,
+  );
+  const prompt = scope === null ? fromActive : scope.find((p) => p.id === props.part.promptId);
   if (!prompt) return <PromptPlaceholder {...props} />;
   return prompt.kind === 'question' ? (
     <QuestionCard prompt={prompt} />

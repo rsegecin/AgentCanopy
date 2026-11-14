@@ -63,6 +63,9 @@ export class SessionState {
     private readonly listMetas: () => ConversationMeta[],
     /** Called when a view has moved to another conversation or to a draft. */
     private readonly onNavigate: (view: ViewRecord) => void = () => undefined,
+    /** Called after a loaded conversation has changed, with the operations that changed it. */
+    private readonly onMutated: (runtime: ConvRuntime, ops: readonly PatchOp[]) => void = () =>
+      undefined,
   ) {
     this.global = {
       trusted: EMPTY_VIEW_STATE.trusted,
@@ -127,6 +130,7 @@ export class SessionState {
     for (const view of this.views.values()) {
       if (view.activeId === runtime.id) view.apply(shown);
     }
+    this.onMutated(runtime, ops);
   }
 
   /** Operations that empty the attachments queued in a view, when there are any. */

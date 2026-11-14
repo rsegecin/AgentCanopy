@@ -6,6 +6,7 @@ import {
   assistantMessage,
   convId,
   makeActive,
+  makeAside,
   makeState,
   makeSummary,
   msgId,
@@ -171,6 +172,68 @@ describe('branch markers on the parent', () => {
   it('shows no marker on a conversation without branches', () => {
     renderWithHost(<MessageList />, parentState([]));
     expect(screen.queryByRole('button', { name: /branch/ })).toBeNull();
+  });
+});
+
+describe('side questions and branches', () => {
+  const asideInfo = {
+    parentId: convId('p'),
+    anchor: { messageId: msgId('m2'), afterParts: 1 },
+  };
+
+  it('puts no branch marker on the parent for a side question, and keeps real branches', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        conversations: [
+          makeSummary('p', { title: 'Parent talk' }),
+          makeSummary('s1', {
+            title: 'Side question one',
+            fork: fork({ atMessageId: msgId('m2') }),
+            aside: asideInfo,
+          }),
+          makeSummary('b1', { title: 'Real branch', fork: fork({ atMessageId: msgId('m3') }) }),
+        ],
+        active: makeActive('p', {
+          messages: [
+            userMessage('m1', 'first'),
+            assistantMessage('m2', [{ kind: 'text', text: 'second' }]),
+            userMessage('m3', 'third'),
+          ],
+          asides: [makeAside('s1', { anchor: asideInfo.anchor, question: 'Why?' })],
+        }),
+      }),
+    );
+    const articles = screen.getAllByRole('article');
+    // Only the message the real branch was taken at has a marker; the side question has its card.
+    expect(screen.queryByRole('button', { name: /branch/ })).not.toBeNull();
+    expect(within(articles[1] as HTMLElement).queryByRole('button', { name: /branch/ })).toBeNull();
+    expect(
+      within(articles[2] as HTMLElement).getByRole('button', { name: '1 branch' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Side question: Why?' })).toBeTruthy();
+  });
+
+  it('keeps the branch header on a side question and says what it is', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        conversations: [makeSummary('p', { title: 'Parent talk' })],
+        active: makeActive('s1', {
+          meta: { fork: fork({ atMessageId: msgId('m2') }), aside: asideInfo },
+          messages: [userMessage('u1', 'Why?')],
+        }),
+      }),
+    );
+    expect(header().textContent).toContain('Branch of Parent talk');
+    expect(
+      within(header()).getByText('This is a side question of its parent conversation.'),
+    ).toBeTruthy();
+  });
+
+  it('does not say that on an ordinary branch', () => {
+    renderWithHost(<MessageList />, branchState(fork()));
+    expect(within(header()).queryByText(/side question/)).toBeNull();
   });
 });
 

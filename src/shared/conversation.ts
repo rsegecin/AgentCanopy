@@ -175,6 +175,30 @@ export const ForkInfoSchema = z.object({
 });
 export type ForkInfo = z.infer<typeof ForkInfoSchema>;
 
+/** Where in the parent's transcript a side question was asked. */
+export const AsideAnchorSchema = z.object({
+  /**
+   * The parent's message it was asked under: the assistant message being written, or the user
+   * message of the running turn when nothing had been written yet.
+   */
+  messageId: MessageIdSchema,
+  /** How many parts that message had at that moment: the card sits after them. 0 for a user message. */
+  afterParts: z.number().int().nonnegative(),
+});
+export type AsideAnchor = z.infer<typeof AsideAnchorSchema>;
+
+/**
+ * Marks a branch that holds a side question: a question asked in Ask mode while a turn was running
+ * in the parent. It ran alongside that turn, in a branch of the turns that had finished.
+ */
+export const AsideInfoSchema = z.object({
+  parentId: ConversationIdSchema,
+  anchor: AsideAnchorSchema,
+  /** The turn of this branch that asks the question. Absent until that turn has started. */
+  turnId: TurnIdSchema.optional(),
+});
+export type AsideInfo = z.infer<typeof AsideInfoSchema>;
+
 export const ConversationMetaSchema = z.object({
   id: ConversationIdSchema,
   title: z.string().max(200),
@@ -187,6 +211,8 @@ export const ConversationMetaSchema = z.object({
   /** The provider's session id. Absent until the first turn starts. */
   sessionId: z.string().optional(),
   fork: ForkInfoSchema.optional(),
+  /** Set on a branch that holds a side question. Such a branch also has `fork`. */
+  aside: AsideInfoSchema.optional(),
   planId: PlanIdSchema.optional(),
   planLocked: z.boolean(),
 });

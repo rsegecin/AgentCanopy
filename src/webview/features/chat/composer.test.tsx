@@ -1,14 +1,18 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
   assistantMessage,
   convId,
   makeActive,
+  makeAside,
   makeConfigChange,
+  makePlanDoc,
   makeProvider,
+  makeQuestionPrompt,
   makeState,
   makeTurn,
+  msgId,
 } from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
 import type { QueuedMessage, ViewState } from '../../../shared';
@@ -172,27 +176,130 @@ describe('Composer while a turn runs', () => {
     },
   );
 
-  it('disables Send in Ask mode while running, with the reason, and keeps the text on Enter', () => {
+  const ASIDE_NOTE = 'Asked as a side question: the agent keeps working and does not see it.';
+  const ASIDE_RUNNING = 'A side question is already running. Wait for it or stop it.';
+  const ASIDE_OF_ASIDE = 'Wait for the answer or stop it.';
+  const asideMeta = {
+    parentId: convId('p'),
+    anchor: { messageId: msgId('a1'), afterParts: 0 },
+  };
+
+  it('sends a question in Ask mode while running, as usual, and says it is a side question', () => {
     const { host } = renderWithHost(<Composer />, running());
-    type('next');
+    type('what is this?');
+    expect(send().disabled).toBe(false);
+    const note = screen.getByText(ASIDE_NOTE);
+    expect(box().getAttribute('aria-describedby')).toBe(note.id);
+    expect(send().getAttribute('aria-describedby')).toBe(note.id);
+    fireEvent.click(send());
+    expect(host.postedOf('turn.send')).toEqual([
+      {
+        type: 'turn.send',
+        conversationId: convId('c1'),
+        text: 'what is this?',
+        mode: 'ask',
+        model: 'default',
+      },
+    ]);
+    expect(box().value).toBe('');
+    type('and this?');
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(2);
+  });
+
+  it('shows the side question note only in Ask mode while a turn runs', () => {
+    renderWithHost(<Composer />);
+    expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
+    cleanup();
+    renderWithHost(<Composer />, runningIn('agent'));
+    expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
+    cleanup();
+    renderWithHost(
+      <Composer />,
+      makeState({ active: makeActive('c1', { turns: [makeTurn({ status: 'completed' })] }) }),
+    );
+    expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
+  });
+
+  it.each(['running', 'preparing'] as const)(
+    'disables Send in Ask mode while a side question is %s, with the reason, and keeps the text',
+    (status) => {
+      const { host } = renderWithHost(
+        <Composer />,
+        runningIn('ask', { asides: [makeAside('b1', { status })] }),
+      );
+      type('another');
+      expect(send().disabled).toBe(true);
+      enter();
+      fireEvent.click(send());
+      expect(host.postedOf('turn.send')).toHaveLength(0);
+      expect(box().value).toBe('another');
+      const hint = screen.getByText(ASIDE_RUNNING);
+      expect(hint.getAttribute('role')).toBe('status');
+      expect(box().getAttribute('aria-describedby')).toBe(hint.id);
+      expect(send().getAttribute('aria-describedby')).toBe(hint.id);
+      expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
+    },
+  );
+
+  it('allows a new side question once the earlier ones have ended', () => {
+    const { host } = renderWithHost(
+      <Composer />,
+      runningIn('ask', {
+        asides: [
+          makeAside('b1', { status: 'completed' }),
+          makeAside('b2', { status: 'interrupted' }),
+          makeAside('b3', { status: 'error' }),
+        ],
+      }),
+    );
+    type('another');
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(1);
+  });
+
+  it('does not let a running side question block Agent or Plan', () => {
+    for (const mode of ['agent', 'plan'] as const) {
+      const { host } = renderWithHost(<Composer />, runningIn(mode, { asides: [makeAside('b1')] }));
+      type('instruction');
+      enter();
+      expect(host.postedOf('turn.send')).toHaveLength(1);
+      cleanup();
+    }
+  });
+
+  it('disables Send in Ask mode while the open conversation is itself a side question', () => {
+    const { host } = renderWithHost(<Composer />, runningIn('ask', { meta: { aside: asideMeta } }));
+    type('follow up');
     expect(send().disabled).toBe(true);
     enter();
     fireEvent.click(send());
     expect(host.postedOf('turn.send')).toHaveLength(0);
-    expect(box().value).toBe('next');
-    const hint = screen.getByText(
-      'Switch to Agent or Plan to queue a message while the agent works.',
-    );
+    expect(box().value).toBe('follow up');
+    const hint = screen.getByText(ASIDE_OF_ASIDE);
     expect(hint.getAttribute('role')).toBe('status');
     expect(box().getAttribute('aria-describedby')).toBe(hint.id);
-    expect(send().getAttribute('aria-describedby')).toBe(hint.id);
+    expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
   });
 
-  it('does not show the Ask hint when nothing runs', () => {
+  it('sends in a side question conversation once its turn has ended', () => {
+    const { host } = renderWithHost(
+      <Composer />,
+      makeState({
+        active: makeActive('c1', { meta: { aside: asideMeta }, turns: [makeTurn()] }),
+      }),
+    );
+    type('follow up');
+    enter();
+    expect(host.postedOf('turn.send')).toHaveLength(1);
+  });
+
+  it('does not show a side question hint when nothing runs', () => {
     renderWithHost(<Composer />);
     type('next');
     expect(send().disabled).toBe(false);
-    expect(screen.queryByText(/Switch to Agent or Plan/)).toBeNull();
+    expect(screen.queryByText(ASIDE_RUNNING)).toBeNull();
+    expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
   });
 
   it.each(['agent', 'plan'] as const)(
@@ -283,17 +390,50 @@ describe('Composer while a turn runs', () => {
       ]);
     });
 
-    it('puts an already queued message before the Ask hint', () => {
-      renderWithHost(<Composer />, runningIn('ask', { queued: queuedMessage() }));
+    it('does not let a queued message block Ask: the question is sent as a side question', () => {
+      const { host } = renderWithHost(<Composer />, runningIn('ask', { queued: queuedMessage() }));
+      expect(hints()).not.toContain('A message is already queued. Edit or remove it first.');
+      expect(screen.getByText(ASIDE_NOTE)).toBeTruthy();
+      type('a question');
+      expect(send().disabled).toBe(false);
+      enter();
+      expect(host.postedOf('turn.send')).toHaveLength(1);
+    });
+
+    it('puts a queued message before the side question hint in Plan and Agent, not in Ask', () => {
+      renderWithHost(
+        <Composer />,
+        runningIn('plan', { queued: queuedMessage(), asides: [makeAside('b1')] }),
+      );
       expect(hints()).toEqual(['A message is already queued. Edit or remove it first.']);
-      expect(send().disabled).toBe(true);
     });
 
     it('does not let configuration changes block Plan or Ask, so the next hint shows', () => {
       renderWithHost(<Composer />, runningIn('ask', {}, config));
-      expect(hints()).toEqual([
-        'Switch to Agent or Plan to queue a message while the agent works.',
-      ]);
+      type('a question');
+      expect(send().disabled).toBe(false);
+      expect(screen.getByText(ASIDE_NOTE)).toBeTruthy();
+      cleanup();
+      renderWithHost(<Composer />, runningIn('ask', { asides: [makeAside('b1')] }, config));
+      expect(hints()).toEqual([ASIDE_RUNNING]);
+    });
+
+    it('puts the provider problem before the side question hint', () => {
+      renderWithHost(
+        <Composer />,
+        runningIn('ask', { asides: [makeAside('b1')] }, { trusted: false }),
+      );
+      expect(hints()).toHaveLength(1);
+      expect(hints()[0]).toMatch(/not trusted/);
+      expect(screen.queryByText(ASIDE_NOTE)).toBeNull();
+    });
+
+    it('shows one side question hint when the conversation is a side question and one is running', () => {
+      renderWithHost(
+        <Composer />,
+        runningIn('ask', { meta: { aside: asideMeta }, asides: [makeAside('b1')] }),
+      );
+      expect(hints()).toEqual([ASIDE_OF_ASIDE]);
     });
   });
 
@@ -334,6 +474,238 @@ describe('Composer while a turn runs', () => {
     init(makeState({ active: makeActive('c1', { turns: [makeTurn()] }) }), 1);
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
     expect(document.activeElement).toBe(box());
+  });
+});
+
+describe('Composer mode chosen while a turn runs', () => {
+  const stateIn = (
+    mode: 'ask' | 'plan' | 'agent',
+    status: 'running' | 'completed' = 'running',
+    id = 'c1',
+  ) =>
+    makeState({
+      active: makeActive(id, {
+        meta: { mode },
+        turns: [makeTurn({ status, mode })],
+        messages: [assistantMessage('a1', [])],
+      }),
+    });
+  const radio = (name: string) => screen.getByRole<HTMLInputElement>('radio', { name });
+  const send = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+  const NOTE = 'Asked as a side question: the agent keeps working and does not see it.';
+
+  it('choosing Ask during an Agent turn posts no setMode, shows Ask and the note, and sends in Ask', () => {
+    const { host } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Ask'));
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    expect(radio('Ask').checked).toBe(true);
+    expect(radio('Agent').checked).toBe(false);
+    expect(screen.getByText(NOTE)).toBeTruthy();
+    type('what is this?');
+    expect(send().disabled).toBe(false);
+    fireEvent.click(send());
+    expect(host.postedOf('turn.send')).toEqual([
+      {
+        type: 'turn.send',
+        conversationId: convId('c1'),
+        text: 'what is this?',
+        mode: 'ask',
+        model: 'default',
+      },
+    ]);
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    // A side question never changes the conversation's mode: the switch keeps the user's choice.
+    expect(radio('Ask').checked).toBe(true);
+  });
+
+  it('choosing Plan during an Agent turn and sending posts turn.send in plan mode', () => {
+    const { host } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Plan'));
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    expect(radio('Plan').checked).toBe(true);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    type('plan this');
+    enter();
+    expect(host.postedOf('turn.send')).toEqual([
+      {
+        type: 'turn.send',
+        conversationId: convId('c1'),
+        text: 'plan this',
+        mode: 'plan',
+        model: 'default',
+      },
+    ]);
+  });
+
+  it('uses the chosen mode for the hints too: a queued message blocks Plan but not Ask', () => {
+    const queued: QueuedMessage = {
+      text: 'first',
+      mode: 'agent',
+      model: 'default',
+      attachments: [],
+      queuedAt: 1_700_000_000_000,
+    };
+    const state = stateIn('agent');
+    const withQueue = { ...state, active: { ...state.active!, queued } };
+    renderWithHost(<Composer />, withQueue);
+    fireEvent.click(radio('Plan'));
+    type('second');
+    expect(send().disabled).toBe(true);
+    expect(screen.getByText('A message is already queued. Edit or remove it first.')).toBeTruthy();
+    fireEvent.click(radio('Ask'));
+    expect(send().disabled).toBe(false);
+    expect(screen.getByText(NOTE)).toBeTruthy();
+  });
+
+  it('keeps the chosen mode when the turn ends and posts nothing by itself', () => {
+    const { host, init } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Ask'));
+    init(stateIn('agent', 'completed'), 1);
+    expect(radio('Ask').checked).toBe(true);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    expect(host.posted.filter((m) => m.type !== 'ready')).toHaveLength(0);
+  });
+
+  it('posts conversation.setMode and clears the choice when no turn runs', () => {
+    const { host, init, services } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Ask'));
+    init(stateIn('agent', 'completed'), 1);
+    expect(services.ui.getSnapshot().sendMode).toEqual({ c1: 'ask' });
+    fireEvent.click(radio('Plan'));
+    expect(host.postedOf('conversation.setMode')).toEqual([
+      { type: 'conversation.setMode', conversationId: convId('c1'), mode: 'plan' },
+    ]);
+    expect(services.ui.getSnapshot().sendMode).toEqual({});
+    // The host owns the state: the radio shows the conversation's mode until the host says otherwise.
+    expect(radio('Agent').checked).toBe(true);
+  });
+
+  it('forgets the choice once the conversation has that mode', () => {
+    const { init, services } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Plan'));
+    expect(services.ui.getSnapshot().sendMode).toEqual({ c1: 'plan' });
+    // The queued Plan message is dispatched: the host sets the mode of the conversation.
+    init(stateIn('plan'), 1);
+    expect(services.ui.getSnapshot().sendMode).toEqual({});
+    expect(radio('Plan').checked).toBe(true);
+    // From now on the conversation's mode is what the switch shows.
+    init(stateIn('agent', 'completed'), 2);
+    expect(radio('Agent').checked).toBe(true);
+  });
+
+  it('forgets the choice when the user goes back to the conversation mode', () => {
+    const { services } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Ask'));
+    fireEvent.click(radio('Agent'));
+    expect(services.ui.getSnapshot().sendMode).toEqual({});
+    expect(radio('Agent').checked).toBe(true);
+  });
+
+  it('keeps the choice of one conversation out of another', () => {
+    const { init } = renderWithHost(<Composer />, stateIn('agent', 'running', 'c1'));
+    fireEvent.click(radio('Ask'));
+    init(stateIn('agent', 'running', 'c2'), 1);
+    expect(radio('Agent').checked).toBe(true);
+    expect(screen.queryByText(NOTE)).toBeNull();
+    init(stateIn('agent', 'running', 'c1'), 2);
+    expect(radio('Ask').checked).toBe(true);
+  });
+
+  it('does not save the choice in the persisted state', () => {
+    const { services, host } = renderWithHost(<Composer />, stateIn('agent'));
+    fireEvent.click(radio('Ask'));
+    services.ui.flush();
+    expect(host.saved).not.toHaveProperty('sendMode');
+    expect(JSON.stringify(host.saved)).not.toContain('"ask"');
+  });
+
+  it('leaves a new conversation alone: its mode is the local one', () => {
+    const { host } = renderWithHost(<Composer />);
+    fireEvent.click(radio('Plan'));
+    expect(host.postedOf('conversation.setMode')).toHaveLength(0);
+    expect(radio('Plan').checked).toBe(true);
+  });
+
+  describe('the plan lock', () => {
+    const REASON = 'The lock can be changed when the turn ends.';
+    const lock = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Lock plan' });
+    const withPlan = (state: ViewState): ViewState => ({
+      ...state,
+      active: { ...state.active!, plan: makePlanDoc() },
+    });
+
+    it('is offered for the chosen mode only', () => {
+      renderWithHost(<Composer />, withPlan(stateIn('agent')));
+      expect(screen.queryByRole('button', { name: 'Lock plan' })).toBeNull();
+      fireEvent.click(radio('Plan'));
+      expect(lock()).toBeTruthy();
+    });
+
+    it('is enabled when no turn runs, and posts plan.setLocked', () => {
+      const { host } = renderWithHost(<Composer />, withPlan(stateIn('plan', 'completed')));
+      expect(lock().disabled).toBe(false);
+      expect(lock().getAttribute('aria-describedby')).toBeNull();
+      expect(screen.queryByText(REASON)).toBeNull();
+      fireEvent.click(lock());
+      expect(host.postedOf('plan.setLocked')).toEqual([
+        { type: 'plan.setLocked', conversationId: convId('c1'), locked: true },
+      ]);
+    });
+
+    it.each(['plan', 'agent'] as const)(
+      'is disabled with its reason while a turn runs (stored mode %s), and posts nothing',
+      (stored) => {
+        const { host } = renderWithHost(<Composer />, withPlan(stateIn(stored)));
+        if (stored !== 'plan') fireEvent.click(radio('Plan'));
+        expect(lock().disabled).toBe(true);
+        const reason = screen.getByText(REASON);
+        expect(lock().getAttribute('aria-describedby')).toBe(reason.id);
+        fireEvent.click(lock());
+        expect(host.postedOf('plan.setLocked')).toHaveLength(0);
+      },
+    );
+  });
+});
+
+describe('Composer waiting note', () => {
+  const WAITING = 'The agent is waiting for your answer above.';
+
+  it('shows the note for a pending prompt of the conversation', () => {
+    renderWithHost(
+      <Composer />,
+      makeState({ active: makeActive('c1', { prompts: [makeQuestionPrompt('q1')] }) }),
+    );
+    expect(screen.getByText(WAITING)).toBeTruthy();
+  });
+
+  it('shows the note for a pending prompt inside a side question', () => {
+    renderWithHost(
+      <Composer />,
+      makeState({
+        active: makeActive('c1', {
+          turns: [makeTurn({ status: 'running' })],
+          asides: [makeAside('b1', { prompts: [makeQuestionPrompt('q1')] })],
+        }),
+      }),
+    );
+    expect(screen.getByText(WAITING)).toBeTruthy();
+  });
+
+  it('shows no note once the prompt of a side question is answered', () => {
+    renderWithHost(
+      <Composer />,
+      makeState({
+        active: makeActive('c1', {
+          asides: [
+            makeAside('b1', {
+              status: 'completed',
+              prompts: [makeQuestionPrompt('q1', { state: 'answered' })],
+            }),
+          ],
+        }),
+      }),
+    );
+    expect(screen.queryByText(WAITING)).toBeNull();
   });
 });
 

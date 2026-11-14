@@ -62,6 +62,142 @@ describe('groupByDay', () => {
   });
 });
 
+describe('groupByDay with side questions', () => {
+  const aside = (parent: string) => ({
+    parentId: convId(parent),
+    anchor: { messageId: msgId('m1'), afterParts: 0 },
+  });
+  const fork = (parent: string) => ({
+    parentId: convId(parent),
+    atMessageId: msgId('m1'),
+    exactness: 'reconstructed' as const,
+    lost: [],
+  });
+
+  it('lists a side question directly under its parent, in the parent group, whatever its date', () => {
+    const groups = groupByDay(
+      [
+        makeSummary('p', { updatedAt: at(0, 9) }),
+        makeSummary('other', { updatedAt: at(0, 8) }),
+        makeSummary('s', { updatedAt: at(5), fork: fork('p'), aside: aside('p') }),
+      ],
+      NOW,
+    );
+    expect(groups.map((g) => g.conversations.map((c) => c.id))).toEqual([['p', 's', 'other']]);
+  });
+
+  it('keeps a side question on its own when the parent is not in the list', () => {
+    const groups = groupByDay(
+      [
+        makeSummary('x', { updatedAt: at(0, 9) }),
+        makeSummary('s', { updatedAt: at(1), fork: fork('gone'), aside: aside('gone') }),
+      ],
+      NOW,
+    );
+    expect(groups.map((g) => g.conversations.map((c) => c.id))).toEqual([['x'], ['s']]);
+  });
+});
+
+describe('HistoryList side questions', () => {
+  const asideSummary = (over: Parameters<typeof makeSummary>[1] = {}) =>
+    makeSummary('s', {
+      title: 'What does it return?',
+      updatedAt: at(0, 7),
+      fork: {
+        parentId: convId('p'),
+        atMessageId: msgId('m1'),
+        exactness: 'reconstructed',
+        lost: [],
+      },
+      aside: { parentId: convId('p'), anchor: { messageId: msgId('m1'), afterParts: 1 } },
+      ...over,
+    });
+
+  it('labels a side question with an icon and words, and lists it indented under its parent', () => {
+    renderList(
+      state({
+        conversations: [
+          makeSummary('p', { title: 'Parent talk', updatedAt: at(0, 9) }),
+          makeSummary('q', { title: 'Unrelated', updatedAt: at(0, 8) }),
+          asideSummary(),
+        ],
+      }),
+    );
+    const rows = screen.getAllByRole('listitem');
+    expect(rows.map((r) => r.querySelector('.history-title')?.textContent)).toEqual([
+      'Parent talk',
+      'What does it return?',
+      'Unrelated',
+    ]);
+    const row = rows[1] as HTMLElement;
+    expect(row.classList.contains('history-row--aside')).toBe(true);
+    expect(rows[0]?.classList.contains('history-row--aside')).toBe(false);
+    const flag = row.querySelector('.history-flag') as HTMLElement;
+    expect(flag.querySelector('.codicon')).not.toBeNull();
+    expect(within(flag).getByText('Side question')).toBeTruthy();
+    expect(flag.querySelector('.visually-hidden')?.textContent).toContain('Parent talk');
+    // Not also labelled as a plain branch.
+    expect(within(row).queryByText(/^Branch/)).toBeNull();
+  });
+
+  it('puts a side question whose parent is gone on its own, with the label', () => {
+    renderList(
+      state({
+        conversations: [
+          makeSummary('q', { title: 'Unrelated', updatedAt: at(0, 8) }),
+          asideSummary({
+            aside: { parentId: convId('gone'), anchor: { messageId: msgId('m1'), afterParts: 0 } },
+          }),
+        ],
+      }),
+    );
+    const row = screen.getByRole('button', { name: /^What does it return\?/ }).closest('li');
+    expect(row?.classList.contains('history-row--aside')).toBe(false);
+    expect(within(row as HTMLElement).getByText('Side question')).toBeTruthy();
+  });
+
+  it('labels a side question in search results, which keep the order they came in', () => {
+    vi.useFakeTimers();
+    const { init } = renderList(
+      state({
+        conversations: [
+          makeSummary('p', { title: 'Parent talk', updatedAt: at(0, 9) }),
+          asideSummary(),
+        ],
+      }),
+    );
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search conversations' }), {
+      target: { value: 'return' },
+    });
+    advance(250);
+    init(
+      state({
+        conversations: [
+          makeSummary('p', { title: 'Parent talk', updatedAt: at(0, 9) }),
+          asideSummary(),
+        ],
+        search: {
+          query: 'return',
+          results: [
+            { conversationId: convId('s'), title: 'What does it return?', snippet: 'it returns 1' },
+            { conversationId: convId('p'), title: 'Parent talk', snippet: 'return early' },
+          ],
+        },
+      }),
+      1,
+    );
+    const results = screen.getByRole('region', { name: 'Search results' });
+    const rows = within(results).getAllByRole('listitem');
+    expect(rows.map((r) => r.querySelector('.history-title')?.textContent)).toEqual([
+      'What does it return?',
+      'Parent talk',
+    ]);
+    expect(within(rows[0] as HTMLElement).getByText('Side question')).toBeTruthy();
+    expect(within(rows[1] as HTMLElement).queryByText('Side question')).toBeNull();
+    expect(rows[0]?.classList.contains('history-row--aside')).toBe(false);
+  });
+});
+
 describe('HistoryList', () => {
   it('shows the groups with title, preview, mode, running indicator and pending badge', () => {
     renderList();

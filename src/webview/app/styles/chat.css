@@ -278,6 +278,62 @@ p.tool-card-note {
   border-left: 2px solid var(--vscode-widget-border, currentColor);
 }
 
+.aside-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-left: 3px solid var(--vscode-textLink-foreground);
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.aside-card--error {
+  border-left-color: var(--vscode-errorForeground);
+}
+.aside-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: var(--vscode-descriptionForeground);
+}
+.aside-question {
+  margin: 0;
+  font-weight: 600;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.aside-answer {
+  min-width: 0;
+}
+.aside-answer > * + * {
+  margin-top: 8px;
+}
+.aside-status {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--vscode-descriptionForeground);
+}
+.aside-status--error {
+  color: var(--vscode-errorForeground);
+}
+.aside-note {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--vscode-descriptionForeground);
+}
+.aside-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
 .prompt-card {
   padding: 8px 10px;
   border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));

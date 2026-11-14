@@ -6,7 +6,7 @@ import { usePost } from '../../app/context';
 import { useFocusRecovery } from '../../app/focus';
 import { useViewState } from '../../app/store';
 import { forkStatusText } from '../branches/branch-model';
-import { groupByDay } from './grouping';
+import { groupByDay, isNestedAside } from './grouping';
 
 const SEARCH_DEBOUNCE_MS = 250;
 const MODE_LABEL = { ask: 'Ask', plan: 'Plan', agent: 'Agent' } as const;
@@ -28,16 +28,34 @@ export function highlightTerms(text: string, query: string): ReactNode[] {
   );
 }
 
+/** Marks a side question: an icon and the words, with the parent named for screen readers. */
+function AsideFlag({ parentTitle }: { parentTitle: string | undefined }) {
+  return (
+    <span className="history-flag">
+      <Icon name="comment" />
+      <span>Side question</span>
+      <VisuallyHidden>
+        {parentTitle !== undefined
+          ? `. Asked while the agent was working in ${parentTitle}.`
+          : '. Asked while the agent was working in another conversation.'}
+      </VisuallyHidden>
+    </span>
+  );
+}
+
 type RowMode = 'idle' | 'renaming' | 'confirming-delete';
 
 function Row({
   conversation,
   parentTitle,
+  nested,
   active,
   onOpened,
 }: {
   conversation: ConversationSummary;
   parentTitle: string | undefined;
+  /** A side question listed under its parent. */
+  nested: boolean;
   active: boolean;
   onOpened: () => void;
 }) {
@@ -147,7 +165,9 @@ function Row({
   }
 
   return (
-    <li className={`history-row${active ? ' history-row--active' : ''}`}>
+    <li
+      className={`history-row${active ? ' history-row--active' : ''}${nested ? ' history-row--aside' : ''}`}
+    >
       <button
         type="button"
         className="history-open"
@@ -179,7 +199,8 @@ function Row({
               <span>{conversation.pendingPrompts} waiting for your answer</span>
             </span>
           )}
-          {conversation.fork && (
+          {conversation.aside !== undefined && <AsideFlag parentTitle={parentTitle} />}
+          {conversation.fork && conversation.aside === undefined && (
             <span className="history-flag" title={forkStatusText(conversation.fork)}>
               <Icon name="repo-forked" />
               <span>{parentTitle !== undefined ? `Branch of ${parentTitle}` : 'Branch'}</span>
@@ -248,6 +269,11 @@ export function HistoryList({
   const trimmedQuery = query.trim();
   const searching = trimmedQuery !== '';
   const titles = new Map<ConversationId, string>(conversations.map((c) => [c.id, c.title]));
+  const byId = new Map(conversations.map((c) => [c.id as string, c]));
+  const parentTitleOf = (c: ConversationSummary): string | undefined => {
+    const parentId = c.fork?.parentId ?? c.aside?.parentId;
+    return parentId === undefined ? undefined : titles.get(parentId);
+  };
   const groups = groupByDay(conversations, now ?? mountedAt);
 
   return (
@@ -289,23 +315,34 @@ export function HistoryList({
             )}
             {search && search.results.length > 0 && (
               <ul className="history-list">
-                {search.results.map((result, index) => (
-                  <li key={`${result.conversationId}:${String(index)}`} className="history-row">
-                    <button
-                      type="button"
-                      className="history-open"
-                      onClick={() => {
-                        post({ type: 'conversation.open', conversationId: result.conversationId });
-                        onOpened();
-                      }}
-                    >
-                      <span className="history-title">{result.title}</span>
-                      <span className="history-preview history-snippet">
-                        {highlightTerms(result.snippet, trimmedQuery)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
+                {search.results.map((result, index) => {
+                  const summary = byId.get(result.conversationId);
+                  return (
+                    <li key={`${result.conversationId}:${String(index)}`} className="history-row">
+                      <button
+                        type="button"
+                        className="history-open"
+                        onClick={() => {
+                          post({
+                            type: 'conversation.open',
+                            conversationId: result.conversationId,
+                          });
+                          onOpened();
+                        }}
+                      >
+                        <span className="history-title">{result.title}</span>
+                        {summary?.aside !== undefined && (
+                          <span className="history-meta">
+                            <AsideFlag parentTitle={parentTitleOf(summary)} />
+                          </span>
+                        )}
+                        <span className="history-preview history-snippet">
+                          {highlightTerms(result.snippet, trimmedQuery)}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
               </ul>
             )}
           </div>
@@ -320,9 +357,8 @@ export function HistoryList({
                   <Row
                     key={conversation.id}
                     conversation={conversation}
-                    parentTitle={
-                      conversation.fork ? titles.get(conversation.fork.parentId) : undefined
-                    }
+                    parentTitle={parentTitleOf(conversation)}
+                    nested={isNestedAside(conversation, byId)}
                     active={conversation.id === activeId}
                     onOpened={onOpened}
                   />

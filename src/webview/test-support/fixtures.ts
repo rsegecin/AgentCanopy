@@ -2,6 +2,7 @@ import { act } from '@testing-library/react';
 import { EMPTY_VIEW_STATE, HostMessageSchema, WebviewMessageSchema } from '../../shared';
 import type {
   ActiveConversation,
+  Aside,
   AssistantMessage,
   ConversationId,
   ConversationSummary,
@@ -165,6 +166,18 @@ export function assistantMessage(
   };
 }
 
+export function makeAside(id: string, over: Partial<Aside> = {}): Aside {
+  return {
+    conversationId: convId(id),
+    anchor: { messageId: msgId('a1'), afterParts: 1 },
+    question: 'What does this function return?',
+    parts: [],
+    prompts: [],
+    status: 'running',
+    ...over,
+  };
+}
+
 export function makeTurn(over: Partial<Turn> = {}): Turn {
   return {
     id: turnId('t1'),
@@ -195,6 +208,7 @@ export function makeActive(
     plan: null,
     activity: null,
     queued: null,
+    asides: [],
     ...rest,
   };
 }

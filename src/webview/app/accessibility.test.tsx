@@ -14,6 +14,7 @@ import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDoc
 import {
   assistantMessage,
   makeActive,
+  makeAside,
   makeCheckpoint,
   makeConfigChange,
   makePermissionPrompt,
@@ -29,6 +30,7 @@ import {
   makeSummary,
   makeToolCall,
   makeTurn,
+  msgId,
   promptId,
   userMessage,
 } from '../test-support/fixtures';
@@ -96,6 +98,120 @@ describe('live regions', () => {
     expect(quiet(container).textContent).toBe('The agent is waiting for your answer.');
     init(chat({ prompts: [makeQuestionPrompt('q1'), makePermissionPrompt('p2')] }), 2);
     expect(quiet(container).textContent).toBe('The agent is waiting for 2 answers.');
+  });
+
+  it('does not announce the streaming answer of a side question, and puts no live region in its card', () => {
+    const withAside = (status: 'running' | 'completed', text: string) =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            parts: text === '' ? [] : [{ kind: 'text', text }],
+          }),
+        ],
+      });
+    const { container, init, host } = renderWithHost(<MessageList />, withAside('running', ''));
+    const before = quiet(container).textContent;
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    // The only live element is the status line, and it carries no answer text.
+    expect(card.querySelectorAll('[aria-live], [role="status"], [role="alert"]')).toHaveLength(1);
+    expect(card.querySelector('[role="status"]')?.textContent).toBe('Answering…');
+    init(withAside('running', 'first words'), 1);
+    host.emit({
+      type: 'patch',
+      seq: 2,
+      ops: [{ op: 'appendText', path: ['active', 'asides', 0, 'parts', 0, 'text'], text: ' more' }],
+    });
+    expect(quiet(container).textContent).toBe(before);
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    expect(screen.getByRole('log').closest('[aria-live="polite"]')).toBeNull();
+    expect(card.closest('[aria-live]')?.getAttribute('aria-live')).toBe('off');
+  });
+
+  it('announces a question that waits inside a side question, like any other', () => {
+    const withAside = (prompts: ReturnType<typeof makeQuestionPrompt>[]) =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', { question: 'Why?', parts: [{ kind: 'text', text: 'hm' }], prompts }),
+        ],
+      });
+    const { container, init } = renderWithHost(<MessageList />, withAside([]));
+    expect(quiet(container).textContent).toBe('');
+    init(withAside([makeQuestionPrompt('q1')]), 1);
+    expect(quiet(container).textContent).toBe('The agent is waiting for your answer.');
+    // One in the conversation and one in the side question: two answers are waited for.
+    init(
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        prompts: [makeQuestionPrompt('q0')],
+        asides: [makeAside('b1', { prompts: [makeQuestionPrompt('q1')] })],
+      }),
+      2,
+    );
+    expect(quiet(container).textContent).toBe('The agent is waiting for 2 answers.');
+  });
+
+  it('says "Answered." once when a side question completes, and again changes nothing', () => {
+    const withStatus = (status: 'running' | 'completed', extra = '') =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            parts: [{ kind: 'text', text: `because${extra}` }],
+          }),
+        ],
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    init(withStatus('completed'), 1);
+    const line = card.querySelector('[role="status"]');
+    expect(line?.textContent).toBe('Answered.');
+    // Later renders leave the line as it is: it is not announced again.
+    init(withStatus('completed', ' and more'), 2);
+    expect(card.querySelector('[role="status"]')).toBe(line);
+    expect(line?.textContent).toBe('Answered.');
+    expect(card.querySelectorAll('[role="status"], [role="alert"]')).toHaveLength(1);
+  });
+
+  it('reports a side question that fails while shown as an alert, not a status', () => {
+    const withStatus = (status: 'running' | 'error') =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            ...(status === 'error' ? { error: 'The model is overloaded.' } : {}),
+          }),
+        ],
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    init(withStatus('error'), 1);
+    const alert = within(card).getByRole('alert');
+    expect(alert.textContent).toBe('The model is overloaded.');
+    expect(card.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('does not announce a side question that had already failed when the conversation was opened', () => {
+    const { container } = renderWithHost(
+      <MessageList />,
+      chat({
+        asides: [
+          makeAside('b1', { question: 'Why?', status: 'error', error: 'The model is overloaded.' }),
+        ],
+      }),
+    );
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    expect(within(card).getByText('The model is overloaded.')).toBeTruthy();
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(card.querySelector('[role="status"]')).toBeNull();
   });
 
   it('does not announce streaming text', () => {
@@ -279,19 +395,50 @@ describe('focus after the focused control goes away', () => {
   });
 
   it('keeps focus in the composer when Send is disabled by a turn starting, and Stop appears next to it', () => {
-    const idle = makeState({ active: makeActive('c1', { turns: [makeTurn()] }) });
+    // A side question that is still running blocks the next Ask send, but only while a turn runs.
+    const idle = makeState({
+      active: makeActive('c1', { turns: [makeTurn()], asides: [makeAside('b1')] }),
+    });
     const busy = makeState({
-      active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }),
+      active: makeActive('c1', {
+        turns: [makeTurn({ status: 'running' })],
+        asides: [makeAside('b1')],
+      }),
     });
     const { init } = renderWithHost(<Composer />, idle);
     fireEvent.change(composer(), { target: { value: 'hello' } });
     screen.getByRole('button', { name: 'Send' }).focus();
     init(busy, 1);
-    // Both buttons are there; Ask mode cannot queue, so Send is disabled and focus moves to the textarea.
+    // Both buttons are there; Send is disabled and focus moves to the textarea.
     expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
     expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
     expect(document.activeElement).toBe(composer());
+  });
+
+  it('keeps focus on the side question card when its Stop goes away at the end of its answer', () => {
+    const withStatus = (status: 'running' | 'completed') =>
+      makeState({
+        active: makeActive('c1', {
+          messages: [userMessage('u1', 'go')],
+          turns: [makeTurn({ status: 'running' })],
+          asides: [
+            makeAside('b1', {
+              question: 'Why?',
+              anchor: { messageId: msgId('u1'), afterParts: 0 },
+              status,
+              parts: [{ kind: 'text', text: 'because' }],
+            }),
+          ],
+        }),
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    screen.getByRole('button', { name: 'Stop side question: Why?' }).focus();
+    init(withStatus('completed'), 1);
+    expect(screen.queryByRole('button', { name: 'Stop side question: Why?' })).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole('region', { name: 'Side question: Why?' }),
+    );
   });
 
   it('keeps focus in the composer when the focused Stop goes away at the end of the turn', () => {
@@ -586,6 +733,50 @@ describe('keyboard, names, roles and states', () => {
     }
   });
 
+  it('names each side question card and tells its buttons apart, and points the composer at its note', () => {
+    renderWithHost(
+      <>
+        <MessageList />
+        <Composer />
+      </>,
+      makeState({
+        active: makeActive('c1', {
+          messages: [
+            userMessage('u1', 'go'),
+            assistantMessage('a1', [{ kind: 'text', text: 'x' }]),
+          ],
+          turns: [makeTurn({ status: 'running' })],
+          asides: [
+            makeAside('b1', { question: 'First?', status: 'completed' }),
+            makeAside('b2', { question: 'Second?' }),
+          ],
+        }),
+      }),
+    );
+    const names = screen.getAllByRole('region').map((r) => r.getAttribute('aria-label'));
+    expect(names).toEqual(['Side question: First?', 'Side question: Second?']);
+    const second = within(screen.getByRole('region', { name: 'Side question: Second?' }));
+    expect(second.getByRole('button', { name: 'Stop side question: Second?' })).toBeTruthy();
+    expect(second.getByRole('button', { name: 'Open as conversation: Second?' })).toBeTruthy();
+    // A side question is running: the next Ask send is disabled, with its reason.
+    const send = screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+    fireEvent.change(composer(), { target: { value: 'again' } });
+    expect(send.disabled).toBe(true);
+    expect(document.getElementById(send.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
+      'A side question is already running. Wait for it or stop it.',
+    );
+  });
+
+  it('points the composer at the side question note while an Ask send is allowed', () => {
+    renderWithHost(
+      <Composer />,
+      makeState({ active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }) }),
+    );
+    expect(
+      document.getElementById(composer().getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('Asked as a side question: the agent keeps working and does not see it.');
+  });
+
   it('names the queued message region and its buttons, and points a disabled Send at its reason', () => {
     renderWithHost(
       <>
@@ -739,6 +930,12 @@ describe('keyboard, names, roles and states', () => {
         active: makeActive('c1', {
           plan: makePlanDoc(),
           messages: [userMessage('u1', 'hi')],
+          asides: [
+            makeAside('b1', {
+              anchor: { messageId: msgId('u1'), afterParts: 0 },
+              question: 'Why?',
+            }),
+          ],
         }),
         review: {
           entries: [makeReviewEntry('a.ts')],

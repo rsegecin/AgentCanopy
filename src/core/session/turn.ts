@@ -422,6 +422,9 @@ export class TurnRun {
       await this.patchMeta({ sessionId, fork: { ...fork, exactness: 'exact', lost: [] } });
       return { ref: { kind: 'new', sessionId }, prefix: '' };
     }
+    // A side question never copies its parent's session and never holds the parent, whose turn may
+    // have ended meanwhile: it always starts afresh with the finished turns rebuilt.
+    if (this.runtime.data.meta.aside !== undefined) return this.freshSession();
 
     let parent: Awaited<ReturnType<NonNullable<TurnServices['forkParent']>>>;
     try {

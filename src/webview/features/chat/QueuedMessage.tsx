@@ -1,9 +1,10 @@
 import { useId, useLayoutEffect, useRef, useState } from 'react';
 import { Icon } from '../../app/components';
-import { usePost } from '../../app/context';
+import { useApp, usePost } from '../../app/context';
 import { useFocusRecovery } from '../../app/focus';
 import { useViewState } from '../../app/store';
 import { isTurnRunning } from '../../app/turns';
+import { chooseConversationMode } from './mode-choice';
 
 const MODE_LABEL = { ask: 'Ask', plan: 'Plan', agent: 'Agent' } as const;
 
@@ -20,7 +21,9 @@ function composerInput(): HTMLElement | null {
  */
 export function QueuedMessage() {
   const post = usePost();
+  const { ui } = useApp();
   const conversationId = useViewState((s) => s.active?.meta.id);
+  const storedMode = useViewState((s) => s.active?.meta.mode);
   const queued = useViewState((s) => s.active?.queued ?? null);
   const turns = useViewState((s) => s.active?.turns);
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
@@ -50,6 +53,8 @@ export function QueuedMessage() {
 
   const running = isTurnRunning(turns);
   const lastStatus = turns?.[turns.length - 1]?.status;
+  // The host queues an Agent or Plan message; an Ask message only in an edge case. Only Agent waits for
+  // the configuration decision and for the folder.
   const configBlocked = queued.mode === 'agent' && configPending;
   // The host refuses an Agent send while an Agent turn of another conversation runs in this folder.
   const folderBusy = !running && queued.mode === 'agent' && reviewBusy;
@@ -71,7 +76,13 @@ export function QueuedMessage() {
 
   // The host answers a successful edit with a prefill-composer event; nothing is written here, so a
   // message the host is already sending cannot end up both sent and in the composer.
+  // The host sends back only the text: the composer goes back to the mode the message was queued in,
+  // so that sending it again is the same instruction and not whatever mode was picked since.
   const edit = () => {
+    if (storedMode !== undefined) {
+      if (queued.mode === storedMode) ui.clearSendMode(conversationId);
+      else chooseConversationMode(ui, post, conversationId, storedMode, running, queued.mode);
+    }
     post({ type: 'queue.edit', conversationId });
   };
 
