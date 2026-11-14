@@ -152,7 +152,6 @@ describe('Composer with pending configuration changes', () => {
       defaults: { mode, model: 'default' },
       review: {
         entries: [],
-        hunks: {},
         configChanges: [makeConfigChange('k1')],
         busy: false,
       },

@@ -11,6 +11,7 @@ import type {
 import { RelPathSchema, type FolderKey, type Hunk, type ReviewEntry } from '../../shared';
 import { relativeInside } from '../host/ui';
 import type { BaselineDocuments } from './baseline-documents';
+import { UNSAVED_MESSAGE, hunkProblemMessage } from './hunk-messages';
 import { hunkAt, lensLine, marksFor, neighbourLine, type Mark } from './hunk-geometry';
 
 const SAVE_DEBOUNCE_MS = 300;
@@ -20,20 +21,12 @@ const POLL_ATTEMPTS = 60;
 const CONTEXT_ANY = 'agentcanopy.hasPendingChanges';
 const CONTEXT_ACTIVE = 'agentcanopy.activeFileHasPendingChanges';
 
-export const UNSAVED_MESSAGE = 'Save or discard your unsaved changes in this file first.';
+export { UNSAVED_MESSAGE };
 
 /** Tells the user why a hunk action did not happen. A finished action says nothing. */
 function reportHunkResult(result: RejectResult): void {
-  if (result.status === 'done') return;
-  if (result.status === 'refused') {
-    void vscode.window.showWarningMessage(result.message);
-    return;
-  }
-  void vscode.window.showWarningMessage(
-    result.reason === 'unsaved-editor'
-      ? UNSAVED_MESSAGE
-      : 'This part of the file changed after the agent edited it, so it was not restored.',
-  );
+  const message = hunkProblemMessage(result);
+  if (message !== undefined) void vscode.window.showWarningMessage(message);
 }
 
 export interface ReviewControllerOptions {

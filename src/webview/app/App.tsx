@@ -85,12 +85,7 @@ export function App() {
   useEffect(() => {
     return store.onEvent((event) => {
       if (event.kind === 'show-tab') {
-        if (event.tab === 'chat' || event.tab === 'history' || event.tab === 'checkpoints') {
-          ui.setTab(event.tab);
-        } else {
-          // The host may still ask for the Plan or Review tab; their content now sits in the chat.
-          ui.setTab('chat');
-        }
+        ui.setTab(event.tab);
       } else if (event.kind === 'focus-composer' || event.kind === 'prefill-composer') {
         ui.setTab('chat');
         if (event.kind === 'prefill-composer') {

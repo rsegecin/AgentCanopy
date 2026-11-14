@@ -233,11 +233,6 @@ export function createUiPort(parts: UiParts): UiPort {
       await openAllChanges(review, folderKey);
     },
 
-    async showDocument({ text, language }) {
-      const document = await vscode.workspace.openTextDocument({ content: text, language });
-      await vscode.window.showTextDocument(document);
-    },
-
     openEditorPanel: (conversationId) => {
       parts.openPanel(conversationId);
     },

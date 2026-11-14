@@ -14,7 +14,6 @@ import { ModelInfoSchema, ProviderStatusSchema } from './provider-status';
 import {
   CheckpointSummarySchema,
   ConfigChangeSchema,
-  HunkSchema,
   RestorePreviewSchema,
   ReviewEntrySchema,
 } from './workspace';
@@ -78,8 +77,6 @@ export const ViewStateSchema = z.object({
     .nullable(),
   review: z.object({
     entries: z.array(ReviewEntrySchema),
-    /** Hunks per path, filled when a view asks for them. */
-    hunks: z.record(RelPathSchema, z.array(HunkSchema)),
     configChanges: z.array(ConfigChangeSchema),
     /**
      * An Agent turn is running in this view's folder. File changes cannot be accepted or rejected
@@ -105,7 +102,7 @@ export const EMPTY_VIEW_STATE: ViewState = {
   draftAttachments: [],
   fileSearch: null,
   search: null,
-  review: { entries: [], hunks: {}, configChanges: [], busy: false },
+  review: { entries: [], configChanges: [], busy: false },
   checkpoints: [],
   restorePreview: null,
   baseline: { state: 'idle', filesDone: 0, filesTotal: 0 },

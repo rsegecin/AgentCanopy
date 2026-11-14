@@ -54,7 +54,6 @@ function chat(
     }),
     review: {
       entries: [],
-      hunks: {},
       configChanges: Array.from({ length: configChanges }, (_, i) =>
         makeConfigChange(`k${String(i)}`),
       ),

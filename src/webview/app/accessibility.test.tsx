@@ -122,7 +122,7 @@ describe('live regions', () => {
       makeState({ baseline: { state: 'capturing', filesDone: done, filesTotal: 100 } });
     const { init, container } = renderWithHost(<ChangesDock />, {
       ...state(1),
-      review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
+      review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
     });
     const live = () => container.querySelector('.review-snapshot [role="status"]') as HTMLElement;
     expect(live().textContent).toBe('Preparing the workspace snapshot: 1 of 100 files');
@@ -130,7 +130,7 @@ describe('live regions', () => {
       init(
         {
           ...state(done),
-          review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
+          review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         },
         done,
       );
@@ -166,7 +166,7 @@ describe('live regions', () => {
 
 function reviewState(entries: ReviewEntry[], running = false): ViewState {
   return makeState({
-    review: { entries, hunks: {}, configChanges: [], busy: false },
+    review: { entries, configChanges: [], busy: false },
     ...(running ? { active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }) } : {}),
   });
 }
@@ -534,7 +534,7 @@ describe('keyboard, names, roles and states', () => {
             ]),
           ],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
+        review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
@@ -556,7 +556,7 @@ describe('keyboard, names, roles and states', () => {
       <App />,
       makeState({
         active: makeActive('c1', { plan: makePlanDoc() }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [], busy: false },
+        review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
@@ -668,7 +668,6 @@ describe('keyboard, names, roles and states', () => {
         }),
         review: {
           entries: [makeReviewEntry('a.ts')],
-          hunks: {},
           configChanges: [makeConfigChange('k1')],
           busy: false,
         },
@@ -707,7 +706,6 @@ describe('scrollable boxes and text alternatives', () => {
       makeState({
         review: {
           entries: [makeReviewEntry('a.ts')],
-          hunks: {},
           configChanges: [makeConfigChange('k1')],
           busy: false,
         },

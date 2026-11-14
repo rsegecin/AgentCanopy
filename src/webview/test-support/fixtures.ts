@@ -18,7 +18,6 @@ import type {
   ConfigChange,
   RestoreItem,
   RestorePreview,
-  Hunk,
   ReviewEntry,
   PromptId,
   ProviderStatus,
@@ -400,18 +399,6 @@ export function makeReviewEntry(path: string, over: Partial<ReviewEntry> = {}): 
     restorable: true,
     includesUserEdits: false,
     operationIds: [],
-    ...over,
-  };
-}
-
-export function makeHunk(index: number, over: Partial<Hunk> = {}): Hunk {
-  return {
-    id: `hunk-${String(index)}`,
-    index,
-    baselineStart: index * 10,
-    baselineLines: ['old\n'],
-    currentStart: index * 10,
-    currentLines: ['new\n'],
     ...over,
   };
 }

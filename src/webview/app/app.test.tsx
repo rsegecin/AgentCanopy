@@ -104,17 +104,6 @@ describe('App shell', () => {
     expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
   });
 
-  it.each(['plan', 'review'])(
-    'shows the chat for a show-tab event of the removed %s tab',
-    (tab) => {
-      const { host } = renderWithHost(<App />);
-      fireEvent.click(screen.getByRole('tab', { name: 'History' }));
-      host.emit({ type: 'event', event: { kind: 'show-tab', tab: tab as 'plan' | 'review' } });
-      expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
-      expect(screen.queryByRole('tab', { name: 'Plan' })).toBeNull();
-    },
-  );
-
   it('has no Plan tab, even for a conversation with a plan, and ignores a saved plan tab', () => {
     const state = makeState({ active: makeActive('c1', { plan: makePlanDoc() }) });
     renderWithHost(<App />, state, { tab: 'plan' });

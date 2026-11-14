@@ -524,7 +524,6 @@ const state = {
         operationIds: [],
       },
     ],
-    hunks: {},
     busy: false,
     configChanges: [
       {
@@ -735,7 +734,7 @@ function page(origin, query) {
     // ?empty=1: no conversation is open, one configuration change is pending, and the composer is in Agent mode.
     if (params.get('empty') === '1') {
       state.active = null;
-      state.review = { entries: [], hunks: {}, configChanges: state.review.configChanges.slice(0, 1), busy: false };
+      state.review = { entries: [], configChanges: state.review.configChanges.slice(0, 1), busy: false };
       state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
       state.defaults = { ...state.defaults, mode: 'agent' };
     }

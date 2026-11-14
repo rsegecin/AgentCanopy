@@ -16,11 +16,9 @@ import type {
   ConversationId,
   ConversationMeta,
   FolderKey,
-  Hunk,
   ImageMediaType,
   MessageId,
   Mode,
-  PatchOp,
   PlanDoc,
   PlanId,
   PromptAnswer,
@@ -802,8 +800,9 @@ class Controller implements AppController {
    * - open a version of a plan as a read-only document (`plan.open`), without a dialog: the text comes
    *   from the stored plan, not from the message;
    * - accept changes (this only records a decision, no file is written);
-   * - reject a single file or hunk when the file is as the agent left it (the checkpoint history can
-   *   undo it), and the `agent-only` or `overwrite` choices after a native choice dialog;
+   * - reject a single file when it is as the agent left it (the checkpoint history can undo it), and
+   *   the `agent-only` or `overwrite` choices after a native choice dialog (rejecting a single hunk
+   *   exists only in the editor, not in the webview);
    * - copy text to the clipboard, open files inside the workspace folders and links after the editor's
    *   own confirmation;
    * - rename, change the mode and model of, fork and open conversations.
@@ -925,16 +924,6 @@ class Controller implements AppController {
       case 'plan.open':
         await this.openPlanVersion(view, message.planId, message.version);
         return;
-      case 'plan.openInEditor':
-        await this.openPlanInEditor(view, message.planId);
-        return;
-      case 'plan.export':
-        await this.exportPlan(view, message.planId, message.version);
-        return;
-
-      case 'review.requestHunks':
-        await this.requestHunks(view, message.path);
-        return;
       case 'review.openDiff':
         await this.openReviewDiff(view, message.path);
         return;
@@ -948,17 +937,6 @@ class Controller implements AppController {
       case 'review.acceptFile':
         if (this.acceptRefused(view)) return;
         await this.reviewAction(view, (engine, key) => engine.acceptFile(key, message.path));
-        return;
-      case 'review.acceptHunk':
-        if (this.acceptRefused(view)) return;
-        await this.reviewResult(view, (engine, key) =>
-          engine.acceptHunk(key, message.path, message.hunkId),
-        );
-        return;
-      case 'review.rejectHunk':
-        await this.reviewResult(view, (engine, key) =>
-          engine.rejectHunk(key, message.path, message.hunkId),
-        );
         return;
       case 'review.rejectFile':
         await this.rejectFileForView(view, message.path);
@@ -2083,42 +2061,17 @@ class Controller implements AppController {
     };
   }
 
-  /** The review entries of the view's folder, and the hunks of the files whose hunks are shown. */
+  /** The review entries of the view's folder. */
   private syncReviewEntries(view: ViewRecord): void {
     const { engine } = this;
     if (!engine || view.disposed) return;
     const token = ++view.reviewToken;
     const folder = this.viewFolder(view);
     void (async () => {
-      let entries: Awaited<ReturnType<ReviewEngine['entries']>> = [];
-      const hunks: Record<string, Hunk[]> = {};
-      if (folder) {
-        entries = await engine.entries(folder.key);
-        const pending = new Set<string>(
-          entries.filter((entry) => entry.status === 'pending').map((entry) => entry.path),
-        );
-        for (const path of Object.keys(view.state.review.hunks)) {
-          if (pending.has(path)) hunks[path] = await engine.hunks(folder.key, path);
-        }
-      }
+      const entries = folder ? await engine.entries(folder.key) : [];
       if (view.disposed || token !== view.reviewToken) return;
-      // Hunks asked for while this was reading are kept; paths that are no longer pending go.
-      if (folder) {
-        const pending = new Set<string>(
-          entries.filter((entry) => entry.status === 'pending').map((entry) => entry.path),
-        );
-        for (const [path, shown] of Object.entries(view.state.review.hunks)) {
-          if (pending.has(path) && hunks[path] === undefined) hunks[path] = shown;
-        }
-      }
-      const ops: PatchOp[] = [];
-      if (canonicalJson(entries) !== canonicalJson(view.state.review.entries)) {
-        ops.push({ op: 'set', path: ['review', 'entries'], value: entries });
-      }
-      if (canonicalJson(hunks) !== canonicalJson(view.state.review.hunks)) {
-        ops.push({ op: 'set', path: ['review', 'hunks'], value: hunks });
-      }
-      view.apply(ops);
+      if (canonicalJson(entries) === canonicalJson(view.state.review.entries)) return;
+      view.apply([{ op: 'set', path: ['review', 'entries'], value: entries }]);
     })().catch((error: unknown) => {
       this.logger.warn('the review could not be read', { error: redact(String(error)) });
     });
@@ -2208,54 +2161,13 @@ class Controller implements AppController {
     this.syncReviewEntries(view);
   }
 
-  /** Runs an engine call that answers with a result and toasts what was not done. */
-  private async reviewResult(
-    view: ViewRecord,
-    action: (engine: ReviewEngine, key: FolderKey) => Promise<RejectResult>,
-  ): Promise<RejectResult | undefined> {
-    const target = this.reviewTarget(view);
-    if (!target) return undefined;
-    let result: RejectResult | undefined;
-    try {
-      result = await action(target.engine, target.folder.key);
-      this.reportRejectProblem(this.reportToView(view), result);
-    } catch (error) {
-      this.reviewFailed(this.reportToView(view), error);
-    }
-    this.syncReviewEntries(view);
-    return result;
-  }
-
   private reportRejectProblem(report: Report, result: RejectResult): void {
     if (result.status === 'refused') report('warning', result.message);
     else if (result.status === 'conflict') {
       report(
         'warning',
-        result.reason === 'unsaved-editor'
-          ? TEXT.unsavedInEditor
-          : result.reason === 'uncertain-source'
-            ? TEXT.mayHoldOwnWork
-            : TEXT.changedSinceAgent,
+        result.reason === 'unsaved-editor' ? TEXT.unsavedInEditor : TEXT.changedSinceAgent,
       );
-    }
-  }
-
-  private async requestHunks(view: ViewRecord, path: RelPath): Promise<void> {
-    const target = this.reviewTarget(view);
-    if (!target) return;
-    const scope = this.scopeOf(view);
-    try {
-      const hunks = await target.engine.hunks(target.folder.key, path);
-      if (!this.stillIn(view, scope)) return;
-      view.apply([
-        {
-          op: 'set',
-          path: ['review', 'hunks'],
-          value: { ...view.state.review.hunks, [path]: hunks },
-        },
-      ]);
-    } catch (error) {
-      this.reviewFailed(this.reportToView(view), error);
     }
   }
 
@@ -2548,20 +2460,6 @@ class Controller implements AppController {
     });
   }
 
-  private async exportPlan(view: ViewRecord, planId: PlanId, version: number): Promise<void> {
-    const plan = await this.findPlan(view, planId);
-    if (!plan) return;
-    const found = plan.versions.find((candidate) => candidate.version === version);
-    if (!found) {
-      this.state.toast(view, 'warning', TEXT.planVersionGone);
-      return;
-    }
-    await this.deps.ui.showDocument({
-      text: renderPlanMarkdown(found.content),
-      language: 'markdown',
-    });
-  }
-
   private async openPlanVersion(view: ViewRecord, planId: PlanId, version: number): Promise<void> {
     const plan = await this.findPlan(view, planId);
     if (!plan) return;
@@ -2576,13 +2474,6 @@ class Controller implements AppController {
       text: renderPlanMarkdown(found.content),
       beside: view.kind === 'panel',
     });
-  }
-
-  private async openPlanInEditor(view: ViewRecord, planId: PlanId): Promise<void> {
-    const plan = await this.findPlan(view, planId);
-    if (!plan) return;
-    this.deps.ui.openEditorPanel(plan.conversationId);
-    view.event({ kind: 'show-tab', tab: 'plan' });
   }
 
   /**

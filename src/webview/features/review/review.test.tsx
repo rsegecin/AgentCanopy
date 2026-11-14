@@ -25,7 +25,6 @@ function stateWith(
   return makeState({
     review: {
       entries,
-      hunks: {},
       configChanges: extra.configChanges ?? [],
       busy: extra.busy ?? false,
     },
@@ -238,7 +237,7 @@ describe('entry rows', () => {
     expect(screen.getByText('Please look at this.')).toBeTruthy();
   });
 
-  it('posts the right message with the right path from each button, and never asks for hunks', () => {
+  it('posts the right message with the right path from each button', () => {
     const { host } = renderDock([makeReviewEntry('src/a.ts'), makeReviewEntry('src/b.ts')]);
     fireEvent.click(screen.getByRole('button', { name: 'Accept src/b.ts' }));
     fireEvent.click(screen.getByRole('button', { name: 'Reject src/a.ts' }));
@@ -703,13 +702,6 @@ describe('in the app', () => {
     expect(document.querySelector('.tab-badge')).toBeNull();
     expect(document.querySelector('.header-warning')).toBeNull();
     expect(screen.queryByRole('button', { name: /your decision/ })).toBeNull();
-  });
-
-  it('falls back to Chat when the host asks for the Review tab', () => {
-    const { host } = renderWithHost(<App />, stateWith([A()]));
-    host.emit({ type: 'event', event: { kind: 'show-tab', tab: 'history' } });
-    host.emit({ type: 'event', event: { kind: 'show-tab', tab: 'review' } });
-    expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
   });
 
   it('is not shown on the other tabs', () => {

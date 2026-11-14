@@ -34,7 +34,7 @@ export const ViewEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prefill-composer'), text: z.string() }),
   z.object({
     kind: z.literal('show-tab'),
-    tab: z.enum(['chat', 'history', 'plan', 'review', 'checkpoints']),
+    tab: z.enum(['chat', 'history', 'checkpoints']),
   }),
   z.object({
     kind: z.literal('toast'),
@@ -177,15 +177,8 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     planId: PlanIdSchema,
     version: z.number().int().positive(),
   }),
-  z.object({ type: z.literal('plan.openInEditor'), planId: PlanIdSchema }),
-  z.object({
-    type: z.literal('plan.export'),
-    planId: PlanIdSchema,
-    version: z.number().int().positive(),
-  }),
 
   // Review
-  z.object({ type: z.literal('review.requestHunks'), path: RelPathSchema }),
   z.object({ type: z.literal('review.openDiff'), path: RelPathSchema }),
   z.object({ type: z.literal('review.openAll') }),
   z.object({ type: z.literal('review.acceptAll') }),
@@ -195,16 +188,6 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('review.acceptFile'), path: RelPathSchema }),
   z.object({ type: z.literal('review.rejectFile'), path: RelPathSchema }),
-  z.object({
-    type: z.literal('review.acceptHunk'),
-    path: RelPathSchema,
-    hunkId: z.string().min(1).max(200),
-  }),
-  z.object({
-    type: z.literal('review.rejectHunk'),
-    path: RelPathSchema,
-    hunkId: z.string().min(1).max(200),
-  }),
   z.object({ type: z.literal('config.keep'), changeId: z.string().min(1).max(200) }),
   z.object({ type: z.literal('config.revert'), changeId: z.string().min(1).max(200) }),
   z.object({ type: z.literal('config.openDiff'), changeId: z.string().min(1).max(200) }),

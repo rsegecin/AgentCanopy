@@ -40,8 +40,6 @@ export const TEXT = {
   configTextsGone: "This file's content was not kept, so it cannot be shown.",
   unsavedInEditor: 'Save or discard your unsaved changes in this file first.',
   changedSinceAgent: 'This file changed after the agent edited it, so it could not be rejected.',
-  mayHoldOwnWork:
-    'This file may include your own work. Use Reject on the whole file to choose what happens.',
   nothingToReject: 'There is nothing to reject.',
   exactForkUnavailable:
     'An exact copy of the conversation at an earlier message is turned off or not supported, so this branch continues from its visible messages as context.',

@@ -96,16 +96,6 @@ suite('plan documents', () => {
     }
   });
 
-  test('showDocument opens an untitled document with the text and language', async () => {
-    const { ui } = await activateExtension();
-    await ui.showDocument({ text: '# Exported plan\n', language: 'markdown' });
-    const editor = vscode.window.activeTextEditor;
-    assert.ok(editor);
-    assert.strictEqual(editor.document.isUntitled, true);
-    assert.strictEqual(editor.document.languageId, 'markdown');
-    assert.strictEqual(editor.document.getText(), '# Exported plan\n');
-  });
-
   test('the same key gives the same document, and setting it again replaces the text', async () => {
     const first = createVirtualDocument('one\n', 'Plan v1', 'plan-p1-v1');
     const again = createVirtualDocument('two\n', 'Plan v1', 'plan-p1-v1');

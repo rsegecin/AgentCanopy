@@ -784,15 +784,12 @@ describe('features of the default workspace tracking, in an application built wi
     const h = await harness();
     const view = h.attach();
     const messages = [
-      { type: 'review.requestHunks', path: 'a.ts' },
       { type: 'review.openDiff', path: 'a.ts' },
       { type: 'review.openAll' },
       { type: 'review.acceptAll' },
       { type: 'review.rejectAll', includePaths: [] },
       { type: 'review.acceptFile', path: 'a.ts' },
       { type: 'review.rejectFile', path: 'a.ts' },
-      { type: 'review.acceptHunk', path: 'a.ts', hunkId: 'h' },
-      { type: 'review.rejectHunk', path: 'a.ts', hunkId: 'h' },
       { type: 'config.keep', changeId: 'c' },
       { type: 'config.revert', changeId: 'c' },
       { type: 'config.openDiff', changeId: 'c' },

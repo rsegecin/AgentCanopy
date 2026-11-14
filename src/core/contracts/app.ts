@@ -76,8 +76,6 @@ export interface UiPort {
     text: string;
     beside?: boolean;
   }): Promise<void>;
-  /** Opens a text as a new untitled document the user can save (used to export a plan). */
-  showDocument(input: { text: string; language: string }): Promise<void>;
   showLogs(): void;
 }
 

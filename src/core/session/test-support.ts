@@ -401,10 +401,6 @@ export class FakeUi implements UiPort {
     this.record('showReadOnlyDocument', input);
     return Promise.resolve();
   }
-  showDocument(input: { text: string; language: string }): Promise<void> {
-    this.record('showDocument', input);
-    return Promise.resolve();
-  }
   /** What `choose` answers, one entry per call. An empty list (or `undefined`) means "dismissed". */
   chooseAnswers: (string | undefined)[] = [];
   choose(input: {

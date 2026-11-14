@@ -822,19 +822,6 @@ describe('plan messages', () => {
     view.expectMirror();
   });
 
-  it('plan.export opens the Markdown of a version', async () => {
-    const { h, view, plan } = await withPlan();
-    view.send({ type: 'plan.export', planId: plan.id, version: 1 });
-    await until('the document', () => h.ui.callsOf('showDocument').length === 1);
-    expect(h.ui.callsOf('showDocument')[0]?.[0]).toEqual({
-      text: renderPlanMarkdown(plan.versions[0]?.content ?? (undefined as never)),
-      language: 'markdown',
-    });
-    view.send({ type: 'plan.export', planId: plan.id, version: 5 });
-    await until('a toast', () => view.toasts.length === 1);
-    expect(h.ui.callsOf('showDocument')).toHaveLength(1);
-  });
-
   it('plan.open opens one version as a read-only document, beside the chat in a panel', async () => {
     const { h, view, plan } = await withPlan([submitScenario(SECOND, 'second-result.txt')]);
     await nextTurn(h, view, 'change it');
@@ -881,14 +868,6 @@ describe('plan messages', () => {
     await until('a second toast', () => view.toasts.length === 2);
     expect(view.toasts[1]?.text).toBe('That plan no longer exists.');
     expect(h.ui.callsOf('showReadOnlyDocument')).toEqual([]);
-  });
-
-  it('plan.openInEditor opens the conversation in an editor and shows the plan tab', async () => {
-    const { h, view, plan } = await withPlan();
-    view.send({ type: 'plan.openInEditor', planId: plan.id });
-    await until('the editor', () => h.ui.callsOf('openEditorPanel').length === 1);
-    expect(h.ui.callsOf('openEditorPanel')[0]).toEqual([view.active().meta.id]);
-    expect(view.events.at(-1)).toEqual({ kind: 'show-tab', tab: 'plan' });
   });
 });
 

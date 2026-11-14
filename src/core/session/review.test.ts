@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
 import { DEFAULT_SETTINGS } from '../../shared';
 import type { AssistantMessage, FolderKey, ReviewEntry } from '../../shared';
-import type { OperationRecord } from '../contracts';
+import type { OperationRecord, ReviewService } from '../contracts';
 import {
   FOLDER_KEY,
   FakeEditor,
@@ -144,6 +144,13 @@ async function read(h: Harness, name: string): Promise<string> {
   return fs.readFile(join(h.workspace, name), 'utf8');
 }
 
+/** The review service the editor integration uses: hunk review no longer goes through the view. */
+function reviewService(h: Harness): ReviewService {
+  const service = h.controller.review();
+  if (!service) throw new Error('no review service');
+  return service;
+}
+
 function noticesOf(view: TestView): string[] {
   const message = view.active().messages.find((m): m is AssistantMessage => m.role === 'assistant');
   return (message?.parts ?? []).flatMap((part) => (part.kind === 'notice' ? [part.text] : []));
@@ -182,23 +189,53 @@ describe('review of agent changes', () => {
     elsewhere.expectMirror();
   });
 
-  it('fills hunks on request, refreshes them after a hunk is accepted, and drops them with the file', async () => {
+  it('reads the hunks of a file from the service, accepts one without writing, and has none once the file is accepted', async () => {
     const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
     await agentTurn(h, view);
     await pendingEntries(view, 2);
+    const service = reviewService(h);
 
-    view.send({ type: 'review.requestHunks', path: 'b.txt' });
-    await until('the hunks', () => (view.current().review.hunks['b.txt']?.length ?? 0) === 2);
-    const first = view.current().review.hunks['b.txt']?.[0];
-    expect(first?.currentLines.join('')).toContain('TWO');
+    const hunks = await service.hunks(FOLDER_KEY, 'b.txt');
+    expect(hunks).toHaveLength(2);
+    expect(hunks[0]?.currentLines.join('')).toContain('TWO');
 
-    view.send({ type: 'review.acceptHunk', path: 'b.txt', hunkId: first?.id });
-    await until('one hunk left', () => view.current().review.hunks['b.txt']?.length === 1);
+    const before = entry(view, 'b.txt');
+    const result = await service.acceptHunk(FOLDER_KEY, 'b.txt', hunks[0]?.id ?? '');
+    expect(result).toEqual({ status: 'done' });
+    await until(
+      'the view to follow the accepted hunk',
+      () => JSON.stringify(entry(view, 'b.txt')?.baseline) !== JSON.stringify(before?.baseline),
+    );
+    expect(await service.hunks(FOLDER_KEY, 'b.txt')).toHaveLength(1);
     expect(await read(h, 'b.txt')).toBe(AGENT_B);
+    expect(entry(view, 'b.txt')?.status).toBe('pending');
 
     view.send({ type: 'review.acceptFile', path: 'b.txt' });
-    await until('the hunks to go', () => view.current().review.hunks['b.txt'] === undefined);
-    expect(entry(view, 'b.txt')?.status).toBe('accepted');
+    await until('the file to be accepted', () => entry(view, 'b.txt')?.status === 'accepted');
+    expect(await service.hunks(FOLDER_KEY, 'b.txt')).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('rejects a hunk through the service: the file changes on disk and the view follows', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
+    await agentTurn(h, view);
+    await pendingEntries(view, 2);
+    const service = reviewService(h);
+    const hunks = await service.hunks(FOLDER_KEY, 'b.txt');
+    expect(hunks).toHaveLength(2);
+
+    const before = entry(view, 'b.txt');
+    expect(await service.rejectHunk(FOLDER_KEY, 'b.txt', hunks[0]?.id ?? '')).toEqual({
+      status: 'done',
+    });
+    await until(
+      'the view to follow the rejected hunk',
+      () => JSON.stringify(entry(view, 'b.txt')?.current) !== JSON.stringify(before?.current),
+    );
+    expect(await read(h, 'b.txt')).toBe(AGENT_B.replace('TWO', 'two'));
+    expect(await service.hunks(FOLDER_KEY, 'b.txt')).toHaveLength(1);
+    expect(entry(view, 'b.txt')?.status).toBe('pending');
+    expect(view.toasts).toEqual([]);
     view.expectMirror();
   });
 
@@ -353,66 +390,6 @@ describe('rejecting a file that changed after the agent edited it', () => {
   });
 });
 
-describe('answers that arrive after the view moved on', () => {
-  it('does not put hunks of one folder into a view that now shows another', async () => {
-    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
-    await agentTurn(h, view);
-    await pendingEntries(view, 2);
-    const engine = h.engine();
-    if (!engine) throw new Error('no engine');
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const real = engine.hunks.bind(engine);
-    engine.hunks = async (folderKey, path) => {
-      await gate;
-      return real(folderKey, path);
-    };
-
-    view.send({ type: 'review.requestHunks', path: 'b.txt' });
-    view.send({ type: 'conversation.new', folder: SECOND_FOLDER });
-    await until('the other folder', () => entriesOf(view).length === 0);
-    release();
-    await sleep(150);
-    expect(view.current().review.hunks).toEqual({});
-    view.expectMirror();
-  });
-
-  it('keeps hunks that were asked for while a refresh was reading', async () => {
-    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
-    await agentTurn(h, view);
-    await pendingEntries(view, 2);
-    view.send({ type: 'review.requestHunks', path: 'b.txt' });
-    await until('the hunks', () => (view.current().review.hunks['b.txt']?.length ?? 0) === 2);
-
-    // A refresh starts reading, then a second file's hunks are asked for before it finishes.
-    const engine = h.engine();
-    if (!engine) throw new Error('no engine');
-    let release: () => void = () => undefined;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const real = engine.hunks.bind(engine);
-    let held = false;
-    engine.hunks = async (folderKey, path) => {
-      if (path === 'b.txt' && !held) {
-        held = true;
-        await gate;
-      }
-      return real(folderKey, path);
-    };
-    engine.changed(FOLDER_KEY);
-    await until('the refresh to be reading', () => held);
-    view.send({ type: 'review.requestHunks', path: 'a.txt' });
-    await until('the new hunks', () => view.current().review.hunks['a.txt'] !== undefined);
-    release();
-    await sleep(200);
-    expect(Object.keys(view.current().review.hunks).sort()).toEqual(['a.txt', 'b.txt']);
-    view.expectMirror();
-  });
-});
-
 describe('rejecting with unsaved changes', () => {
   it('is refused with a toast and writes nothing', async () => {
     const editor = new FakeEditor();
@@ -427,11 +404,15 @@ describe('rejecting with unsaved changes', () => {
     expect(await read(h, 'b.txt')).toBe(AGENT_B);
     expect(h.ui.callsOf('choose')).toEqual([]);
 
-    const hunk = (await h.controller.review()?.hunks(FOLDER_KEY, 'b.txt'))?.[0];
-    view.send({ type: 'review.rejectHunk', path: 'b.txt', hunkId: hunk?.id });
-    await until('a second toast', () => view.toasts.length === 2);
-    expect(view.toasts[1]?.text).toBe(UNSAVED);
+    const service = reviewService(h);
+    const hunk = (await service.hunks(FOLDER_KEY, 'b.txt'))[0];
+    expect(await service.rejectHunk(FOLDER_KEY, 'b.txt', hunk?.id ?? '')).toEqual({
+      status: 'conflict',
+      reason: 'unsaved-editor',
+      canRevertAgentOnly: false,
+    });
     expect(await read(h, 'b.txt')).toBe(AGENT_B);
+    expect(view.toasts).toHaveLength(1);
     view.expectMirror();
   });
 });
@@ -689,13 +670,14 @@ describe('the clean-up of stored file contents is never run without roots', () =
 describe('review while an Agent turn runs', () => {
   const BUSY = 'An agent turn is running in this folder. Wait for it to finish.';
 
-  it("refuses rejecting with the engine's message, and ignores accepting", async () => {
+  it("refuses rejecting with the engine's message, and refuses accepting in words", async () => {
     const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS), hanging]);
     await agentTurn(h, view);
     await pendingEntries(view, 2);
-    view.send({ type: 'review.requestHunks', path: 'b.txt' });
-    await until('the hunks', () => (view.current().review.hunks['b.txt']?.length ?? 0) === 2);
-    const hunkId = view.current().review.hunks['b.txt']?.[0]?.id;
+    const service = reviewService(h);
+    const hunks = await service.hunks(FOLDER_KEY, 'b.txt');
+    expect(hunks).toHaveLength(2);
+    const hunkId = hunks[0]?.id ?? '';
 
     view.send({
       type: 'turn.send',
@@ -708,26 +690,31 @@ describe('review while an Agent turn runs', () => {
     const before = entriesOf(view);
 
     view.send({ type: 'review.rejectFile', path: 'b.txt' });
-    view.send({ type: 'review.rejectHunk', path: 'b.txt', hunkId });
     view.send({ type: 'review.rejectAll', includePaths: [] });
-    await until('three toasts', () => view.toasts.length === 3);
+    await until('two toasts', () => view.toasts.length === 2);
     expect(view.toasts).toEqual([
       { level: 'warning', text: BUSY },
       { level: 'warning', text: BUSY },
-      { level: 'warning', text: BUSY },
     ]);
+    // The editor's hunk commands go to the service, which refuses in the same words.
+    expect(await service.rejectHunk(FOLDER_KEY, 'b.txt', hunkId)).toEqual({
+      status: 'refused',
+      message: BUSY,
+    });
     expect(h.ui.callsOf('confirm')).toEqual([]);
 
     // Accepting is refused in words, not ignored: the engine leaves everything as it is meanwhile.
     view.send({ type: 'review.acceptAll' });
     view.send({ type: 'review.acceptFile', path: 'a.txt' });
-    view.send({ type: 'review.acceptHunk', path: 'b.txt', hunkId });
-    await until('three more toasts', () => view.toasts.length === 6);
-    expect(view.toasts.slice(3)).toEqual([
-      { level: 'warning', text: 'Wait for the turn to finish before accepting changes.' },
+    await until('two more toasts', () => view.toasts.length === 4);
+    expect(view.toasts.slice(2)).toEqual([
       { level: 'warning', text: 'Wait for the turn to finish before accepting changes.' },
       { level: 'warning', text: 'Wait for the turn to finish before accepting changes.' },
     ]);
+    expect(await service.acceptHunk(FOLDER_KEY, 'b.txt', hunkId)).toEqual({
+      status: 'refused',
+      message: BUSY,
+    });
     expect(await read(h, 'b.txt')).toBe(AGENT_B);
     expect(entriesOf(view)).toEqual(before);
 
@@ -930,15 +917,16 @@ describe('rejecting through the controller, without a view message', () => {
           view.expectMirror();
         });
 
-        it('tells the user to reject the whole file when a single hunk is rejected', async () => {
+        it('does not reject a single hunk, and asks nothing', async () => {
           const { h, view, path, agent } = await build();
-          const hunk = (await h.controller.review()?.hunks(FOLDER_KEY, path))?.[0];
-          view.send({ type: 'review.rejectHunk', path, hunkId: hunk?.id });
-          await until('a toast', () => view.toasts.length === 1);
-          expect(view.toasts[0]).toEqual({
-            level: 'warning',
-            text: 'This file may include your own work. Use Reject on the whole file to choose what happens.',
+          const service = reviewService(h);
+          const hunk = (await service.hunks(FOLDER_KEY, path))[0];
+          expect(await service.rejectHunk(FOLDER_KEY, path, hunk?.id ?? '')).toEqual({
+            status: 'conflict',
+            reason: 'uncertain-source',
+            canRevertAgentOnly: false,
           });
+          expect(view.toasts).toEqual([]);
           expect(await read(h, path)).toBe(agent);
           expect(h.ui.callsOf('choose')).toEqual([]);
           view.expectMirror();
