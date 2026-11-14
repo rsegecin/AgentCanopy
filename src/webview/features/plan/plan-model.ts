@@ -1,7 +1,5 @@
 import type { PlanContent, PlanDoc, PlanUserDecision, PlanVersion } from '../../../shared';
 
-export const STAGE_LABEL_MAX = 60;
-
 /** The newest version of a plan, or undefined when it has none. */
 export function latestVersion(plan: PlanDoc): PlanVersion | undefined {
   let latest: PlanVersion | undefined;
@@ -13,38 +11,6 @@ export function latestVersion(plan: PlanDoc): PlanVersion | undefined {
 
 export function formatTime(timestamp: number): string {
   return new Date(timestamp).toLocaleString();
-}
-
-/** A stage title as a Mermaid node label: plain text with nothing that has a meaning in the syntax. */
-export function diagramLabel(title: string): string {
-  return title
-    .replace(/[`[\]{}<>|]/g, '')
-    .replace(/[\r\n]+/g, ' ')
-    .replace(/"/g, "'")
-    .slice(0, STAGE_LABEL_MAX);
-}
-
-/** True when at least one stage depends on another stage of the plan. */
-export function hasStageDependencies(stages: PlanContent['stages']): boolean {
-  const ids = new Set(stages.map((s) => s.id));
-  return stages.some((s) => s.dependsOn.some((id) => ids.has(id)));
-}
-
-/** A `flowchart TD` of the stages: an edge goes from a stage to each stage that depends on it. */
-export function stageDiagramSource(stages: PlanContent['stages']): string {
-  const nodeOf = new Map(stages.map((s, index) => [s.id, `s${String(index + 1)}`] as const));
-  const lines = ['flowchart TD'];
-  stages.forEach((stage, index) => {
-    const label = diagramLabel(stage.title).trim() || `Stage ${String(index + 1)}`;
-    lines.push(`  s${String(index + 1)}["${label}"]`);
-  });
-  stages.forEach((stage, index) => {
-    for (const dependency of stage.dependsOn) {
-      const from = nodeOf.get(dependency);
-      if (from !== undefined) lines.push(`  ${from} --> s${String(index + 1)}`);
-    }
-  });
-  return lines.join('\n');
 }
 
 type Kind = 'decision-point' | 'open-question';

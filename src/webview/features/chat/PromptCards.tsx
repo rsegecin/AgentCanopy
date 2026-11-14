@@ -25,10 +25,13 @@ const NO_DRAFT: QuestionDraft = { labels: [], other: '', otherOn: false };
 function PromptShell({
   prompt,
   label,
+  plan = false,
   children,
 }: {
   prompt: Prompt;
   label: string;
+  /** The card belongs to a Plan-mode turn and is presented as "Plan options". */
+  plan?: boolean;
   children: ReactNode;
 }) {
   const first = useViewState(
@@ -50,13 +53,19 @@ function PromptShell({
       role="group"
       tabIndex={-1}
       aria-label={label}
-      className={`prompt-card prompt-card--${prompt.state}${needsAnswer ? ' prompt-card--needs-answer' : ''}`}
+      className={`prompt-card prompt-card--${prompt.state}${needsAnswer ? ' prompt-card--needs-answer' : ''}${plan ? ' prompt-card--plan' : ''}`}
     >
       {needsAnswer && (
         <div className="prompt-marker">
           <Icon name="bell" />
           <span>Needs your answer</span>
         </div>
+      )}
+      {plan && (
+        <p className="plan-label-line">
+          <Icon name="checklist" />
+          <span>Plan options</span>
+        </p>
       )}
       {children}
     </div>
@@ -178,17 +187,21 @@ function QuestionBlock({
   );
 }
 
-function cardLabel(prompt: QuestionPrompt): string {
+function cardLabel(prompt: QuestionPrompt, plan: boolean): string {
   const first = prompt.questions[0]?.question ?? '';
   const more =
     prompt.questions.length > 1 ? ` (and ${String(prompt.questions.length - 1)} more)` : '';
-  return `Question from the agent: ${first}${more}`;
+  return `${plan ? 'Plan options' : 'Question from the agent'}: ${first}${more}`;
 }
 
 function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
   const { ui } = useApp();
   const post = usePost();
   const drafts = useUi((s) => s.questions[prompt.id]);
+  // The agent asks its choices during a Plan turn: those cards are the "Plan options".
+  const plan = useViewState(
+    (s) => s.active?.turns.find((t) => t.id === prompt.turnId)?.mode === 'plan',
+  );
   const idPrefix = useId();
   const hintId = useId();
   // The form stays locked after posting until the prompt changes in the state.
@@ -216,9 +229,9 @@ function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
 
   if (prompt.state !== 'pending') {
     return (
-      <PromptShell prompt={prompt} label={cardLabel(prompt)}>
+      <PromptShell prompt={prompt} label={cardLabel(prompt, plan)} plan={plan}>
         {prompt.state === 'answered' ? (
-          <dl className="prompt-answers">
+          <dl className={`prompt-answers${plan ? ' plan-decision-record' : ''}`}>
             {prompt.questions.map((q) => (
               <div key={q.question} className="prompt-answer">
                 <dt>{q.question}</dt>
@@ -241,7 +254,7 @@ function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
   }
 
   return (
-    <PromptShell prompt={prompt} label={cardLabel(prompt)}>
+    <PromptShell prompt={prompt} label={cardLabel(prompt, plan)} plan={plan}>
       <form
         onSubmit={(event) => {
           event.preventDefault();

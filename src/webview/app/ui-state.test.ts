@@ -55,34 +55,19 @@ describe('UiState question drafts', () => {
   });
 });
 
-describe('UiState plan sections', () => {
-  it('remembers collapsed sections per plan and forgets them when reopened', () => {
-    const ui = new UiState(new FakeHost());
-    ui.setPlanSectionOpen('plan1', 'analysis', false);
-    ui.setPlanSectionOpen('plan1', 'stages', false);
-    ui.setPlanSectionOpen('plan2', 'analysis', false);
-    expect(ui.getSnapshot().planClosed).toEqual({
-      plan1: { analysis: true, stages: true },
-      plan2: { analysis: true },
-    });
-    ui.setPlanSectionOpen('plan1', 'analysis', true);
-    ui.setPlanSectionOpen('plan2', 'analysis', true);
-    expect(ui.getSnapshot().planClosed).toEqual({ plan1: { stages: true } });
+describe('UiState removed tabs and plan sections', () => {
+  it('falls back to the chat tab for the removed plan tab', () => {
+    expect(new UiState(new FakeHost({ tab: 'plan' })).getSnapshot().tab).toBe('chat');
+    expect(new UiState(new FakeHost({ tab: 'history' })).getSnapshot().tab).toBe('history');
   });
 
-  it('persists them and ignores saved data of the wrong shape', () => {
-    const host = new FakeHost();
+  it('loads data that still has the removed planClosed key, and does not write it back', () => {
+    const host = new FakeHost({ tab: 'chat', planClosed: { plan1: { analysis: true } } });
     const ui = new UiState(host);
-    ui.setPlanSectionOpen('plan1', 'analysis', false);
+    expect(ui.getSnapshot()).not.toHaveProperty('planClosed');
     ui.flush();
-    expect(new UiState(new FakeHost(host.saved)).getSnapshot().planClosed).toEqual({
-      plan1: { analysis: true },
-    });
-    expect(new UiState(new FakeHost({ planClosed: [1] })).getSnapshot().planClosed).toEqual({});
-  });
-
-  it('accepts the plan tab as the saved tab', () => {
-    expect(new UiState(new FakeHost({ tab: 'plan' })).getSnapshot().tab).toBe('plan');
+    expect(host.saved).not.toHaveProperty('planClosed');
+    expect(new UiState(new FakeHost({ planClosed: [1] })).getSnapshot().tab).toBe('chat');
   });
 });
 

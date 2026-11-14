@@ -114,7 +114,7 @@ describe('stylesheets', () => {
     for (const selector of removed) {
       if (selector === ':focus') continue;
       expect(selector, selector).toMatch(
-        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.plan-scroll|\.history|form\.composer):focus-visible$/,
+        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
       );
     }
     expect(removed.length).toBeGreaterThan(3);
@@ -159,7 +159,7 @@ describe('stylesheets', () => {
       '.prompt-card',
       '.review-entry',
       '.changes-dock',
-      '.plan-section',
+      '.plan-card',
       '.menu',
       '.reference-picker',
       '.composer-input',
@@ -196,7 +196,7 @@ describe('stylesheets', () => {
     expect(text).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
     // No fixed pixel widths on layout containers that could exceed a 260 px view.
     expect(text).not.toMatch(
-      /\.(?:app|column|composer|plan-view|changes-dock|checkpoints|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
+      /\.(?:app|column|composer|plan-card|changes-dock|checkpoints|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
     );
   });
 

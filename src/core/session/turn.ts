@@ -15,6 +15,7 @@ import type {
   MessagePart,
   Mode,
   PatchOp,
+  PlanDoc,
   Prompt,
   PromptAnswer,
   PromptId,
@@ -206,6 +207,8 @@ export class TurnRun {
   private readonly findingNotices = new Set<string>();
   /** Plan changes of this turn run one after the other, so each sees the result of the one before. */
   private planWork: Promise<unknown> = Promise.resolve();
+  /** Answers to questions asked in this Plan turn before the plan existed, in the order answered. */
+  private readonly earlyAnswers: { targetId: string; values: string[] }[] = [];
   /** The model called the plan tool in this turn, whatever came of it. */
   private planToolCalled = false;
   /** The session id of an exact fork that has been started and not yet shown to work. */
@@ -695,7 +698,8 @@ export class TurnRun {
       });
       if (!result.ok) return { text: result.message, isError: true };
       if (meta.planId !== result.plan.id) await this.patchMeta({ planId: result.plan.id });
-      state.mutate(this.runtime, [set(['plan'], result.plan)]);
+      const plan = await this.recordBufferedAnswers(result.plan);
+      state.mutate(this.runtime, [set(['plan'], plan)]);
       if (result.unchanged) {
         return {
           text: `The plan is identical to version ${result.version}, so nothing was saved.`,
@@ -713,13 +717,45 @@ export class TurnRun {
     });
   }
 
-  /** An answered interactive question is a decision of the conversation's plan, when it has one. */
+  /**
+   * Records the answers buffered before the plan existed, in the order they were answered, and
+   * returns the plan as it is after the last one. A decision that fails is logged and skipped.
+   */
+  private async recordBufferedAnswers(plan: PlanDoc): Promise<PlanDoc> {
+    const buffered = this.earlyAnswers.splice(0);
+    let current = plan;
+    for (const { targetId, values } of buffered) {
+      try {
+        current = await this.services.plans.decide(plan.id, {
+          kind: 'interactive-question',
+          targetId,
+          values,
+        });
+      } catch (error) {
+        this.logger.warn('an answer could not be recorded as a plan decision', {
+          error: redact(String(error)),
+        });
+      }
+    }
+    return current;
+  }
+
+  /**
+   * An answered interactive question is a decision of the conversation's plan, when it has one. In a
+   * Plan turn without a plan yet it waits in a buffer until the plan is saved.
+   */
   private recordQuestionDecisions(prompt: Prompt, answer: PromptAnswer): void {
     if (prompt.kind !== 'question' || answer.kind !== 'question') return;
     this.track(
       this.inPlanQueue(async () => {
         const planId = this.runtime.data.meta.planId;
-        if (planId === undefined) return;
+        if (planId === undefined) {
+          if (this.mode !== 'plan') return;
+          for (const [targetId, values] of Object.entries(answer.answers)) {
+            if (values.length > 0) this.earlyAnswers.push({ targetId, values });
+          }
+          return;
+        }
         const { plans, state } = this.services;
         for (const [targetId, values] of Object.entries(answer.answers)) {
           if (values.length === 0) continue;

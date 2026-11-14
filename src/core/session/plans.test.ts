@@ -40,6 +40,10 @@ import {
 const control = vi.hoisted(() => ({
   holdApprove: undefined as Promise<void> | undefined,
   approveCalls: 0,
+  /** Question texts the plan store refuses to record as decisions. */
+  failDecide: [] as string[],
+  /** Every decision the plan store was asked to record, in order. */
+  decideCalls: [] as { targetId: string; values: string[] }[],
 }));
 
 vi.mock('../plans', async (importOriginal) => {
@@ -55,6 +59,14 @@ vi.mock('../plans', async (importOriginal) => {
           if (control.holdApprove) await control.holdApprove;
           return real.approve(...args);
         },
+        decide: (...args: Parameters<typeof real.decide>) => {
+          const [, decision] = args;
+          control.decideCalls.push({ targetId: decision.targetId, values: decision.values });
+          if (control.failDecide.includes(decision.targetId)) {
+            return Promise.reject(new Error('the decision was refused'));
+          }
+          return real.decide(...args);
+        },
       };
     },
   };
@@ -69,6 +81,8 @@ async function harness(...args: Parameters<typeof createHarness>): Promise<Harne
 afterEach(async () => {
   control.holdApprove = undefined;
   control.approveCalls = 0;
+  control.failDecide = [];
+  control.decideCalls = [];
   for (const h of harnesses.splice(0)) await h.dispose();
 });
 
@@ -314,7 +328,7 @@ describe('the plan in the prompt', () => {
     await nextTurn(h, view, 'why stage 2?');
     const unlocked = (await h.record(1)).stdin;
     expect(unlocked).toContain(renderPlanBlock(plan, { locked: false }));
-    expect(unlocked).toContain('Produce or revise the plan by calling the `submit_plan` tool');
+    expect(unlocked).toContain('Then produce or revise the plan by calling the `submit_plan` tool');
 
     view.send({ type: 'plan.setLocked', conversationId: view.active().meta.id, locked: true });
     await until('the lock', () => view.active().meta.planLocked);
@@ -411,6 +425,231 @@ describe('interactive questions', () => {
     expect(view.active().plan).toBeNull();
     expect(view.active().meta.planId).toBeUndefined();
     expect(await fs.readdir(join(h.storage, 'plans'))).toEqual([]);
+    view.expectMirror();
+  });
+});
+
+const SIZE_QUESTIONS = [
+  {
+    question: 'Which size?',
+    header: 'Size',
+    options: [
+      { label: 'Small', description: 'Few' },
+      { label: 'Large', description: 'Many' },
+    ],
+    multiSelect: false,
+  },
+];
+
+/** The steps of one AskUserQuestion call that the user answers. */
+function askSteps(id: string, questions: object[]): object[] {
+  return [
+    assistantToolUse(id, 'AskUserQuestion', { questions }),
+    {
+      permission: {
+        toolName: 'AskUserQuestion',
+        input: { questions },
+        toolUseId: id,
+        onAllow: [
+          userToolResult(id, 'answered', {
+            decision: { decision: 'accept', source: 'user_temporary' },
+          }),
+        ],
+        onDeny: [],
+      },
+    },
+  ];
+}
+
+const submitStep = (input: object, saveAs: string) => ({
+  callTool: { name: 'submit_plan', arguments: input, saveAs },
+});
+
+/** A turn with the given steps between the start and a closing result. */
+function stepsSpec(steps: object[]): ScenarioSpec {
+  return {
+    record: true,
+    scenario: {
+      steps: [stateEvent('running'), initEvent(), ...steps, ...resultStep('done')],
+    },
+  };
+}
+
+async function answerPending(view: TestView, answers: Record<string, string[]>): Promise<void> {
+  const find = (): Prompt | undefined =>
+    view.state?.active?.prompts.find((prompt) => prompt.state === 'pending');
+  await until('a pending prompt', () => find() !== undefined);
+  const prompt = find();
+  if (!prompt) throw new Error('no prompt');
+  view.send({
+    type: 'prompt.answer',
+    promptId: prompt.id,
+    displayHash: prompt.displayHash,
+    answer: { kind: 'question', answers },
+  });
+  await until('the prompt to settle', () => find()?.id !== prompt.id);
+}
+
+/** Remembers the plan the view showed when the first plan-update part appeared. */
+function watchPlanCard(view: TestView): { planAtCard: () => PlanDoc | null | undefined } {
+  let seen: PlanDoc | null | undefined;
+  let found = false;
+  const post = view.post.bind(view);
+  view.post = (message) => {
+    post(message);
+    if (found) return;
+    const parts = view.state?.active?.messages.flatMap((m) =>
+      m.role === 'assistant' ? m.parts : [],
+    );
+    if (parts?.some((part) => part.kind === 'plan-update')) {
+      found = true;
+      seen = structuredClone(view.state?.active?.plan);
+    }
+  };
+  return { planAtCard: () => seen };
+}
+
+describe('interactive questions answered before the first plan', () => {
+  it('become decisions of the plan once it is saved, already shown with the plan card', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q', QUESTIONS),
+        submitStep(PLAN, 'result'),
+        assistantText('The plan covers it.'),
+      ]),
+    ]);
+    const view = h.attach();
+    const card = watchPlanCard(view);
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red', 'Blue'] });
+    await finishedTurn(h, view);
+
+    const decisions = planOf(view).decisions;
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      kind: 'interactive-question',
+      targetId: 'Which colour?',
+      values: ['Red', 'Blue'],
+      planVersion: 1,
+    });
+    expect((await planStoreOf(h).get(planOf(view).id))?.decisions).toEqual(decisions);
+    expect(card.planAtCard()?.decisions).toEqual(decisions);
+    expect(control.decideCalls).toEqual([{ targetId: 'Which colour?', values: ['Red', 'Blue'] }]);
+    view.expectMirror();
+  });
+
+  it('are all recorded, in the order they were answered', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q1', SIZE_QUESTIONS),
+        ...askSteps('toolu_q2', QUESTIONS),
+        submitStep(PLAN, 'result'),
+      ]),
+    ]);
+    const view = h.attach();
+    const card = watchPlanCard(view);
+    send(view, 'plan it');
+    await answerPending(view, { 'Which size?': ['Large'] });
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+
+    expect(control.decideCalls.map((call) => call.targetId)).toEqual([
+      'Which size?',
+      'Which colour?',
+    ]);
+    expect(planOf(view).decisions.map((d) => [d.targetId, d.values])).toEqual([
+      ['Which size?', ['Large']],
+      ['Which colour?', ['Red']],
+    ]);
+    expect(card.planAtCard()?.decisions).toHaveLength(2);
+    view.expectMirror();
+  });
+
+  it('are not recorded when they were answered in an Ask turn and the plan comes later', async () => {
+    const h = await planHarness([questionSpec(), submitScenario(PLAN)]);
+    const view = h.attach();
+    send(view, 'ask me something', 'ask');
+    await answerQuestion(h, view);
+    await nextTurn(h, view, 'plan it');
+    expect(planOf(view).versions).toHaveLength(1);
+    expect(planOf(view).decisions).toEqual([]);
+    expect(control.decideCalls).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('are recorded once when a failed submit is followed by a good one in the same turn', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q', QUESTIONS),
+        submitStep({ title: '' }, 'first'),
+        submitStep(PLAN, 'second'),
+      ]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+    expect(control.decideCalls).toEqual([{ targetId: 'Which colour?', values: ['Red'] }]);
+    expect(planOf(view).decisions.map((d) => d.targetId)).toEqual(['Which colour?']);
+    view.expectMirror();
+  });
+
+  it('are dropped when the turn ends without a saved plan', async () => {
+    const h = await planHarness([
+      stepsSpec([...askSteps('toolu_q', QUESTIONS), submitStep({ title: '' }, 'first')]),
+      submitScenario(PLAN),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+    expect(view.active().plan).toBeNull();
+    expect(control.decideCalls).toEqual([]);
+
+    await nextTurn(h, view, 'plan it again');
+    expect(planOf(view).decisions).toEqual([]);
+    expect(control.decideCalls).toEqual([]);
+  });
+
+  it('log a decision that cannot be recorded, keep the others and still save the plan', async () => {
+    control.failDecide = ['Which size?'];
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q1', SIZE_QUESTIONS),
+        ...askSteps('toolu_q2', QUESTIONS),
+        submitStep(PLAN, 'result'),
+      ]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which size?': ['Large'] });
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    const turn = await finishedTurn(h, view);
+    expect(turn.status).toBe('completed');
+    expect(planOf(view).versions).toHaveLength(1);
+    expect(planOf(view).decisions.map((d) => d.targetId)).toEqual(['Which colour?']);
+    expect(
+      h.logger.entries.some(
+        (entry) =>
+          entry.level === 'warn' &&
+          entry.message === 'an answer could not be recorded as a plan decision',
+      ),
+    ).toBe(true);
+    view.expectMirror();
+  });
+
+  it('are recorded at once when the plan was saved earlier in the same turn', async () => {
+    const h = await planHarness([
+      stepsSpec([submitStep(PLAN, 'result'), ...askSteps('toolu_q', QUESTIONS)]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Blue'] });
+    await finishedTurn(h, view);
+    expect(planOf(view).decisions.map((d) => [d.targetId, d.values])).toEqual([
+      ['Which colour?', ['Blue']],
+    ]);
+    expect(control.decideCalls).toHaveLength(1);
     view.expectMirror();
   });
 });

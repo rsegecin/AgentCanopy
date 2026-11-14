@@ -32,6 +32,28 @@ describe('composePrompt', () => {
     expect(prompt).not.toContain('locked');
   });
 
+  it('tells the unlocked Plan block to ask the user their choices before submitting', () => {
+    const prompt = composePrompt({ mode: 'plan', text: 'x', attachments: none });
+    expect(prompt).toContain('This is Plan mode. The session is read-only. Investigate first.');
+    expect(prompt).toContain('`AskUserQuestion`');
+    expect(prompt).toContain('before you write the plan');
+    expect(prompt).toContain(
+      'do not leave such a choice as a decision point or an open question inside the plan',
+    );
+    expect(prompt.indexOf('`AskUserQuestion`')).toBeLessThan(prompt.indexOf('`submit_plan`'));
+  });
+
+  it('does not mention AskUserQuestion in the locked Plan block or the other modes', () => {
+    const locked = composePrompt({ mode: 'plan', text: 'x', attachments: none, planLocked: true });
+    expect(locked).not.toContain('AskUserQuestion');
+    expect(locked).not.toContain('Investigate first');
+    for (const mode of ['ask', 'agent'] as const) {
+      expect(composePrompt({ mode, text: 'x', attachments: none })).not.toContain(
+        'AskUserQuestion',
+      );
+    }
+  });
+
   it('replaces the Plan instructions when the plan is locked', () => {
     const prompt = composePrompt({ mode: 'plan', text: 'x', attachments: none, planLocked: true });
     expect(prompt).toContain('The plan is locked for this turn');

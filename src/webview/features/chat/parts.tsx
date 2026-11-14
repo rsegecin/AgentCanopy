@@ -6,6 +6,7 @@ import { useViewState } from '../../app/store';
 import { Markdown } from './Markdown';
 import { ToolCard, useIsNested } from './ToolCard';
 import { getPartRenderer } from './registry';
+import { SUBMIT_PLAN_TOOL } from './tool-present';
 import type { PartKind, PartRendererProps } from './registry';
 
 type Of<K extends MessagePart['kind']> = PartRendererProps<K>;
@@ -75,6 +76,9 @@ function ToolPart({ part, messageId }: Of<'tool'>) {
   // A call made by another call of the same message is drawn inside that call's card.
   const nested = useIsNested(messageId, part.call);
   if (nested) return null;
+  // A submitted plan is shown by the plan card that follows it; only a call that is still running,
+  // failed or was denied has something the card does not say.
+  if (part.call.name === SUBMIT_PLAN_TOOL && part.call.status === 'done') return null;
   return <ToolCard call={part.call} messageId={messageId} />;
 }
 

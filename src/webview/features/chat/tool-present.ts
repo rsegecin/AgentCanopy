@@ -6,6 +6,9 @@ export const DIFF_MAX_LINES = 40;
 const SUMMARY_MAX = 120;
 const OPEN_FILE_MAX = 4096;
 
+/** The tool the agent calls to submit a plan. */
+export const SUBMIT_PLAN_TOOL = 'mcp__agentcanopy__submit_plan';
+
 export interface FileLink {
   path: string;
   /** First line to reveal, when known. */
@@ -167,7 +170,7 @@ function specialised(call: ToolCallView): ToolPresentation | null {
   const input = asRecord(call.input);
   const name = call.name;
 
-  if (name === 'mcp__agentcanopy__submit_plan') {
+  if (name === SUBMIT_PLAN_TOOL) {
     return { icon: 'checklist', title: 'Submitted a plan' };
   }
   const mcp = parseMcpName(name);

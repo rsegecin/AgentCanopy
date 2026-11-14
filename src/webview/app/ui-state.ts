@@ -5,7 +5,7 @@ import type { Mode } from '../../shared';
 import type { Host } from './host';
 import { useApp } from './context';
 
-export type Tab = 'chat' | 'history' | 'plan' | 'checkpoints';
+export type Tab = 'chat' | 'history' | 'checkpoints';
 
 /** Draft key used while no conversation is open. */
 export const NEW_CONVERSATION_KEY = '__new__';
@@ -27,14 +27,14 @@ export interface QuestionDraft {
 }
 
 const PersistedSchema = z.object({
-  tab: z.enum(['chat', 'history', 'plan', 'checkpoints']).catch('chat'),
+  // A tab that no longer exists ('plan', 'review') falls back to the chat.
+  tab: z.enum(['chat', 'history', 'checkpoints']).catch('chat'),
   drafts: z.record(z.string(), z.string()).catch({}),
   expanded: z.record(z.string(), z.boolean()).catch({}),
   scroll: z.record(z.string(), z.object({ top: z.number(), atBottom: z.boolean() })).catch({}),
   newMode: ModeSchema.optional().catch(undefined),
   newModel: z.string().optional().catch(undefined),
   questions: z.record(z.string(), z.array(QuestionDraftSchema)).catch({}),
-  planClosed: z.record(z.string(), z.record(z.string(), z.boolean())).catch({}),
   reviewInclude: z.record(z.string(), z.boolean()).catch({}),
   restoreSelection: z.record(z.string(), z.record(z.string(), z.boolean())).catch({}),
 });
@@ -50,8 +50,6 @@ export interface UiSnapshot {
   newModel: string | undefined;
   /** Selections in pending question prompts, per prompt id and then per question index. */
   questions: Readonly<Record<string, readonly QuestionDraft[]>>;
-  /** Plan sections the user collapsed, per plan id. */
-  planClosed: Readonly<Record<string, Readonly<Record<string, boolean>>>>;
   /** Pending review entries ticked "Include in Reject All", by path. */
   reviewInclude: Readonly<Record<string, boolean>>;
   /** Ticks the user changed in a restore preview, per preview token and then per path. */
@@ -66,7 +64,6 @@ interface ScrollPosition {
 const PERSIST_DELAY_MS = 300;
 const MAX_SCROLL_ENTRIES = 50;
 const MAX_QUESTION_DRAFTS = 30;
-const MAX_PLANS = 30;
 const MAX_REVIEW_INCLUDE = 1000;
 const MAX_RESTORE_SELECTIONS = 5;
 
@@ -91,7 +88,6 @@ export class UiState {
       newMode: parsed.newMode,
       newModel: parsed.newModel,
       questions: parsed.questions,
-      planClosed: parsed.planClosed,
       reviewInclude: parsed.reviewInclude,
       restoreSelection: parsed.restoreSelection,
     };
@@ -147,21 +143,6 @@ export class UiState {
       for (const old of keys.slice(0, keys.length - MAX_QUESTION_DRAFTS)) delete next[old];
     }
     this.update({ questions: next });
-  }
-
-  /** Opens or collapses one section of a plan's view. */
-  setPlanSectionOpen(planId: string, section: string, open: boolean): void {
-    const closed = { ...(this.snapshot.planClosed[planId] ?? {}) };
-    if (open) delete closed[section];
-    else closed[section] = true;
-    const next: Record<string, Readonly<Record<string, boolean>>> = { ...this.snapshot.planClosed };
-    delete next[planId];
-    if (Object.keys(closed).length > 0) next[planId] = closed;
-    const keys = Object.keys(next);
-    if (keys.length > MAX_PLANS) {
-      for (const old of keys.slice(0, keys.length - MAX_PLANS)) delete next[old];
-    }
-    this.update({ planClosed: next });
   }
 
   /** Ticks or unticks "Include in Reject All" for an entry of the review. */
@@ -229,7 +210,6 @@ export class UiState {
       newMode: this.snapshot.newMode,
       newModel: this.snapshot.newModel,
       questions: this.snapshot.questions,
-      planClosed: this.snapshot.planClosed,
       reviewInclude: this.snapshot.reviewInclude,
       restoreSelection: this.snapshot.restoreSelection,
     });

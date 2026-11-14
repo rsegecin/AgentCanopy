@@ -6,6 +6,7 @@ import { useApp, usePost } from '../../app/context';
 import { useViewState } from '../../app/store';
 import { BranchHeader } from '../branches/BranchHeader';
 import { BranchMarker } from '../branches/BranchMarker';
+import { SyntheticPlanCard } from '../plan/PlanUpdateCard';
 import { AttachmentChip } from './AttachmentChip';
 import { PartView } from './parts';
 
@@ -29,6 +30,13 @@ const MessageItem = memo(function MessageItem({
   branches?: readonly ConversationSummary[];
 }) {
   const post = usePost();
+  // The execution message of an approved plan is told by the approval that started its turn, never
+  // by its text.
+  const executingVersion = useViewState((s) =>
+    message.role === 'user'
+      ? s.active?.plan?.approvals.find((a) => a.executionTurnId === message.turnId)?.version
+      : undefined,
+  );
   const actions = (
     <div className="message-actions">
       <IconButton
@@ -52,10 +60,22 @@ const MessageItem = memo(function MessageItem({
     return (
       <article className="message message--user" aria-label="You">
         <div className="message-meta">
-          <span className="badge">{MODE_LABEL[message.mode]}</span>
+          {executingVersion !== undefined ? (
+            <span className="plan-label-line">
+              <Icon name="play" />
+              <span>{`Plan approved: executing version ${String(executingVersion)}`}</span>
+            </span>
+          ) : message.mode === 'plan' ? (
+            <span className="plan-label-line">
+              <Icon name="checklist" />
+              <span>Plan request</span>
+            </span>
+          ) : (
+            <span className="badge">{MODE_LABEL[message.mode]}</span>
+          )}
           {actions}
         </div>
-        <div className="user-text">{message.text}</div>
+        {executingVersion === undefined && <div className="user-text">{message.text}</div>}
         {message.attachments.length > 0 && (
           <ul className="chips" aria-label="Attachments">
             {message.attachments.map((attachment, index) => (
@@ -94,6 +114,7 @@ function Log({ conversationId }: { conversationId: ConversationId }) {
   const messages = useViewState((s) => s.active?.messages);
   const turns = useViewState((s) => s.active?.turns);
   const activity = useViewState((s) => s.active?.activity ?? null);
+  const planVersions = useViewState((s) => s.active?.plan?.versions.length ?? 0);
   const conversations = useViewState((s) => s.conversations);
   const branchesAt = useMemo(() => {
     const map = new Map<string, ConversationSummary[]>();
@@ -162,7 +183,7 @@ function Log({ conversationId }: { conversationId: ConversationId }) {
       if (stick.current) el.scrollTop = el.scrollHeight;
     }
     previousLength.current = list.length;
-  }, [messages, activity, failure, ui, conversationId]);
+  }, [messages, activity, failure, planVersions, ui, conversationId]);
 
   // The changes card (or anything else beside the log) can appear, grow or collapse, which changes
   // the log's height without a scroll: a log that was at the bottom stays there.
@@ -214,6 +235,7 @@ function Log({ conversationId }: { conversationId: ConversationId }) {
               branches={branchesAt.get(message.id)}
             />
           ))}
+          <SyntheticPlanCard />
           {failure !== null && (
             <div className="notice notice--error">
               <Icon name="error" />

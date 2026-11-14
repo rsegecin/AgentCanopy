@@ -53,7 +53,8 @@ p {
 [role='tabpanel']:focus-visible,
 .changes-dock:focus-visible,
 .checkpoints-scroll:focus-visible,
-.plan-scroll:focus-visible,
+.plan-card:focus-visible,
+.plan-card-slot:focus-visible,
 .history:focus-visible,
 form.composer:focus-visible {
   outline: none;
@@ -64,7 +65,6 @@ form.composer:focus-visible {
 .markdown-table:focus-visible,
 .tool-card-pre:focus-visible,
 .prompt-detail:focus-visible,
-.plan-table-wrap:focus-visible,
 .log:focus-visible,
 .changes-dock-body:focus-visible {
   outline-offset: -2px;

@@ -1,64 +1,96 @@
-.plan-view {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
-}
-.plan-scroll {
-  flex: 1;
-  min-height: 0;
-  padding: 8px;
-  overflow-y: auto;
-}
-.plan-scroll > .column {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.plan-header {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.plan-title {
-  margin: 0;
-  font-size: 1.3em;
-  overflow-wrap: anywhere;
-}
-.plan-toolbar,
-.plan-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-}
-.plan-field {
+/* The label line shared by the plan request, the plan options and the plan card. */
+.plan-label-line {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
-  max-width: 100%;
-}
-.plan-field select {
-  max-width: 100%;
-}
-.plan-lock--on {
+  margin: 0;
+  font-size: 0.85em;
   font-weight: 600;
-  outline: 1px solid var(--vscode-focusBorder);
+  color: var(--vscode-descriptionForeground);
+}
+.prompt-card--plan .plan-label-line {
+  display: flex;
+  margin-bottom: 6px;
+}
+
+/* The plan card: the current one works on the plan, older ones are compact and read-only. */
+.plan-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.plan-card--current {
+  border-left: 4px solid var(--vscode-focusBorder);
+}
+.plan-card--older {
+  padding: 4px 10px;
+}
+.plan-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 1.1em;
+}
+.plan-card-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  min-width: 0;
+}
+.plan-card-open {
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  text-align: left;
+  color: var(--vscode-textLink-foreground);
+  background: transparent;
+  cursor: pointer;
+  text-decoration: underline;
+  overflow-wrap: anywhere;
+}
+.plan-card-open:hover {
+  color: var(--vscode-textLink-activeForeground);
+}
+.plan-card-version,
+.plan-card p {
+  margin: 0;
+}
+.plan-card-section {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.plan-card-heading {
+  margin: 0;
+  font-size: 0.9em;
+  color: var(--vscode-descriptionForeground);
+}
+.plan-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.plan-update-summary {
+  overflow-wrap: anywhere;
 }
 .plan-hint {
   font-size: 0.9em;
 }
 
-.plan-section {
-  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
-  border-radius: 4px;
+.plan-lock--on {
+  font-weight: 600;
+  outline: 1px solid var(--vscode-focusBorder);
 }
-.plan-section-heading {
-  margin: 0;
-  font-size: 1em;
-}
+
 .plan-section-toggle {
   display: flex;
   align-items: center;
@@ -74,62 +106,12 @@
 .plan-section-toggle:hover {
   background: var(--vscode-list-hoverBackground);
 }
-.plan-section-body {
-  padding: 0 10px 8px;
-}
-.plan-subtitle {
-  margin: 8px 0 2px;
-  font-size: 1em;
-}
-.plan-list {
-  margin: 0;
-  padding-left: 20px;
-}
-.plan-list--plain {
-  list-style: none;
-  padding-left: 0;
-}
-.plan-label {
-  font-size: 0.85em;
-  color: var(--vscode-descriptionForeground);
-}
-.plan-stages {
-  margin: 0;
-  padding-left: 20px;
-}
-.plan-stage + .plan-stage {
-  margin-top: 10px;
-}
-.plan-stage-title {
-  margin: 0;
-  font-size: 1em;
-}
-.plan-stage-meta {
-  margin-top: 4px;
-}
-.plan-table-wrap {
-  overflow-x: auto;
-}
-.plan-table {
-  width: 100%;
-  border-collapse: collapse;
-}
-.plan-table th,
-.plan-table td {
-  padding: 2px 8px 2px 0;
-  text-align: left;
-  vertical-align: top;
-  overflow-wrap: anywhere;
-}
-.plan-table th {
-  font-size: 0.85em;
-  color: var(--vscode-descriptionForeground);
-}
 
 .plan-decision {
   margin-top: 10px;
 }
-.plan-question {
+.plan-question,
+.plan-decision-record dt {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
@@ -198,18 +180,24 @@
   color: var(--vscode-input-foreground);
   background: var(--vscode-input-background);
 }
+
+/* What the user decided: the plan card's list, and the Plan options card once answered. */
 .plan-decisions-list {
   margin: 0;
   padding-left: 20px;
 }
-.plan-decision-values {
+.plan-decision-values,
+.plan-decision-record dd {
   display: block;
+  overflow-wrap: anywhere;
+}
+.plan-decision-record dd {
+  margin: 0;
+}
+.plan-decision-item--orphan {
+  color: var(--vscode-descriptionForeground);
 }
 
-.plan-footer {
-  padding: 6px 8px;
-  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
-}
 .plan-approve {
   display: flex;
   flex-wrap: wrap;
@@ -223,27 +211,10 @@
   color: var(--vscode-editorWarning-foreground);
 }
 .plan-approvals {
-  margin: 4px 0 0;
+  margin: 0;
   padding-left: 18px;
   font-size: 0.9em;
   color: var(--vscode-descriptionForeground);
-}
-
-.plan-update {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 6px 10px;
-  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
-  border-radius: 4px;
-}
-.plan-update-summary {
-  overflow-wrap: anywhere;
-}
-.plan-update-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .diagram {

@@ -56,9 +56,13 @@ function modeParagraph(mode: Mode, planLocked: boolean): string {
       return planLocked
         ? 'This is Plan mode. The session is read-only. The plan is locked for this turn: answer ' +
             'the question. The plan cannot be changed, so do not call the `submit_plan` tool.'
-        : 'This is Plan mode. The session is read-only. Produce or revise the plan by calling the ' +
-            '`submit_plan` tool with the complete plan. Answer questions about the plan in chat ' +
-            'without calling the tool. Never start implementing.';
+        : 'This is Plan mode. The session is read-only. Investigate first. When the plan depends on ' +
+            "a choice that is the user's to make (an approach, the scope, a trade-off), put it to the " +
+            'user with the `AskUserQuestion` tool before you write the plan, wait for the answer, and ' +
+            'build the plan on it; do not leave such a choice as a decision point or an open question ' +
+            'inside the plan. Then produce or revise the plan by calling the `submit_plan` tool with ' +
+            'the complete plan. Answer questions about the plan in chat without calling the tool. ' +
+            'Never start implementing.';
     case 'agent':
       return 'This is Agent mode. Changes are checkpointed and reviewed by the user afterwards.';
   }

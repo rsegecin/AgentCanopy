@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { MessagePart, ToolCallView } from '../../../shared';
 import {
@@ -269,9 +269,12 @@ describe('web, task, question and MCP cards', () => {
     expect(toggleOf('my_server: a__b')).toBeTruthy();
   });
 
-  it('shows a submitted plan', () => {
-    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' })]);
+  it('shows a plan submission that is still running, and hides it once it is done', () => {
+    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' }, { status: 'running' })]);
     expect(toggleOf('Submitted a plan')).toBeTruthy();
+    cleanup();
+    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' })]);
+    expect(screen.queryByRole('button', { name: 'Submitted a plan' })).toBeNull();
   });
 
   it('falls back to the generic card for a malformed MCP name and for unknown tools', () => {

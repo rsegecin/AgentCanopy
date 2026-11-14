@@ -46,7 +46,7 @@ describe('MessageList', () => {
     expect(screen.getByText(/Ask a question, plan a change/)).toBeTruthy();
   });
 
-  it('renders a user message with line breaks preserved, a mode badge and attachment chips', () => {
+  it('renders a user message with line breaks preserved, a Plan request label and attachment chips', () => {
     renderWithHost(
       <MessageList />,
       makeState({
@@ -69,12 +69,28 @@ describe('MessageList', () => {
     const article = screen.getByRole('article', { name: 'You' });
     const text = article.querySelector('.user-text');
     expect(text?.textContent).toBe('line one\nline two');
-    expect(within(article).getByText('Plan')).toBeTruthy();
+    expect(within(article).getByText('Plan request')).toBeTruthy();
+    expect(within(article).queryByText('Plan')).toBeNull();
     expect(within(article).getByText('a.ts')).toBeTruthy();
     expect(within(article).getByText('src')).toBeTruthy();
     expect(within(article).getByText('b.ts:3-9')).toBeTruthy();
     expect(within(article).getByText('Problems in c.ts')).toBeTruthy();
     expect(within(article).getByText('Image dddddd · PNG · 121 KB')).toBeTruthy();
+  });
+
+  it('shows the mode as a badge on a user message that is not a plan request', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        active: makeActive('c1', {
+          messages: [userMessage('u1', 'what?'), userMessage('u2', 'do it', { mode: 'agent' })],
+        }),
+      }),
+    );
+    const [ask, agent] = screen.getAllByRole('article', { name: 'You' });
+    expect(within(ask as HTMLElement).getByText('Ask')).toBeTruthy();
+    expect(within(agent as HTMLElement).getByText('Agent')).toBeTruthy();
+    expect(screen.queryByText('Plan request')).toBeNull();
   });
 
   it('renders every part kind', () => {

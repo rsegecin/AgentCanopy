@@ -7,8 +7,8 @@ import { Composer } from '../features/chat/Composer';
 import { MessageList } from '../features/chat/MessageList';
 import { PromptPart } from '../features/chat/PromptCards';
 import { registerPartRenderer } from '../features/chat/registry';
+import { PlanUpdateCard } from '../features/plan/PlanUpdateCard';
 import { HistoryList } from '../features/history/HistoryList';
-import { PlanView } from '../features/plan/PlanView';
 import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDock';
 import {
   assistantMessage,
@@ -16,6 +16,7 @@ import {
   makeCheckpoint,
   makeConfigChange,
   makePermissionPrompt,
+  makePlanContent,
   makePlanDoc,
   makePlanVersion,
   makeProvider,
@@ -306,7 +307,7 @@ describe('focus after the focused control goes away', () => {
             : doc,
         }),
       });
-    const { init } = renderWithHost(<PlanView />, withAnswer(false));
+    const { init } = renderWithHost(<MessageList />, withAnswer(false));
     const radio = screen.getByRole('radio', { name: 'Large' });
     radio.focus();
     fireEvent.click(radio);
@@ -325,7 +326,7 @@ describe('focus after the focused control goes away', () => {
       ],
     };
     const { init } = renderWithHost(
-      <PlanView />,
+      <MessageList />,
       makeState({ active: makeActive('c1', { plan: doc }) }),
     );
     const field = screen.getByRole('textbox', { name: 'Your answer to: Anything else?' });
@@ -335,6 +336,85 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement).toBe(
       screen.getByRole('textbox', { name: 'Your answer to: Anything else?' }),
     );
+  });
+
+  describe('plan cards in the chat', () => {
+    let off: () => void;
+    beforeEach(() => {
+      off = registerPartRenderer('plan-update', PlanUpdateCard);
+    });
+    afterEach(() => {
+      off();
+    });
+
+    const part = (version: number) => ({
+      kind: 'plan-update' as const,
+      planId: 'plan1' as never,
+      version,
+    });
+    const version = (n: number, hash: string, extra: { restoredFrom?: number } = {}) =>
+      makePlanVersion(n, {
+        contentHash: hash,
+        content: makePlanContent({ title: `Title ${String(n)}` }),
+        ...extra,
+      });
+    const chat = (doc: PlanDoc, partVersions: number[]): ViewState =>
+      makeState({
+        active: makeActive('c1', {
+          plan: doc,
+          messages: partVersions.map((v) => assistantMessage(`a${String(v)}`, [part(v)])),
+        }),
+      });
+    const slots = () => Array.from(document.querySelectorAll<HTMLElement>('.plan-card-slot'));
+
+    it('keeps focus in the card slot when a newer part turns the current card into an older one', () => {
+      const { init } = renderWithHost(
+        <MessageList />,
+        chat(makePlanDoc({ versions: [version(1, 'a')] }), [1]),
+      );
+      screen.getByRole('button', { name: 'Title 1, open version 1' }).focus();
+      init(chat(makePlanDoc({ versions: [version(1, 'a'), version(2, 'b')] }), [1, 2]), 1);
+      expect(document.querySelectorAll('.plan-card--older')).toHaveLength(1);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[0]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('keeps focus in an older card when Restore this version goes away', () => {
+      const before = makePlanDoc({ versions: [version(1, 'a'), version(2, 'b'), version(3, 'c')] });
+      const after = makePlanDoc({
+        versions: [...before.versions, version(4, 'b', { restoredFrom: 2 })],
+      });
+      const { init } = renderWithHost(<MessageList />, chat(before, [1, 2, 3]));
+      screen.getByRole('button', { name: 'Restore this version (version 2)' }).focus();
+      init(chat(after, [1, 2, 3]), 1);
+      expect(screen.queryByRole('button', { name: 'Restore this version (version 2)' })).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[1]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('keeps focus in the first older card when its whole actions row goes away', () => {
+      const before = makePlanDoc({ versions: [version(1, 'a'), version(2, 'b')] });
+      const after = makePlanDoc({
+        versions: [...before.versions, version(3, 'a', { restoredFrom: 1 })],
+      });
+      const { init } = renderWithHost(<MessageList />, chat(before, [1, 2]));
+      screen.getByRole('button', { name: 'Restore this version (version 1)' }).focus();
+      init(chat(after, [1, 2]), 1);
+      expect(document.querySelector('.plan-card--older .plan-card-actions')).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[0]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('moves focus from the synthetic card to the current card when a part for the plan arrives', () => {
+      const doc = makePlanDoc({ versions: [version(1, 'a')] });
+      const { init } = renderWithHost(<MessageList />, chat(doc, []));
+      screen.getByRole('button', { name: 'Title 1, open version 1' }).focus();
+      expect(document.querySelectorAll('.plan-card-slot')).toHaveLength(0);
+      init(chat(doc, [1]), 1);
+      const title = document.querySelector('.plan-card--current .plan-card-open');
+      expect(title).not.toBeNull();
+      expect(document.activeElement).toBe(title);
+    });
   });
 
   it('returns focus to the composer when a toast is dismissed', () => {
@@ -388,19 +468,9 @@ describe('focus when the tab changes', () => {
       }),
     });
 
-  it('moves to the new panel when the button that opened it was removed with the old tab', () => {
-    renderWithHost(<App />, planState());
-    const open = screen.getByRole('button', { name: 'Open plan' });
-    open.focus();
-    fireEvent.click(open);
-    const panel = screen.getByRole('tabpanel', { name: 'Plan' });
-    expect(panel.hasAttribute('hidden')).toBe(false);
-    expect(document.activeElement).toBe(panel);
-  });
-
   it('does not move focus away from the tab the user pressed', () => {
     renderWithHost(<App />, planState());
-    const tab = screen.getByRole('tab', { name: 'Plan' });
+    const tab = screen.getByRole('tab', { name: 'History' });
     tab.focus();
     fireEvent.click(tab);
     expect(document.activeElement).toBe(tab);
@@ -468,7 +538,7 @@ describe('keyboard, names, roles and states', () => {
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
-    for (const tab of ['Plan', 'Checkpoints', 'History', 'Chat']) {
+    for (const tab of ['Checkpoints', 'History', 'Chat']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll('[tabindex]')) {
         expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(
@@ -491,7 +561,7 @@ describe('keyboard, names, roles and states', () => {
       }),
     );
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(4);
+    expect(tabs).toHaveLength(3);
     expect(tabs.filter((t) => t.getAttribute('tabindex') === '0')).toHaveLength(1);
     for (const tab of tabs) {
       const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
@@ -500,7 +570,7 @@ describe('keyboard, names, roles and states', () => {
     }
     // The arrow keys move through all of them.
     const chat = screen.getByRole('tab', { name: 'Chat' });
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < 3; i++) {
       fireEvent.keyDown(document.activeElement ?? chat, { key: 'ArrowRight' });
     }
     expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
@@ -607,7 +677,7 @@ describe('keyboard, names, roles and states', () => {
         banners: [{ id: 'b', level: 'info', text: 'FYI', dismissible: true }],
       }),
     );
-    for (const tab of ['Chat', 'Plan', 'Checkpoints', 'History']) {
+    for (const tab of ['Chat', 'Checkpoints', 'History']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll<HTMLElement>('button, input, select, textarea')) {
         const byIds = (el.getAttribute('aria-labelledby') ?? '')
@@ -695,27 +765,5 @@ describe('scrollable boxes and text alternatives', () => {
     for (const name of ['Input', 'Result']) {
       expect(screen.getByRole('group', { name }).getAttribute('tabindex')).toBe('0');
     }
-  });
-
-  it('makes the relevant-files table of a plan a named, focusable region', () => {
-    renderWithHost(<PlanView />, makeState({ active: makeActive('c1', { plan: makePlanDoc() }) }));
-    const region = screen.getByRole('region', { name: 'Relevant files table' });
-    expect(region.getAttribute('tabindex')).toBe('0');
-    expect(within(region).getByRole('table')).toBeTruthy();
-  });
-
-  it('describes the stage diagram with the stage list', async () => {
-    renderWithHost(
-      <PlanView />,
-      makeState({
-        active: makeActive('c1', {
-          plan: makePlanDoc({ versions: [makePlanVersion(1)] }),
-        }),
-      }),
-    );
-    const picture = await screen.findByRole('img', { name: 'Stage dependencies' });
-    expect(document.getElementById(picture.getAttribute('aria-describedby') ?? '')?.tagName).toBe(
-      'OL',
-    );
   });
 });

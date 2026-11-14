@@ -1,6 +1,6 @@
 // Serves the built webview in a plain browser with sample state, under the same Content Security
 // Policy the extension uses. It exists to look at the UI and to check that it really renders
-// (Markdown, code, Mermaid, cards, plan view) without starting VS Code.
+// (Markdown, code, Mermaid, cards, plan cards) without starting VS Code.
 //
 //   node scripts/preview-webview.mjs            serve on http://127.0.0.1:<port> until Ctrl+C
 //   node scripts/preview-webview.mjs --check    render in headless Chrome, write screenshots and a
@@ -47,7 +47,7 @@ const plan = {
     createdAt: now - (2 - version) * 60000,
     contentHash: `hash${version}`,
     content: shared.PlanContentSchema.parse({
-      title: 'Add rate limiting to the public API',
+      title: version === 1 ? 'Rate limiting for the API' : 'Add rate limiting to the public API',
       objective: 'Protect the API from bursts without affecting normal clients.',
       requirements: ['Limit by API key', 'Return 429 with a Retry-After header'],
       analysis:
@@ -126,14 +126,27 @@ const plan = {
   })),
   decisions: [
     {
+      targetId: 'Which clients need a higher limit?',
+      kind: 'interactive-question',
+      values: ['Internal services'],
+      decidedAt: now - 55000,
+    },
+    {
       targetId: 'q-store',
       kind: 'decision-point',
       values: ['redis'],
-      decidedAt: now,
+      decidedAt: now - 40000,
+      planVersion: 2,
+    },
+    {
+      targetId: 'q-limit',
+      kind: 'open-question',
+      values: ['600 requests per minute'],
+      decidedAt: now - 38000,
       planVersion: 2,
     },
   ],
-  approvals: [],
+  approvals: [{ version: 2, contentHash: 'hash2', approvedAt: now - 30000, executionTurnId: 't3' }],
 };
 
 const tool = (id, name, input, extra = {}) => ({
@@ -234,7 +247,15 @@ const state = {
         endedAt: now - 100000,
         status: 'completed',
       },
-      { id: 't2', mode: 'plan', model: 'sonnet', startedAt: now - 60000, status: 'running' },
+      {
+        id: 't2',
+        mode: 'plan',
+        model: 'sonnet',
+        startedAt: now - 60000,
+        endedAt: now - 31000,
+        status: 'completed',
+      },
+      { id: 't3', mode: 'agent', model: 'sonnet', startedAt: now - 30000, status: 'running' },
     ],
     messages: [
       {
@@ -294,19 +315,61 @@ const state = {
         turnId: 't2',
         createdAt: now - 50000,
         parts: [
-          { kind: 'plan-update', planId: 'p1', version: 2 },
           {
             kind: 'notice',
             level: 'warning',
             text: "A Claude Code plugin is loaded (example). Plugins run outside AgentCanopy's read-only guarantee.",
           },
+          tool('toolu_p1', 'Read', { file_path: 'src/server/rate-limit.ts' }),
           tool(
             'toolu_3',
             'AskUserQuestion',
-            { questions: [] },
-            { status: 'awaiting-approval', approval: undefined, endedAt: undefined },
+            {
+              questions: [
+                {
+                  question: 'Which clients need a higher limit?',
+                  header: 'Clients',
+                  multiSelect: false,
+                  options: [{ label: 'Internal services' }, { label: 'Partners' }],
+                },
+              ],
+            },
+            { approval: 'user', resultPreview: 'Internal services' },
           ),
           { kind: 'prompt', promptId: 'pr1' },
+          tool('toolu_p2', 'Grep', { pattern: 'rateLimit', path: 'src' }),
+          tool('toolu_s1', 'mcp__agentcanopy__submit_plan', { plan: '# Plan' }),
+          { kind: 'plan-update', planId: 'p1', version: 1 },
+          { kind: 'text', text: 'Thanks. I added a Redis stage and wrote the choices down.' },
+          tool('toolu_s2', 'mcp__agentcanopy__submit_plan', { plan: '# Plan' }),
+          { kind: 'plan-update', planId: 'p1', version: 2 },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'm5',
+        turnId: 't3',
+        createdAt: now - 30000,
+        text: 'Execute plan version 2',
+        mode: 'agent',
+        attachments: [],
+      },
+      {
+        role: 'assistant',
+        id: 'm6',
+        turnId: 't3',
+        createdAt: now - 25000,
+        parts: [
+          tool(
+            'toolu_e1',
+            'Edit',
+            {
+              file_path: 'src/server/rate-limit.ts',
+              old_string: 'const LIMIT = 60;',
+              new_string: 'const LIMIT = 600;',
+            },
+            { approval: 'policy' },
+          ),
           tool(
             'toolu_4',
             'Read',
@@ -323,15 +386,16 @@ const state = {
         conversationId: conv,
         turnId: 't2',
         toolCallId: 'toolu_3',
-        createdAt: now,
-        state: 'pending',
+        createdAt: now - 56000,
+        state: 'answered',
+        answered: { 'Which clients need a higher limit?': 'Internal services' },
         displayHash: 'h1',
         kind: 'question',
         questions: [
           {
             question: 'Which clients need a higher limit?',
             header: 'Clients',
-            multiSelect: true,
+            multiSelect: false,
             options: [
               { label: 'Internal services', description: 'Calls from our own backends' },
               { label: 'Partners', description: 'Keys issued to partners' },
@@ -342,7 +406,7 @@ const state = {
       {
         id: 'pr2',
         conversationId: conv,
-        turnId: 't2',
+        turnId: 't3',
         toolCallId: 'toolu_4',
         createdAt: now,
         state: 'pending',
@@ -675,6 +739,25 @@ function page(origin, query) {
       state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
       state.defaults = { ...state.defaults, mode: 'agent' };
     }
+    // ?plan=pending: the plan was just submitted, its questions are open and no turn runs, while the
+    // configuration changes are still pending, so Approve and Execute is disabled for that reason.
+    // ?plan=ready: the same, and the configuration changes are settled too, so Approve and Execute is enabled.
+    const planVariant = params.get('plan');
+    if ((planVariant === 'pending' || planVariant === 'ready') && state.active) {
+      const a = state.active;
+      a.messages = a.messages.filter((m) => m.turnId !== 't3');
+      a.turns = a.turns
+        .filter((t) => t.id !== 't3')
+        .map((t) => ({ ...t, status: 'completed', endedAt: t.endedAt ?? Date.now() }));
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      a.activity = null;
+      a.plan = {
+        ...a.plan,
+        approvals: [],
+        decisions: a.plan.decisions.filter((d) => d.kind === 'interactive-question'),
+      };
+      if (planVariant === 'ready') state.review = { ...state.review, configChanges: [], busy: false };
+    }
     const sent = [];
     window.__sent = sent;
     // ?collapsed=1: the user has collapsed the changes card.
@@ -738,7 +821,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?tab=plan, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?busy=1, ?empty=1, ?collapsed=1)`,
   );
 } else {
   const chrome =
@@ -768,7 +851,14 @@ if (!process.argv.includes('--check')) {
       child.on('close', () => done(stdout));
     });
   const views = [
-    { name: 'chat-dark', query: '?tab=chat', size: '520,1900' },
+    { name: 'chat-dark', query: '?tab=chat', size: '520,3200' },
+    { name: 'chat-plan-pending-dark', query: '?tab=chat&plan=pending', size: '520,2600' },
+    { name: 'chat-plan-ready-dark', query: '?tab=chat&plan=ready', size: '520,2600' },
+    {
+      name: 'chat-plan-pending-panel-light',
+      query: '?tab=chat&plan=pending&theme=light&kind=panel',
+      size: '1100,1400',
+    },
     { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
     { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
     { name: 'chat-changes-busy-dark', query: '?tab=chat&busy=1', size: '520,900' },
@@ -778,8 +868,6 @@ if (!process.argv.includes('--check')) {
       query: '?tab=chat&theme=light&kind=panel',
       size: '1100,900',
     },
-    { name: 'plan-dark', query: '?tab=plan', size: '520,3600' },
-    { name: 'plan-panel-light', query: '?tab=plan&theme=light&kind=panel', size: '1100,2600' },
     { name: 'history-light', query: '?tab=history&theme=light', size: '520,700' },
     { name: 'checkpoints-dark', query: '?tab=checkpoints', size: '520,700' },
     {

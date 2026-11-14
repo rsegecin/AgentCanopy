@@ -3,7 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { Banners } from '../features/banners/Banners';
 import { Composer, MessageList } from '../features/chat';
 import { HistoryList } from '../features/history/HistoryList';
-import { PlanView } from '../features/plan';
+import '../features/plan';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
 import { ChangesDock } from '../features/review/ChangesDock';
 import { Icon, IconButton } from './components';
@@ -17,26 +17,22 @@ import type { Tab } from './ui-state';
 
 const ALL_TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
-  { id: 'plan', label: 'Plan' },
   { id: 'checkpoints', label: 'Checkpoints' },
   { id: 'history', label: 'History' },
 ];
 
-/** Which optional tabs exist, and the tab in use: a tab that has gone away falls back to Chat. */
-function useCurrentTab(): { tab: Tab; hasPlan: boolean; hasCheckpoints: boolean } {
+/** Whether the optional tab exists, and the tab in use: a tab that has gone away falls back to Chat. */
+function useCurrentTab(): { tab: Tab; hasCheckpoints: boolean } {
   const stored = useUi((s) => s.tab);
-  const hasPlan = useViewState((s) => s.active?.plan != null);
   const hasCheckpoints = useViewState((s) => s.checkpoints.length > 0 || s.restorePreview !== null);
-  const gone = (stored === 'plan' && !hasPlan) || (stored === 'checkpoints' && !hasCheckpoints);
-  return { tab: gone ? 'chat' : stored, hasPlan, hasCheckpoints };
+  const gone = stored === 'checkpoints' && !hasCheckpoints;
+  return { tab: gone ? 'chat' : stored, hasCheckpoints };
 }
 
 function Tabs({ idPrefix }: { idPrefix: string }) {
   const { ui } = useApp();
-  const { tab, hasPlan, hasCheckpoints } = useCurrentTab();
-  const tabs = ALL_TABS.filter(
-    (t) => (t.id !== 'plan' || hasPlan) && (t.id !== 'checkpoints' || hasCheckpoints),
-  );
+  const { tab, hasCheckpoints } = useCurrentTab();
+  const tabs = ALL_TABS.filter((t) => t.id !== 'checkpoints' || hasCheckpoints);
 
   const select = (next: Tab, focus: boolean) => {
     ui.setTab(next);
@@ -83,22 +79,17 @@ export function App() {
   const { store, ui } = useApp();
   const post = usePost();
   const ready = useStoreReady();
-  const { tab, hasPlan, hasCheckpoints } = useCurrentTab();
+  const { tab, hasCheckpoints } = useCurrentTab();
   const idPrefix = useId();
 
   useEffect(() => {
     return store.onEvent((event) => {
       if (event.kind === 'show-tab') {
-        if (event.tab === 'review') {
-          // The host may still ask for the Review tab; its content now sits under the chat.
-          ui.setTab('chat');
-        } else if (
-          event.tab === 'chat' ||
-          event.tab === 'history' ||
-          event.tab === 'plan' ||
-          event.tab === 'checkpoints'
-        ) {
+        if (event.tab === 'chat' || event.tab === 'history' || event.tab === 'checkpoints') {
           ui.setTab(event.tab);
+        } else {
+          // The host may still ask for the Plan or Review tab; their content now sits in the chat.
+          ui.setTab('chat');
         }
       } else if (event.kind === 'focus-composer' || event.kind === 'prefill-composer') {
         ui.setTab('chat');
@@ -186,18 +177,6 @@ export function App() {
             </>
           )}
         </div>
-        {hasPlan && (
-          <div
-            id={`${idPrefix}-panel-plan`}
-            className="tabpanel"
-            role="tabpanel"
-            tabIndex={-1}
-            aria-labelledby={`${idPrefix}-tab-plan`}
-            hidden={tab !== 'plan'}
-          >
-            {tab === 'plan' && <PlanView />}
-          </div>
-        )}
         {hasCheckpoints && (
           <div
             id={`${idPrefix}-panel-checkpoints`}
