@@ -77,6 +77,8 @@ const AGENT_ASK = [
   'Glob',
   'WebFetch',
   'WebSearch',
+  'Monitor',
+  'Skill',
 ];
 
 async function json(name: string): Promise<unknown> {
@@ -187,6 +189,61 @@ describe('prepareInvocation args', () => {
       sandbox: { enabled: true, autoAllowBashIfSandboxed: false },
     });
   });
+
+  it('agent turn: the ask list names Monitor and Skill', async () => {
+    await prepareInvocation(
+      request({
+        mode: 'agent',
+        profile: {
+          kind: 'agent',
+          allowRules: [],
+          alwaysAskCommands: false,
+          sandbox: false,
+          sandboxLocked: false,
+        },
+      }),
+    );
+    const settings = (await json('settings.json')) as { permissions: { ask: string[] } };
+    expect(settings.permissions.ask).toContain('Monitor');
+    expect(settings.permissions.ask).toContain('Skill');
+  });
+
+  it.each([
+    {
+      sandbox: true,
+      sandboxLocked: true,
+      expected: { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false },
+    },
+    {
+      sandbox: true,
+      sandboxLocked: false,
+      expected: { enabled: true, autoAllowBashIfSandboxed: false },
+    },
+    { sandbox: false, sandboxLocked: true, expected: undefined },
+    { sandbox: false, sandboxLocked: false, expected: undefined },
+  ])(
+    'agent turn: sandbox $sandbox, locked $sandboxLocked',
+    async ({ sandbox, sandboxLocked, expected }) => {
+      await prepareInvocation(
+        request({
+          mode: 'agent',
+          profile: {
+            kind: 'agent',
+            allowRules: ['Bash(npm test)'],
+            alwaysAskCommands: false,
+            sandbox,
+            sandboxLocked,
+          },
+        }),
+      );
+      const settings = (await json('settings.json')) as Record<string, unknown>;
+      // Nothing else of the settings depends on the lock.
+      expect(settings).toEqual({
+        permissions: { ask: AGENT_ASK, allow: ['Bash(npm test)'] },
+        ...(expected === undefined ? {} : { sandbox: expected }),
+      });
+    },
+  );
 
   it('agent turn: always ask drops the allow rules; empty rules omit the key', async () => {
     const asking = request({

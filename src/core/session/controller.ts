@@ -131,7 +131,7 @@ type SendMessage = Extract<WebviewMessage, { type: 'turn.send' }>;
 /** What differs when a turn is started by approving a plan instead of by the composer. */
 interface TurnOptions {
   /** Runs after every check has passed and before anything is created. Returns the prompt, or false to stop. */
-  gate?: () => Promise<{ promptText: string } | false>;
+  gate?: (decided: { auto: boolean }) => Promise<{ promptText: string } | false>;
   /** Called once the turn exists and has been started. */
   onStarted?: (run: TurnRun) => void;
   /** The message does not take the view's queued attachments. */
@@ -216,6 +216,17 @@ class Controller implements AppController {
   private readonly sendingNow = new Set<ConversationId>();
   /** Conversations whose side question is being created: its branch exists, its run may not yet. */
   private readonly asking = new Set<ConversationId>();
+  /** Views with the dialog that turns Auto on open, so a view asks for one at a time. */
+  private readonly autoDialogs = new Set<string>();
+  /**
+   * Conversations whose Auto is off although the store may still say on: an off is being written, or
+   * its write failed (the store then keeps `true`, in memory and on disk). For them Auto is off in
+   * the whole host, whatever the store says, until a write of `agentAuto: false` succeeds or Auto is
+   * turned on again through the dialog. In memory only: after a reload the disk is the truth.
+   */
+  private readonly autoOffUnsaved = new Set<ConversationId>();
+  /** How many times Auto was turned off per conversation, so an on that was overtaken by an off keeps it off. */
+  private readonly autoOffs = new Map<ConversationId, number>();
   /**
    * Bytes of pasted images by id (the content hash), kept only while some view's draft or a queued
    * message refers to them; a turn takes its own copies when the message is sent.
@@ -242,7 +253,7 @@ class Controller implements AppController {
     this.observers = deps.observers ?? [];
     this.fileSearch = createFileSearch({ logger: deps.logger });
     this.state = new SessionState(
-      () => this.store?.list() ?? [],
+      () => (this.store?.list() ?? []).map((meta) => this.shownMeta(meta)),
       (view) => this.syncViewScope(view),
       (runtime, ops) => this.forwardAside(runtime, ops),
     );
@@ -360,9 +371,43 @@ class Controller implements AppController {
       trusted: env.trusted(),
       folders: env.folders().map((folder) => ({ key: folder.key, name: folder.name })),
       defaults: { mode: settings.defaultMode, model: settings.defaultModel },
+      agentAuto: { offered: settings.agentAuto, commands: !settings.alwaysAskCommands },
       models: provider ? provider.listModels(settings.customModels) : [],
       banners: this.banners(status),
     });
+    this.settleAuto(settings.agentAuto);
+  }
+
+  /**
+   * Auto after the settings or the folders changed. With the setting off it is cleared everywhere at
+   * once (every draft, every loaded conversation, and every stored one in the background), so that
+   * turning the setting on again arms nothing without a new dialog. A draft whose folder is no longer
+   * open loses it too. Never throws.
+   */
+  private settleAuto(offered: boolean): void {
+    const open = new Set(this.deps.env.folders().map((folder) => folder.key));
+    for (const view of this.state.views.values()) {
+      if (view.draftAuto && (!offered || !open.has(view.draftAuto.folder))) {
+        this.clearDraftAuto(view);
+      }
+    }
+    if (offered) return;
+    for (const runtime of this.state.runtimes.values()) this.forceAutoOff(runtime);
+    const { store } = this;
+    if (!store) return;
+    for (const meta of store.list()) {
+      if (meta.agentAuto !== true) continue;
+      const { id } = meta;
+      this.markAutoOff(id);
+      this.updateMeta(store, id, { agentAuto: false }).catch((error: unknown) => {
+        this.logger.warn('Auto could not be turned off in a stored conversation', {
+          error: redact(String(error)),
+        });
+        // Off in the host whatever the store says (the id stays in `autoOffUnsaved`).
+        const current = this.state.runtimes.get(id);
+        if (current) this.forceAutoOff(current);
+      });
+    }
   }
 
   async refreshProvider(): Promise<void> {
@@ -445,6 +490,8 @@ class Controller implements AppController {
     this.storageDir = dir;
     this.store = store;
     this.plans = plans;
+    // Conversations stored while the setting was on keep their Auto only while it is on.
+    if (!this.deps.env.settings().agentAuto) this.settleAuto(false);
   }
 
   /**
@@ -844,7 +891,12 @@ class Controller implements AppController {
    *   exists only in the editor, not in the webview);
    * - copy text to the clipboard, open files inside the workspace folders and links after the editor's
    *   own confirmation;
-   * - rename, change the mode and model of, fork and open conversations.
+   * - rename, change the mode and model of, fork and open conversations;
+   * - turn Agent mode's Auto off, for a conversation or for its own draft, at any time and without a
+   *   dialog (it only takes approvals away), and ask for the dialog that turns it on again and again;
+   *   send turns and queue messages in a conversation where the user turned Auto on, which then run
+   *   commands and edits inside the folder without a prompt. It cannot turn Auto on: only the native
+   *   dialog does, between turns.
    */
   private async handle(view: ViewRecord, message: WebviewMessage): Promise<void> {
     switch (message.type) {
@@ -880,8 +932,7 @@ class Controller implements AppController {
         await this.changeConversation(view, message.conversationId, { model: message.model });
         return;
       case 'conversation.setAuto':
-        // The next phase implements Auto.
-        this.state.toast(view, 'info', TEXT.notAvailableYet);
+        await this.setAuto(view, message.conversationId, message.on);
         return;
       case 'conversation.fork':
         await this.forkConversation(view, message.conversationId, message.messageId);
@@ -1056,7 +1107,7 @@ class Controller implements AppController {
         if (raced) return raced;
         this.state.previews.set(id, previewOf(data.messages));
         return this.state.addRuntime({
-          meta: data.meta,
+          meta: this.shownMeta(data.meta),
           turns: data.turns,
           messages: data.messages,
           prompts: data.prompts,
@@ -1163,11 +1214,257 @@ class Controller implements AppController {
     id: ConversationId,
     patch: Parameters<ConversationStore['updateMeta']>[1],
   ): Promise<void> {
-    const next = await store.updateMeta(id, patch);
+    const next = await this.writeMeta(store, id, patch);
     const runtime = this.state.runtimes.get(id);
     if (runtime) this.state.mutate(runtime, [{ op: 'set', path: ['meta'], value: next }]);
     this.state.refreshSummaries();
     this.syncAllCheckpoints();
+  }
+
+  /**
+   * Writes a meta patch and resolves to the meta the host shows (`shownMeta`). For a conversation
+   * whose Auto is off but not saved, a patch that does not set Auto also writes it off (a retry). A
+   * successful write of off ends that state; so does a successful write of on (the dialog), unless
+   * Auto was turned off again while it was written.
+   */
+  private async writeMeta(
+    store: ConversationStore,
+    id: ConversationId,
+    patch: Parameters<ConversationStore['updateMeta']>[1],
+  ): Promise<ConversationMeta> {
+    const offs = this.autoOffs.get(id) ?? 0;
+    const retry = this.autoOffUnsaved.has(id) && patch.agentAuto === undefined;
+    const written = retry ? { ...patch, agentAuto: false } : patch;
+    const next = await store.updateMeta(id, written);
+    if (
+      written.agentAuto === false ||
+      (written.agentAuto === true && (this.autoOffs.get(id) ?? 0) === offs)
+    ) {
+      this.autoOffUnsaved.delete(id);
+    }
+    return this.shownMeta(next);
+  }
+
+  /** Whether Agent mode's Auto is on for a conversation, for everything in the host. */
+  private autoOn(meta: ConversationMeta | undefined): boolean {
+    return meta?.agentAuto === true && !this.autoOffUnsaved.has(meta.id);
+  }
+
+  /** A meta as it may leave the store for memory or a view: Auto off when the host has it off. */
+  private shownMeta(meta: ConversationMeta): ConversationMeta {
+    return meta.agentAuto === true && this.autoOffUnsaved.has(meta.id)
+      ? { ...meta, agentAuto: false }
+      : meta;
+  }
+
+  /** Auto is off for this conversation from now on, in the host, until a write says so in the store. */
+  private markAutoOff(id: ConversationId): void {
+    this.autoOffUnsaved.add(id);
+    this.autoOffs.set(id, (this.autoOffs.get(id) ?? 0) + 1);
+    // History shows it off at once, and keeps showing it off if the write fails.
+    this.state.refreshSummaries();
+  }
+
+  // ---- Agent mode's Auto ---------------------------------------------------------------------------------
+
+  /**
+   * Turns Auto on or off for a conversation, or for the view's draft (no id). Off always works, at
+   * once and without a dialog, also under a running turn. On only works between turns and only
+   * through the native dialog, and everything checked before the dialog is checked again after it.
+   */
+  private async setAuto(
+    view: ViewRecord,
+    id: ConversationId | undefined,
+    on: boolean,
+  ): Promise<void> {
+    if (!on) {
+      if (id === undefined) this.clearDraftAuto(view);
+      else await this.turnAutoOff(view, id);
+      return;
+    }
+    const target = this.autoTarget(view, id);
+    if ('refused' in target) {
+      if (target.refused !== undefined) this.state.toast(view, 'warning', target.refused);
+      return;
+    }
+    const scope = { navigation: view.navigation, folder: target.folder.key };
+    // The settings the dialog's text names: confirmed for another text, it is refused.
+    const named = this.autoDialogSettings();
+    this.autoDialogs.add(view.id);
+    let confirmed = false;
+    try {
+      confirmed = await this.deps.ui.confirm({
+        title:
+          id === undefined
+            ? 'Turn on Auto for the new conversation?'
+            : 'Turn on Auto for this conversation?',
+        detail: this.autoDialogDetail(target.title, target.folder),
+        confirmLabel: 'Turn On Auto',
+      });
+    } catch (error) {
+      this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+    } finally {
+      this.autoDialogs.delete(view.id);
+    }
+    if (!confirmed || this.disposed || view.disposed) return;
+    // The dialog was open for a while: everything that allowed it must still hold.
+    const again = this.autoTarget(view, id, { afterDialog: true });
+    const unchanged =
+      !('refused' in again) &&
+      again.folder.key === scope.folder &&
+      (id !== undefined || view.navigation === scope.navigation) &&
+      this.autoDialogSettings() === named;
+    if (!unchanged) {
+      this.state.toast(view, 'warning', TEXT.autoChangedDuringDialog);
+      return;
+    }
+    if (id === undefined) {
+      view.draftAuto = { folder: again.folder.key };
+      view.apply([{ op: 'set', path: ['draftAgentAuto'], value: true }]);
+      return;
+    }
+    const { store } = this;
+    if (!store) return;
+    try {
+      await this.updateMeta(store, id, { agentAuto: true });
+    } catch (error) {
+      this.logger.warn('Auto could not be turned on', { error: redact(String(error)) });
+      // Whatever the store kept (it may still say on), Auto is off for the host: the next meta
+      // write retries the off, and on again needs the dialog again.
+      this.markAutoOff(id);
+      const current = this.state.runtimes.get(id);
+      if (current) this.forceAutoOff(current);
+      this.state.toast(view, 'warning', TEXT.autoNotSaved);
+    }
+  }
+
+  /**
+   * What turning Auto on would apply to, or why it cannot be turned on now (`refused` is undefined
+   * when it is on already: nothing to do and nothing to say). After the dialog, "on already" counts
+   * as a change.
+   */
+  private autoTarget(
+    view: ViewRecord,
+    id: ConversationId | undefined,
+    options: { afterDialog?: boolean } = {},
+  ): { title: string | undefined; folder: FolderInfo } | { refused: string | undefined } {
+    const { env } = this.deps;
+    if (!env.settings().agentAuto) return { refused: TEXT.autoNotOffered };
+    if (!env.trusted()) return { refused: TEXT.untrustedRefusal };
+    if (!options.afterDialog && this.autoDialogs.has(view.id)) {
+      return { refused: TEXT.autoDialogOpen };
+    }
+    const folders = env.folders();
+    if (id === undefined) {
+      if (view.activeId !== undefined || view.creating) return { refused: TEXT.autoDraftGone };
+      const folder = folders.find((candidate) => candidate.key === view.draftFolder) ?? folders[0];
+      if (!folder) return { refused: TEXT.noFolder };
+      if (view.draftAuto?.folder === folder.key) {
+        return { refused: options.afterDialog ? TEXT.autoChangedDuringDialog : undefined };
+      }
+      return { title: undefined, folder };
+    }
+    const meta =
+      this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+    if (!meta || !this.store?.list().some((item) => item.id === id)) {
+      return { refused: TEXT.conversationGone };
+    }
+    if (this.isBusy(id)) return { refused: TEXT.autoWaitForTurn };
+    const folder = folders.find((candidate) => candidate.key === meta.folder);
+    if (!folder) return { refused: TEXT.conversationFolderClosed };
+    if (this.autoOn(meta)) {
+      return { refused: options.afterDialog ? TEXT.autoChangedDuringDialog : undefined };
+    }
+    return { title: meta.title, folder };
+  }
+
+  /** The values of the settings the dialog that turns Auto on names, as one comparable string. */
+  private autoDialogSettings(): string {
+    const { alwaysAskCommands, agentAutoWebTools, sandbox } = this.deps.env.settings();
+    return JSON.stringify([alwaysAskCommands, agentAutoWebTools, sandbox]);
+  }
+
+  /** The text of the dialog that turns Auto on, from the settings and capabilities of this moment. */
+  private autoDialogDetail(title: string | undefined, folder: FolderInfo): string {
+    const settings = this.deps.env.settings();
+    const where =
+      title === undefined
+        ? `In the new conversation (${safeText(folder.name)})`
+        : `In "${safeText(title)}" (${safeText(folder.name)})`;
+    const what = settings.alwaysAskCommands
+      ? `${where}, Agent turns run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.`
+      : `${where}, Agent turns run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.`;
+    const sandbox = !settings.sandbox
+      ? 'Commands are not sandboxed.'
+      : this.state.global.provider?.capabilities.sandbox === true
+        ? 'The sandbox is requested by your settings; AgentCanopy cannot verify that it is active. With Auto on, a command cannot leave it.'
+        : 'The sandbox setting is on, but the sandbox is not available on this platform: commands are not sandboxed.';
+    const stillAsks = settings.agentAutoWebTools
+      ? 'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).'
+      : 'Still asks: protected files, anything outside the folder, web access and other tools.';
+    return [
+      what,
+      sandbox,
+      stillAsks,
+      'Review and checkpoints undo file changes inside the folder only. They do not undo what a command does outside it, to Git or over the network, and a command can change protected files without asking.',
+      'Auto stays on for this conversation, also for queued messages and approved plans, until you turn it off.',
+    ].join('\n\n');
+  }
+
+  /**
+   * Turns Auto off for a conversation. A running turn asks again from its next permission request
+   * on, before anything is awaited; the stored flag follows. Never refused, never a dialog.
+   */
+  private async turnAutoOff(view: ViewRecord, id: ConversationId): Promise<void> {
+    this.runs.get(id)?.revokeAuto();
+    const runtime = this.state.runtimes.get(id);
+    const stored = this.store?.list().find((meta) => meta.id === id);
+    const wasOn = runtime?.data.meta.agentAuto === true || stored?.agentAuto === true;
+    if (runtime) this.forceAutoOff(runtime);
+    const { store } = this;
+    if (!wasOn || !store || !stored) return;
+    // Off for the whole host now, before the write: a conversation loaded from disk meanwhile, or a
+    // write that fails and leaves the store on, cannot bring it back.
+    this.markAutoOff(id);
+    try {
+      await this.updateMeta(store, id, { agentAuto: false });
+    } catch (error) {
+      this.logger.warn('Auto could not be turned off in storage', { error: redact(String(error)) });
+      // Off in the host whatever the store says (the id stays in `autoOffUnsaved`), for every turn
+      // that starts from now on.
+      const current = this.state.runtimes.get(id);
+      if (current) this.forceAutoOff(current);
+      this.state.toast(view, 'warning', TEXT.autoOffNotSaved);
+    }
+  }
+
+  /** Sets a loaded conversation's Auto off in memory only, in every view that shows it. */
+  private forceAutoOff(runtime: ConvRuntime): void {
+    if (runtime.data.meta.agentAuto !== true) return;
+    this.state.mutate(runtime, [
+      { op: 'set', path: ['meta'], value: { ...runtime.data.meta, agentAuto: false } },
+    ]);
+  }
+
+  /**
+   * Whether a first message from this view creates its conversation with the draft's Auto: in any
+   * mode (the dialog said Auto stays on for the conversation), in the folder the dialog named, while
+   * the setting is on.
+   */
+  private draftAutoFor(view: ViewRecord, folder: FolderInfo | undefined): boolean {
+    return (
+      view.draftAuto !== undefined &&
+      folder !== undefined &&
+      view.draftAuto.folder === folder.key &&
+      this.deps.env.settings().agentAuto
+    );
+  }
+
+  private clearDraftAuto(view: ViewRecord): void {
+    view.draftAuto = undefined;
+    if (view.state.draftAgentAuto) {
+      view.apply([{ op: 'set', path: ['draftAgentAuto'], value: false }]);
+    }
   }
 
   private async deleteConversation(view: ViewRecord, id: ConversationId): Promise<void> {
@@ -1208,6 +1505,8 @@ class Controller implements AppController {
     }
     this.state.runtimes.delete(id);
     this.state.previews.delete(id);
+    this.autoOffUnsaved.delete(id);
+    this.autoOffs.delete(id);
     this.dropAside(asideParent, id);
     this.pruneImages();
     for (const shown of this.state.views.values()) {
@@ -1459,6 +1758,10 @@ class Controller implements AppController {
     const folder = existing
       ? folders.find((candidate) => candidate.key === existing.data.meta.folder)
       : (folders.find((candidate) => candidate.key === view?.draftFolder) ?? folders[0]);
+    // Auto the user confirmed for this view's draft: the conversation this send creates has it, in
+    // any mode. Used up where Auto is decided below, in the same synchronous run, so it is never
+    // used twice (a refusal after that point ends it too).
+    const draftAuto = !existing && view !== undefined && this.draftAutoFor(view, folder);
     let conversation: ConversationMeta;
     if (existing) {
       conversation = existing.data.meta;
@@ -1475,11 +1778,21 @@ class Controller implements AppController {
         model: message.model,
         mode: message.mode,
         planLocked: false,
+        // So that the profile agrees with the conversation this send creates.
+        ...(draftAuto ? { agentAuto: true } : {}),
       };
     } else {
       return refuse(TEXT.noFolder);
     }
-    const profile = policy.profile({ mode: message.mode, settings, conversation });
+    // Decided once, here, synchronously and before any gate: the profile (the sandbox lock), the plan
+    // dialog and the turn all follow this value. Later it can only be taken away.
+    const autoWanted = message.mode === 'agent' && settings.agentAuto && this.autoOn(conversation);
+    if (draftAuto && view) this.clearDraftAuto(view);
+    const profile = policy.profile({
+      mode: message.mode,
+      settings,
+      conversation: { ...conversation, agentAuto: autoWanted },
+    });
     if ('unavailable' in profile) return giveUp(profile.unavailable);
     if (!folder) return giveUp(TEXT.conversationFolderClosed);
     if (runtime && runtime.data.meta.providerId !== provider.id) return giveUp(TEXT.noProvider);
@@ -1501,7 +1814,7 @@ class Controller implements AppController {
       if (held !== undefined) this.reserved.add(held);
       let outcome: Awaited<ReturnType<NonNullable<TurnOptions['gate']>>>;
       try {
-        outcome = await options.gate();
+        outcome = await options.gate({ auto: autoWanted });
       } finally {
         if (held !== undefined) this.reserved.delete(held);
       }
@@ -1515,6 +1828,8 @@ class Controller implements AppController {
     const creating = runtime === undefined;
     if (!runtime) {
       if (!view) return refuse(TEXT.conversationGone);
+      // The draft's Auto was used up when it was decided above; clear anything set since.
+      this.clearDraftAuto(view);
       view.creating = true;
       try {
         const title = titleOf(message.text);
@@ -1524,6 +1839,7 @@ class Controller implements AppController {
           model: message.model,
           mode: message.mode,
           ...(title !== undefined ? { title } : {}),
+          ...(draftAuto ? { agentAuto: true } : {}),
         });
         if (this.disposed) return false;
         runtime = this.state.addRuntime({
@@ -1558,8 +1874,12 @@ class Controller implements AppController {
     this.pruneImages();
     if (creating && view && view.activeId === undefined) this.state.showConversation(view, runtime);
 
+    // Only narrower than what the profile was built with: still on now, after any gate. During the
+    // turn it can only be taken away (`TurnRun.revokeAuto`).
+    const auto = autoWanted && env.settings().agentAuto && this.autoOn(runtime.data.meta);
     const run = new TurnRun(this.turnServices(store, plans, policy, storageDir), {
       runtime,
+      auto,
       provider,
       folder,
       profile,
@@ -1619,6 +1939,7 @@ class Controller implements AppController {
       storageDir,
       prompts: this.prompts,
       refreshProvider: () => this.refreshProvider(),
+      updateMeta: (id, patch) => this.writeMeta(store, id, patch),
       onRefused: (folder, mode) => this.turnRefused(folder, mode),
       ...(this.projectConfigDecisions
         ? { resolveProjectConfig: (folder: FolderInfo) => this.resolveProjectConfig(folder) }
@@ -3085,12 +3406,6 @@ class Controller implements AppController {
       return;
     }
     const unanswered = unansweredCount(plan, version);
-    const detail =
-      `Version ${version} of "${safeText(stored.content.title)}" will be implemented in Agent mode. ` +
-      'Changes are checkpointed and you review them afterwards.' +
-      (unanswered > 0
-        ? `\n\n${unanswered} question(s) or decision(s) in this plan have no answer yet.`
-        : '');
 
     await this.sendTurn(
       view,
@@ -3103,7 +3418,10 @@ class Controller implements AppController {
       },
       {
         noAttachments: true,
-        gate: async () => {
+        gate: async ({ auto }) => {
+          // Auto as `sendTurn` decided it for this turn (the profile has it too): the dialog says it
+          // is on exactly when the turn may run with it. It can only be turned off from here on.
+          const detail = this.planApprovalDetail(auto, version, stored.content.title, unanswered);
           let confirmed = false;
           try {
             confirmed = await this.deps.ui.confirm({
@@ -3149,6 +3467,31 @@ class Controller implements AppController {
         },
       },
     );
+  }
+
+  /** The text of the plan approval dialog. It says so when the execution turn will run with Auto. */
+  private planApprovalDetail(
+    auto: boolean,
+    version: number,
+    title: string,
+    unanswered: number,
+  ): string {
+    const settings = this.deps.env.settings();
+    const paragraphs = [
+      `Version ${version} of "${safeText(title)}" will be implemented in Agent mode. ` +
+        'Changes are checkpointed and you review them afterwards.',
+    ];
+    if (unanswered > 0) {
+      paragraphs.push(`${unanswered} question(s) or decision(s) in this plan have no answer yet.`);
+    }
+    if (auto) {
+      paragraphs.push(
+        settings.alwaysAskCommands
+          ? 'Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask.'
+          : 'Auto is on for this conversation: terminal commands and edits inside the folder will run without asking.',
+      );
+    }
+    return paragraphs.join('\n\n');
   }
 
   private async recordExecution(planId: PlanId, version: number, run: TurnRun): Promise<void> {

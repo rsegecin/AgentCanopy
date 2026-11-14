@@ -94,6 +94,12 @@ export interface TurnServices {
   /** Prompts waiting for an answer, by id, across all turns. */
   prompts: Map<PromptId, PendingPrompt>;
   refreshProvider(): Promise<void>;
+  /**
+   * Writes a change of the conversation's meta and resolves to the meta the host shows for it. The
+   * host keeps an Auto that was turned off but could not be saved off here, so the turn never puts
+   * the store's `agentAuto` back into memory.
+   */
+  updateMeta(id: ConversationId, patch: MetaPatch): Promise<ConversationMeta>;
   /** A turn was refused before it started (for example because the folder is busy). */
   onRefused?(folder: FolderInfo, mode: Mode): void;
   /** Paths AgentCanopy reverted since the last agent turn in a folder, to tell the agent about. */
@@ -143,6 +149,12 @@ export interface TurnStart {
   attachments: Attachment[];
   /** Bytes of the images in this message, in order. Only for a turn that sends images. */
   images?: TurnImage[];
+  /**
+   * Agent mode's Auto applies to this turn: an Agent turn, the setting on and the conversation's Auto
+   * on when its profile was built and still when the turn started. Decided once; it can only be taken
+   * away during the turn.
+   */
+  auto: boolean;
 }
 
 interface SessionPlan {
@@ -186,6 +198,8 @@ export class TurnRun {
   private readonly runDir: string;
 
   private cancelRequested = false;
+  /** Auto was turned off during this turn: it no longer applies, whatever the meta says later. */
+  private autoRevoked = false;
   /** Set when the run is wrapping up; late callbacks then leave the conversation alone. */
   private closed = false;
   private handle: TurnHandle | undefined;
@@ -272,6 +286,28 @@ export class TurnRun {
     return this.handle ? this.handle.cancel() : Promise.resolve();
   }
 
+  /**
+   * Auto no longer applies to this turn, from the next permission request on. Synchronous, so a
+   * request decided after this call is already asked. There is no way back during the turn.
+   */
+  revokeAuto(): void {
+    this.autoRevoked = true;
+  }
+
+  /**
+   * Whether Auto applies to a decision made now. It started with the turn and only gets narrower:
+   * revoked, turned off in the conversation, or the setting turned off. The setting is the only one
+   * read live, and only to take Auto away; every other setting is the turn's snapshot.
+   */
+  private autoApplies(): boolean {
+    return (
+      this.input.auto &&
+      !this.autoRevoked &&
+      this.runtime.data.meta.agentAuto === true &&
+      this.services.deps.env.settings().agentAuto
+    );
+  }
+
   // ---- the run -----------------------------------------------------------------------------------
 
   private async execute(): Promise<void> {
@@ -334,6 +370,7 @@ export class TurnRun {
       text,
       mode,
       attachments,
+      ...(this.input.auto ? { auto: true } : {}),
     };
     const turn: Turn = { id: this.turnId, mode, model, startedAt: now, status: 'preparing' };
     this.userIndex = this.runtime.data.messages.length;
@@ -363,6 +400,10 @@ export class TurnRun {
       text: this.input.promptText ?? text,
       attachments,
       planLocked: meta.planLocked,
+      // Only when Auto covers commands: with alwaysAskCommands on, commands still ask.
+      ...(this.autoApplies() && !this.input.settings.alwaysAskCommands
+        ? { agentAuto: true, agentAutoWebTools: this.input.settings.agentAutoWebTools }
+        : {}),
       ...(revertedPaths.length > 0 ? { revertedPaths } : {}),
       // The execution prompt of an approved plan carries that version itself.
       ...(plan && plan.versions.length > 0 && this.input.promptText === undefined
@@ -1304,13 +1345,21 @@ export class TurnRun {
   }
 
   private policyContext(signal: AbortSignal | undefined): PolicyContext {
+    const { meta } = this.runtime.data;
+    // Live: read when the policy approves, so an Auto turned off while it awaited something counts.
+    const autoApplies = (): boolean => this.autoApplies();
     return {
       ...(this.projectConfig ? { projectConfig: this.projectConfig } : {}),
-      conversation: this.runtime.data.meta,
+      // A turn without Auto (an Ask or Plan turn, among others) never shows the policy a conversation
+      // with Auto on.
+      conversation:
+        this.input.auto || meta.agentAuto !== true ? meta : { ...meta, agentAuto: false },
       mode: this.input.mode,
       folder: this.input.folder,
       settings: this.input.settings,
-      auto: false, // placeholder: the Auto phase derives it
+      get auto() {
+        return autoApplies();
+      },
       askUser: (prompt) => this.askUser(prompt, signal),
     };
   }
@@ -1417,7 +1466,7 @@ export class TurnRun {
   }
 
   private async patchMeta(patch: MetaPatch): Promise<void> {
-    const next = await this.services.store.updateMeta(this.conversationId, patch);
+    const next = await this.services.updateMeta(this.conversationId, patch);
     this.services.state.mutate(this.runtime, [set(['meta'], next)]);
     this.services.state.refreshSummaries();
   }

@@ -77,6 +77,15 @@ export const TEXT = {
   branchFailed: 'A branch could not be created from that message.',
   openFailed: 'That conversation could not be opened.',
   renameFailed: 'That conversation could not be renamed.',
+  autoNotOffered: 'Auto is turned off in the settings (agentCanopy.agent.auto.enabled).',
+  autoWaitForTurn: 'Wait for the current turn to finish before turning on Auto.',
+  autoDialogOpen: 'The dialog to turn on Auto is already open.',
+  autoDraftGone: 'Auto can be turned on for a new conversation only before its first message.',
+  autoChangedDuringDialog:
+    'Auto was not turned on: the conversation changed while the dialog was open.',
+  autoNotSaved: 'Auto could not be turned on. The AgentCanopy log has the details.',
+  autoOffNotSaved:
+    'Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later.',
 } as const;
 
 export function claudeNotInstalled(displayName: string): string {

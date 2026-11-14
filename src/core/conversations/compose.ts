@@ -19,6 +19,10 @@ export interface ComposeInput {
   planBlock?: string;
   revertedPaths?: string[];
   planLocked?: boolean;
+  /** Agent mode's Auto covers this turn's terminal commands. Only read in Agent mode. */
+  agentAuto?: boolean;
+  /** Auto also covers web fetch and web search (`agentAutoWebTools`). Only read with `agentAuto`. */
+  agentAutoWebTools?: boolean;
 }
 
 /**
@@ -45,7 +49,28 @@ function fenced(text: string): string {
   return `${fence}\n${neutralize(text)}\n${fence}`;
 }
 
-function modeParagraph(mode: Mode, planLocked: boolean): string {
+const AGENT_AUTO_INTRO =
+  'This is Agent mode with Auto on. Commands and edits inside the workspace folder run without the ' +
+  'user approving each one, and the user may not be watching. Changes are checkpointed and reviewed ' +
+  'by the user afterwards, but only file changes inside the folder can be undone. Do what the ' +
+  'request needs and nothing destructive beyond it. ';
+const STILL_ASK_END =
+  'still ask the user: when one of those is declined or still waiting, do not reach the same ' +
+  'result through a command.';
+
+/** The Auto paragraph. Web access is named among what still asks only when Auto does not cover it. */
+function agentAutoParagraph(webTools: boolean): string {
+  return webTools
+    ? `${AGENT_AUTO_INTRO}Protected files, paths outside the folder and other tools ${STILL_ASK_END}`
+    : `${AGENT_AUTO_INTRO}Protected files, paths outside the folder, web access and other tools ${STILL_ASK_END}`;
+}
+
+function modeParagraph(
+  mode: Mode,
+  planLocked: boolean,
+  agentAuto: boolean,
+  webTools: boolean,
+): string {
   switch (mode) {
     case 'ask':
       return (
@@ -64,7 +89,9 @@ function modeParagraph(mode: Mode, planLocked: boolean): string {
             'the complete plan. Answer questions about the plan in chat without calling the tool. ' +
             'Never start implementing.';
     case 'agent':
-      return 'This is Agent mode. Changes are checkpointed and reviewed by the user afterwards.';
+      return agentAuto
+        ? agentAutoParagraph(webTools)
+        : 'This is Agent mode. Changes are checkpointed and reviewed by the user afterwards.';
   }
 }
 
@@ -113,7 +140,14 @@ function attachmentSections(attachments: Attachment[]): string[] {
  * user's text exactly as typed.
  */
 export function composePrompt(input: ComposeInput): string {
-  const sections: string[] = [modeParagraph(input.mode, input.planLocked === true)];
+  const sections: string[] = [
+    modeParagraph(
+      input.mode,
+      input.planLocked === true,
+      input.agentAuto === true,
+      input.agentAutoWebTools === true,
+    ),
+  ];
   if (input.planBlock) sections.push(neutralize(input.planBlock));
   if (input.revertedPaths && input.revertedPaths.length > 0) {
     sections.push(revertedSection(input.revertedPaths));

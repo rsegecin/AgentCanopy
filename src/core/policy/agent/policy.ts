@@ -30,6 +30,11 @@ function allow(): Decision {
   return { response: { behavior: 'allow' }, approval: 'user' };
 }
 
+/** Approved by Agent mode's Auto, which the user turned on for the conversation in a native dialog. */
+function allowAuto(): Decision {
+  return { response: { behavior: 'allow' }, approval: 'auto' };
+}
+
 /** What the user answered, and whether they asked for an "always" rule. */
 function interpret(
   answer: PromptAnswer | undefined,
@@ -76,7 +81,11 @@ async function exists(path: string): Promise<boolean> {
 /**
  * The policy of Agent mode. Edits inside the folder go through (and are reviewed afterwards) except
  * protected files; everything with side effects outside the folder, commands, network and external
- * tools ask the user. Nothing is approved silently except what the user chose "always" for.
+ * tools ask the user. Nothing is approved silently except what the user chose "always" for, and,
+ * while Auto applies (`context.auto`, which the user turned on in a native dialog), commands, edits
+ * inside the folder and, by setting, web tools. Auto never covers protected files, anything outside
+ * the folder, MCP tools or any other tool. `context.auto` is live: every Auto approval reads it right
+ * before it returns, never from a value kept across an await.
  */
 export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }): TurnPolicy {
   const { rules } = options;
@@ -146,6 +155,8 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
     if (context.settings.editApproval === 'auto') {
       return { response: { behavior: 'allow' }, approval: 'policy' };
     }
+    // Read here, after the path checks were awaited: Auto may have been turned off meanwhile.
+    if (context.auto) return allowAuto();
     const verb = toolName === 'Write' ? ((await exists(target.real)) ? 'Write' : 'Create') : 'Edit';
     const prompt = permissionPrompt(request, {
       category: 'edit',
@@ -162,12 +173,24 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
   ): Promise<Decision> {
     const command = stringInput(request.input, 'command');
     if (command === undefined) return deny(NOT_CHECKED);
+    // A command that asks to leave the sandbox always asks, once: neither a stored rule nor Auto
+    // approves it, and no rule is offered for it.
+    if (request.input['dangerouslyDisableSandbox'] === true) {
+      const prompt = permissionPrompt(request, {
+        category: 'command',
+        title: 'Run a terminal command outside the sandbox',
+        detail: escapeForDisplay(command),
+        choices: ASK_ALLOW,
+      });
+      return (await ask(context, prompt, ASK_ALLOW)).decision;
+    }
     const folder = context.conversation.folder;
     const alwaysAsk = context.settings.alwaysAskCommands;
     // Only a Bash rule can be built; a PowerShell command always asks.
     const rule = request.toolName === 'Bash' && !alwaysAsk ? exactCommandRule(command) : undefined;
 
     if (rule !== undefined && isStored(folder, rule)) return allow();
+    if (context.auto && !alwaysAsk) return allowAuto();
 
     const choices: Choice[] =
       rule !== undefined && isValidRule(rule) ? ['allow-once', 'allow-always', 'deny'] : ASK_ALLOW;
@@ -200,6 +223,7 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
     const fetchTool = request.toolName === 'WebFetch';
     const value = stringInput(request.input, fetchTool ? 'url' : 'query');
     if (value === undefined) return deny(NOT_CHECKED);
+    if (context.auto && context.settings.agentAutoWebTools) return allowAuto();
     const prompt = permissionPrompt(request, {
       category: 'network',
       title: fetchTool ? 'Fetch a web page' : 'Search the web',
@@ -255,7 +279,9 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
         allowRules: settings.alwaysAskCommands ? [] : rules.list(conversation.folder),
         alwaysAskCommands: settings.alwaysAskCommands,
         sandbox: settings.sandbox,
-        sandboxLocked: false, // placeholder: the Auto phase sets it
+        // A turn that starts with Auto may not leave the sandbox, so a command approved without a
+        // prompt always ran inside it.
+        sandboxLocked: settings.sandbox && settings.agentAuto && conversation.agentAuto === true,
       };
     },
 

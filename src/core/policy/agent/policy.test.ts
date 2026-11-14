@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_SETTINGS,
   type FolderKey,
@@ -19,6 +19,25 @@ import {
   type FakeAsk,
 } from '../readonly/test-support';
 import { createAgentPolicy, createRuleStore, type RuleStore } from './index';
+
+// The path check the policy awaits, with a way to hold it open: a test can then change the context
+// while the policy waits. Passes through when nothing is held.
+const pathChecks = vi.hoisted(() => ({
+  hold: undefined as Promise<void> | undefined,
+  started: undefined as (() => void) | undefined,
+}));
+vi.mock('../readonly/targets', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../readonly/targets')>();
+  return {
+    ...actual,
+    checkPath: async (...args: Parameters<typeof actual.checkPath>) => {
+      const result = await actual.checkPath(...args);
+      pathChecks.started?.();
+      if (pathChecks.hold) await pathChecks.hold;
+      return result;
+    },
+  };
+});
 
 const ALLOW_ONCE: PromptAnswer = { kind: 'permission', choice: 'allow-once' };
 const ALLOW_ALWAYS: PromptAnswer = { kind: 'permission', choice: 'allow-always' };
@@ -85,6 +104,8 @@ describe('agent policy', () => {
       answer?: PromptAnswer | undefined;
       settings?: Partial<Settings>;
       rules?: ReturnType<typeof fakeRules>;
+      /** Agent mode's Auto applies. Default false, which every test outside the Auto block uses. */
+      auto?: boolean;
     } = {},
   ) {
     const rules = options.rules ?? fakeRules();
@@ -94,6 +115,7 @@ describe('agent policy', () => {
       answer: options.answer,
       settings: options.settings,
       mode: 'agent',
+      ...(options.auto !== undefined ? { auto: options.auto } : {}),
     });
     const decide = (toolName: string, input: unknown) =>
       policy.decide(request(toolName, input), ask.context);
@@ -121,6 +143,28 @@ describe('agent policy', () => {
         sandboxLocked: false,
       });
       expect(profile('agent', { sandbox: true })).toMatchObject({ sandbox: true });
+    });
+
+    it('locks the sandbox only with the sandbox setting, the Auto setting and the conversation on', () => {
+      const locked = (settings: Partial<Settings>, agentAuto: boolean | undefined) => {
+        const { context } = makeContext({
+          folderPath: folder,
+          mode: 'agent',
+          settings,
+          ...(agentAuto !== undefined ? { conversation: { agentAuto } } : {}),
+        });
+        const result = createAgentPolicy({ rules: fakeRules().store }).profile({
+          mode: 'agent',
+          settings: context.settings,
+          conversation: context.conversation,
+        });
+        return 'kind' in result && result.kind === 'agent' ? result.sandboxLocked : undefined;
+      };
+      expect(locked({ sandbox: true, agentAuto: true }, true)).toBe(true);
+      expect(locked({ sandbox: false, agentAuto: true }, true)).toBe(false);
+      expect(locked({ sandbox: true, agentAuto: false }, true)).toBe(false);
+      expect(locked({ sandbox: true, agentAuto: true }, false)).toBe(false);
+      expect(locked({ sandbox: true, agentAuto: true }, undefined)).toBe(false);
     });
 
     it('alwaysAskCommands gives no allow rules', () => {
@@ -800,6 +844,325 @@ describe('agent policy', () => {
       ];
       for (const event of events) expect(inspect(event)).toBeUndefined();
       expect(inspect(sessionEvent({ plugins: [{ name: 'p', builtin: false }] }))).toBeUndefined();
+    });
+  });
+
+  describe('Auto', () => {
+    type Expected = 'auto' | 'policy' | 'user' | 'asks' | 'question' | 'denied';
+    interface Row {
+      name: string;
+      tool: string;
+      input: (dirs: { folder: string; outside: string }) => Record<string, unknown>;
+      settings?: Partial<Settings>;
+      rules?: string[];
+      expected: Expected;
+    }
+    const bash = { command: 'npm test' };
+    const QUESTIONS = [
+      {
+        question: 'Which?',
+        header: 'H',
+        options: [{ label: 'A', description: 'a' }],
+        multiSelect: false,
+      },
+    ];
+    const rows: Row[] = [
+      // R3: what Auto approves.
+      { name: 'a Bash command', tool: 'Bash', input: () => bash, expected: 'auto' },
+      {
+        name: 'a PowerShell command',
+        tool: 'PowerShell',
+        input: () => ({ command: 'Get-ChildItem' }),
+        expected: 'auto',
+      },
+      {
+        name: 'an edit inside the folder with editApproval ask',
+        tool: 'Edit',
+        input: (d) => ({ file_path: join(d.folder, 'src/a.ts') }),
+        settings: { editApproval: 'ask' },
+        expected: 'auto',
+      },
+      {
+        name: 'a Write inside the folder with editApproval ask',
+        tool: 'Write',
+        input: (d) => ({ file_path: join(d.folder, 'src/new.ts') }),
+        settings: { editApproval: 'ask' },
+        expected: 'auto',
+      },
+      {
+        name: 'an edit inside the folder with editApproval auto',
+        tool: 'Edit',
+        input: (d) => ({ file_path: join(d.folder, 'src/a.ts') }),
+        settings: { editApproval: 'auto' },
+        expected: 'policy',
+      },
+      {
+        name: 'WebFetch with the web setting',
+        tool: 'WebFetch',
+        input: () => ({ url: 'https://example.com' }),
+        settings: { agentAutoWebTools: true },
+        expected: 'auto',
+      },
+      {
+        name: 'WebSearch with the web setting',
+        tool: 'WebSearch',
+        input: () => ({ query: 'q' }),
+        settings: { agentAutoWebTools: true },
+        expected: 'auto',
+      },
+      // R4: what Auto never approves.
+      {
+        name: 'a Bash command with alwaysAskCommands',
+        tool: 'Bash',
+        input: () => bash,
+        settings: { alwaysAskCommands: true },
+        expected: 'asks',
+      },
+      {
+        name: 'a PowerShell command with alwaysAskCommands',
+        tool: 'PowerShell',
+        input: () => ({ command: 'Get-ChildItem' }),
+        settings: { alwaysAskCommands: true },
+        expected: 'asks',
+      },
+      {
+        name: 'a command that asks to leave the sandbox',
+        tool: 'Bash',
+        input: () => ({ ...bash, dangerouslyDisableSandbox: true }),
+        expected: 'asks',
+      },
+      {
+        name: 'a command that asks to leave the sandbox, with a stored rule for it',
+        tool: 'Bash',
+        input: () => ({ ...bash, dangerouslyDisableSandbox: true }),
+        rules: ['Bash(npm test)'],
+        expected: 'asks',
+      },
+      {
+        name: 'an edit on a protected path',
+        tool: 'Edit',
+        input: (d) => ({ file_path: join(d.folder, '.vscode/settings.json') }),
+        expected: 'asks',
+      },
+      {
+        name: 'an edit on a protected path with editApproval ask',
+        tool: 'Write',
+        input: (d) => ({ file_path: join(d.folder, '.env') }),
+        settings: { editApproval: 'ask' },
+        expected: 'asks',
+      },
+      {
+        name: 'an edit outside the folder',
+        tool: 'Edit',
+        input: (d) => ({ file_path: join(d.outside, 'secret.txt') }),
+        expected: 'asks',
+      },
+      {
+        name: 'a read outside the folder',
+        tool: 'Read',
+        input: (d) => ({ file_path: join(d.outside, 'secret.txt') }),
+        expected: 'asks',
+      },
+      {
+        name: 'WebFetch without the web setting',
+        tool: 'WebFetch',
+        input: () => ({ url: 'https://example.com' }),
+        expected: 'asks',
+      },
+      {
+        name: 'WebSearch without the web setting',
+        tool: 'WebSearch',
+        input: () => ({ query: 'q' }),
+        expected: 'asks',
+      },
+      { name: 'an MCP tool', tool: 'mcp__x__y', input: () => ({}), expected: 'asks' },
+      { name: 'Skill', tool: 'Skill', input: () => ({ skill: 'x' }), expected: 'asks' },
+      { name: 'Monitor', tool: 'Monitor', input: () => ({ command: 'ls' }), expected: 'asks' },
+      {
+        name: 'ExitPlanMode',
+        tool: 'ExitPlanMode',
+        input: () => ({ plan: 'p' }),
+        expected: 'asks',
+      },
+      { name: 'EnterWorktree', tool: 'EnterWorktree', input: () => ({}), expected: 'asks' },
+      { name: 'Workflow', tool: 'Workflow', input: () => ({}), expected: 'asks' },
+      { name: 'an unknown tool', tool: 'SomethingNew', input: () => ({}), expected: 'asks' },
+      {
+        name: "a tool named 'constructor'",
+        tool: 'constructor',
+        input: () => ({}),
+        expected: 'asks',
+      },
+      {
+        name: 'AskUserQuestion',
+        tool: 'AskUserQuestion',
+        input: () => ({ questions: QUESTIONS }),
+        expected: 'question',
+      },
+      {
+        name: 'our own MCP tool',
+        tool: 'mcp__agentcanopy__permission_prompt',
+        input: () => ({}),
+        expected: 'denied',
+      },
+      // R5: a stored rule is checked first and approves as the user.
+      {
+        name: 'a command with a stored rule',
+        tool: 'Bash',
+        input: () => bash,
+        rules: ['Bash(npm test)'],
+        expected: 'user',
+      },
+      {
+        name: 'an MCP tool with a stored rule',
+        tool: 'mcp__x__y',
+        input: () => ({}),
+        rules: ['mcp__x__y'],
+        expected: 'user',
+      },
+    ];
+
+    it.each(rows)('with Auto on: $name -> $expected', async (row) => {
+      const { decide, prompts } = setup({
+        answer: DENY,
+        auto: true,
+        ...(row.settings ? { settings: row.settings } : {}),
+        ...(row.rules ? { rules: fakeRules({ 'folder-1': row.rules }) } : {}),
+      });
+      const decision = await decide(row.tool, row.input({ folder, outside }));
+      switch (row.expected) {
+        case 'auto':
+        case 'policy':
+        case 'user':
+          expect(decision).toEqual({ response: { behavior: 'allow' }, approval: row.expected });
+          expect(prompts).toEqual([]);
+          break;
+        case 'asks':
+          // The user's denial is what came back: the call was put to the user.
+          expect(decision).toEqual(deny('The user declined.', 'user'));
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]?.kind).toBe('permission');
+          break;
+        case 'question':
+          expect(decision).toEqual(deny('The user did not answer.'));
+          expect(prompts).toEqual([
+            { kind: 'question', toolCallId: 'toolu_1', questions: QUESTIONS },
+          ]);
+          break;
+        case 'denied':
+          expect(decision).toEqual(
+            deny('This tool cannot be approved through a permission request.'),
+          );
+          expect(prompts).toEqual([]);
+          break;
+      }
+    });
+
+    it.each(rows.filter((row) => row.expected === 'auto'))(
+      'with Auto off: $name asks (or is as before)',
+      async (row) => {
+        const { decide, prompts } = setup({
+          answer: DENY,
+          ...(row.settings ? { settings: row.settings } : {}),
+        });
+        expect(await decide(row.tool, row.input({ folder, outside }))).toEqual(
+          deny('The user declined.', 'user'),
+        );
+        expect(prompts).toHaveLength(1);
+      },
+    );
+
+    it.each([true, false])(
+      'a command that asks to leave the sandbox has its own title, two choices and no rule (Auto %s)',
+      async (auto) => {
+        const { decide, prompts, rules } = setup({
+          answer: ALLOW_ALWAYS,
+          auto,
+          rules: fakeRules({ 'folder-1': ['Bash(npm test)'] }),
+        });
+        // allow-always is not offered, so it is not accepted either.
+        expect(await decide('Bash', { ...bash, dangerouslyDisableSandbox: true })).toMatchObject({
+          response: { behavior: 'deny' },
+        });
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({
+          kind: 'permission',
+          category: 'command',
+          title: 'Run a terminal command outside the sandbox',
+          detail: 'npm test',
+          choices: ['allow-once', 'deny'],
+        });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+        expect(rules.calls).toEqual([]);
+        const once = setup({ answer: ALLOW_ONCE, auto });
+        expect(await once.decide('Bash', { ...bash, dangerouslyDisableSandbox: true })).toEqual(
+          allowUser,
+        );
+      },
+    );
+
+    it('only dangerouslyDisableSandbox === true counts as leaving the sandbox', async () => {
+      for (const value of [false, 'true', 1, null]) {
+        const { decide, prompts } = setup({ answer: DENY, auto: true });
+        expect(await decide('Bash', { ...bash, dangerouslyDisableSandbox: value })).toEqual({
+          response: { behavior: 'allow' },
+          approval: 'auto',
+        });
+        expect(prompts).toEqual([]);
+      }
+    });
+
+    it('reads Auto when it approves: an edit whose Auto is turned off during the path check asks', async () => {
+      let on = true;
+      const { context, prompts } = makeContext({
+        folderPath: folder,
+        answer: DENY,
+        mode: 'agent',
+        settings: { editApproval: 'ask' },
+      });
+      const live = Object.defineProperty({ ...context }, 'auto', { get: () => on });
+      let release: () => void = () => undefined;
+      pathChecks.hold = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const checking = new Promise<void>((resolve) => {
+        pathChecks.started = resolve;
+      });
+      try {
+        const policy = createAgentPolicy({ rules: fakeRules().store });
+        const pending = policy.decide(
+          request('Write', { file_path: join(folder, 'src/new.ts'), content: 'x' }),
+          live,
+        );
+        await checking;
+        // The policy is waiting for the path check now: Auto goes off before it has decided.
+        on = false;
+        release();
+        expect(await pending).toEqual(deny('The user declined.', 'user'));
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ kind: 'permission', category: 'edit' });
+      } finally {
+        pathChecks.hold = undefined;
+        pathChecks.started = undefined;
+      }
+      // The same edit with Auto left on is approved by it.
+      const kept = makeContext({
+        folderPath: folder,
+        answer: DENY,
+        mode: 'agent',
+        settings: { editApproval: 'ask' },
+        auto: true,
+      });
+      const decision = await createAgentPolicy({ rules: fakeRules().store }).decide(
+        request('Write', { file_path: join(folder, 'src/new.ts'), content: 'x' }),
+        kept.context,
+      );
+      expect(decision).toEqual({ response: { behavior: 'allow' }, approval: 'auto' });
+      expect(kept.prompts).toEqual([]);
+    });
+
+    it('every other test here runs with Auto off', () => {
+      expect(setup().ask.context.auto).toBe(false);
     });
   });
 });

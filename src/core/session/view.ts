@@ -31,6 +31,12 @@ export class ViewRecord {
   /** The conversation this view shows. Undefined: a draft that is not stored yet. */
   activeId: ConversationId | undefined;
   draftFolder: FolderKey | undefined;
+  /**
+   * The user turned Auto on, in a native dialog, for the conversation this view is about to start,
+   * in this folder (the one the dialog named). Host-only; the view state mirrors it as
+   * `draftAgentAuto`. Cleared whenever the view moves on.
+   */
+  draftAuto: { folder: FolderKey } | undefined;
   /** Conversation to open once the application has started. */
   initialConversation: ConversationId | undefined;
   /** Bumped by every navigation, so a slow load can tell that the view moved on. */

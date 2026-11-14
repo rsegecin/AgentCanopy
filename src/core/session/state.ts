@@ -21,7 +21,14 @@ export interface ConvRuntime {
 /** The parts of the view state that are the same in every view. */
 export type GlobalFields = Pick<
   ViewState,
-  'trusted' | 'folders' | 'provider' | 'models' | 'defaults' | 'conversations' | 'banners'
+  | 'trusted'
+  | 'folders'
+  | 'provider'
+  | 'models'
+  | 'defaults'
+  | 'agentAuto'
+  | 'conversations'
+  | 'banners'
 >;
 
 const MAX_PREVIEW = 300;
@@ -73,6 +80,7 @@ export class SessionState {
       provider: EMPTY_VIEW_STATE.provider,
       models: EMPTY_VIEW_STATE.models,
       defaults: EMPTY_VIEW_STATE.defaults,
+      agentAuto: EMPTY_VIEW_STATE.agentAuto,
       conversations: EMPTY_VIEW_STATE.conversations,
       banners: EMPTY_VIEW_STATE.banners,
     };
@@ -133,11 +141,18 @@ export class SessionState {
     this.onMutated(runtime, ops);
   }
 
-  /** Operations that empty the attachments queued in a view, when there are any. */
+  /**
+   * Operations that empty the attachments queued in a view, when there are any, and that end the
+   * Auto confirmed for its draft: a draft's Auto is never carried to another conversation or draft.
+   */
   private clearDraftOps(view: ViewRecord): PatchOp[] {
-    return view.state.draftAttachments.length > 0
-      ? [{ op: 'set', path: ['draftAttachments'], value: [] }]
-      : [];
+    const ops: PatchOp[] =
+      view.state.draftAttachments.length > 0
+        ? [{ op: 'set', path: ['draftAttachments'], value: [] }]
+        : [];
+    view.draftAuto = undefined;
+    if (view.state.draftAgentAuto) ops.push({ op: 'set', path: ['draftAgentAuto'], value: false });
+    return ops;
   }
 
   /** A different conversation starts with no attachments queued. */

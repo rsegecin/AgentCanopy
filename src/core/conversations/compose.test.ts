@@ -68,6 +68,55 @@ describe('composePrompt', () => {
     expect(prompt).toContain('This is Agent mode.');
     expect(prompt).toContain('checkpointed and reviewed by the user afterwards');
     expect(prompt).not.toContain('read-only');
+    expect(prompt).not.toContain('Auto');
+  });
+
+  it('writes the Auto paragraph only with agentAuto, and only in Agent mode', () => {
+    const AUTO =
+      'This is Agent mode with Auto on. Commands and edits inside the workspace folder run without the user approving each one, and the user may not be watching. Changes are checkpointed and reviewed by the user afterwards, but only file changes inside the folder can be undone. Do what the request needs and nothing destructive beyond it. Protected files, paths outside the folder, web access and other tools still ask the user: when one of those is declined or still waiting, do not reach the same result through a command.';
+    const on = split(
+      composePrompt({ mode: 'agent', text: 'x', attachments: none, agentAuto: true }),
+    );
+    expect(on.block).toBe(`<agentcanopy-context mode="agent">\n${AUTO}\n</agentcanopy-context>`);
+    const off = split(
+      composePrompt({ mode: 'agent', text: 'x', attachments: none, agentAuto: false }),
+    );
+    expect(off.block).toBe(
+      '<agentcanopy-context mode="agent">\nThis is Agent mode. Changes are checkpointed and reviewed by the user afterwards.\n</agentcanopy-context>',
+    );
+    for (const mode of ['ask', 'plan'] as const) {
+      const prompt = composePrompt({ mode, text: 'x', attachments: none, agentAuto: true });
+      expect(prompt).not.toContain('Auto');
+    }
+  });
+
+  it('leaves web access out of what still asks when Auto covers web tools', () => {
+    const AUTO_WEB =
+      'This is Agent mode with Auto on. Commands and edits inside the workspace folder run without the user approving each one, and the user may not be watching. Changes are checkpointed and reviewed by the user afterwards, but only file changes inside the folder can be undone. Do what the request needs and nothing destructive beyond it. Protected files, paths outside the folder and other tools still ask the user: when one of those is declined or still waiting, do not reach the same result through a command.';
+    const covered = split(
+      composePrompt({
+        mode: 'agent',
+        text: 'x',
+        attachments: none,
+        agentAuto: true,
+        agentAutoWebTools: true,
+      }),
+    );
+    expect(covered.block).toBe(
+      `<agentcanopy-context mode="agent">\n${AUTO_WEB}\n</agentcanopy-context>`,
+    );
+    const notCovered = composePrompt({
+      mode: 'agent',
+      text: 'x',
+      attachments: none,
+      agentAuto: true,
+      agentAutoWebTools: false,
+    });
+    expect(notCovered).toContain('Protected files, paths outside the folder, web access and other');
+    // Without Auto the web setting changes nothing.
+    expect(
+      composePrompt({ mode: 'agent', text: 'x', attachments: none, agentAutoWebTools: true }),
+    ).not.toContain('Auto');
   });
 
   it('includes the plan block verbatim, after the mode paragraph', () => {

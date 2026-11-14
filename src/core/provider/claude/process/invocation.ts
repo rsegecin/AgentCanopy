@@ -170,6 +170,9 @@ function buildSettings(request: TurnRequest): Record<string, unknown> {
     'Glob',
     'WebFetch',
     'WebSearch',
+    // These ask by Claude Code's default; naming them makes that the host's choice.
+    'Monitor',
+    'Skill',
   ];
   const permissions: Record<string, string[]> = { ask };
   if (!profile.alwaysAskCommands && profile.allowRules.length > 0) {
@@ -191,7 +194,12 @@ function buildSettings(request: TurnRequest): Record<string, unknown> {
       PostToolUseFailure: entry('/post-failure'),
     };
   }
-  if (profile.sandbox) settings.sandbox = { enabled: true, autoAllowBashIfSandboxed: false };
+  if (profile.sandbox) {
+    // A turn that starts with Auto may not leave the sandbox, not even behind a prompt.
+    settings.sandbox = profile.sandboxLocked
+      ? { enabled: true, autoAllowBashIfSandboxed: false, allowUnsandboxedCommands: false }
+      : { enabled: true, autoAllowBashIfSandboxed: false };
+  }
   return settings;
 }
 
