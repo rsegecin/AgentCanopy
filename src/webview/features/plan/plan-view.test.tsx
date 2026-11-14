@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { PlanDoc, PlanUserDecision } from '../../../shared';
 import {
   assistantMessage,
+  autoOffered,
   makeActive,
   makeConfigChange,
   makePlanContent,
@@ -913,5 +914,59 @@ describe('plan card accessibility', () => {
     );
     const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)));
     expect(levels).toEqual([2, 3, 3]);
+  });
+});
+
+describe('the Auto line of the current plan card', () => {
+  const ON = 'Runs with Auto: commands and edits run without asking.';
+  const ON_NO_COMMANDS = 'Runs with Auto: edits run without asking. Commands still ask.';
+  const withAuto = (
+    auto: boolean | undefined,
+    over: { offered?: boolean; commands?: boolean } = {},
+  ) => {
+    const base = chat(makePlanDoc(), [1]);
+    return {
+      ...base,
+      ...(over.offered === false ? {} : autoOffered(over.commands ?? true)),
+      active: {
+        ...base.active!,
+        meta: { ...base.active!.meta, ...(auto === undefined ? {} : { agentAuto: auto }) },
+      },
+    };
+  };
+
+  it('says commands and edits run without asking, next to Approve and Execute', () => {
+    renderWithHost(<MessageList />, withAuto(true));
+    const line = within(current()).getByText(ON);
+    expect(line.closest('p')?.previousElementSibling?.classList.contains('plan-approve')).toBe(
+      true,
+    );
+    expect(current().textContent).toContain(ON);
+  });
+
+  it('says commands still ask when the settings keep them asking', () => {
+    renderWithHost(<MessageList />, withAuto(true, { commands: false }));
+    expect(within(current()).getByText(ON_NO_COMMANDS)).toBeTruthy();
+    expect(screen.queryByText(ON)).toBeNull();
+  });
+
+  it.each([
+    ['Auto is off', withAuto(false)],
+    ['the flag is absent', withAuto(undefined)],
+    ['the setting does not offer Auto', withAuto(true, { offered: false })],
+  ] as const)('is absent when %s', (_name, state) => {
+    renderWithHost(<MessageList />, state);
+    expect(screen.queryByText(/Runs with Auto/)).toBeNull();
+  });
+
+  it('is not on an older card', () => {
+    const base = chat(twoVersions(), [1, 2]);
+    renderWithHost(<MessageList />, {
+      ...base,
+      ...autoOffered(),
+      active: { ...base.active!, meta: { ...base.active!.meta, agentAuto: true } },
+    });
+    expect(screen.getAllByText(ON)).toHaveLength(1);
+    expect(current().textContent).toContain(ON);
   });
 });

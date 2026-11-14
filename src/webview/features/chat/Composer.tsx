@@ -28,6 +28,7 @@ const QUEUED_HINT = 'A message is already queued. Edit or remove it first.';
 const ASIDE_RUNNING_HINT = 'A side question is already running. Wait for it or stop it.';
 const ASIDE_OF_ASIDE_HINT = 'Wait for the answer or stop it.';
 const LOCK_RUNNING_HINT = 'The lock can be changed when the turn ends.';
+const AUTO_RUNNING_HINT = 'Auto can be turned on when the turn ends.';
 const ASIDE_NOTE = 'Asked as a side question: the agent keeps working and does not see it.';
 
 interface Blocker {
@@ -98,6 +99,9 @@ export function Composer() {
   const turns = useViewState((s) => s.active?.turns);
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
   const hasQueued = useViewState((s) => s.active?.queued != null);
+  const autoOffered = useViewState((s) => s.agentAuto.offered);
+  const autoCommands = useViewState((s) => s.agentAuto.commands);
+  const draftAuto = useViewState((s) => s.draftAgentAuto);
   const asideRunning = useViewState(
     (s) =>
       s.active?.asides.some((a) => a.status === 'running' || a.status === 'preparing') ?? false,
@@ -170,6 +174,7 @@ export function Composer() {
   const asideHintId = useId();
   const asideNoteId = useId();
   const lockReasonId = useId();
+  const autoReasonId = useId();
 
   const picker = useReferencePicker({
     draft,
@@ -273,6 +278,33 @@ export function Composer() {
       : mode === 'ask'
         ? 'The plan is attached read-only.'
         : null;
+
+  // Auto: the open conversation's flag (on only when exactly true), or this view's draft flag when no
+  // conversation is open. The switch moves only when the host's state does: the host opens a native
+  // dialog for ON and the user may decline. Turning it on while a turn runs is impossible on the host.
+  const autoOn = meta !== undefined ? meta.agentAuto === true : draftAuto;
+  const showAuto = autoOffered && (mode === 'agent' || autoOn);
+  // Only ON is blocked; OFF is always possible, also while a turn runs.
+  const autoDisabled = !autoOn && (running || blocker !== null);
+  const autoDescribedBy = autoDisabled
+    ? [running ? autoReasonId : null, blocker !== null ? noticeId : null]
+        .filter((id) => id !== null)
+        .join(' ')
+    : undefined;
+  const autoHint = !autoOn
+    ? null
+    : mode !== 'agent'
+      ? "Auto is on for this conversation's Agent turns."
+      : autoCommands
+        ? 'Auto is on: commands and edits in this folder run without asking.'
+        : 'Auto is on: edits in this folder run without asking. Commands still ask.';
+  // With Auto on, the Agent description must not say "with your approval": it would contradict the hint.
+  const modeDescription = (value: Mode): string =>
+    value === 'agent' && autoOn
+      ? autoCommands
+        ? 'Can edit files and run commands. Protected files and anything outside the folder still ask.'
+        : 'Can edit files. Commands, protected files and anything outside the folder still ask.'
+      : MODE_INFO[value].description;
 
   const textareaDescription =
     blocker !== null
@@ -466,6 +498,26 @@ export function Composer() {
               <span>Lock plan</span>
             </button>
           )}
+          {showAuto && (
+            <button
+              type="button"
+              className={`button button--secondary auto-switch${autoOn ? ' auto-switch--on' : ''}`}
+              aria-pressed={autoOn}
+              disabled={autoDisabled}
+              aria-describedby={autoDescribedBy}
+              onClick={() => {
+                if (autoDisabled) return;
+                post({
+                  type: 'conversation.setAuto',
+                  ...(conversationId !== undefined ? { conversationId } : {}),
+                  on: !autoOn,
+                });
+              }}
+            >
+              <Icon name={autoOn ? 'pass-filled' : 'circle-large-outline'} />
+              <span>Auto</span>
+            </button>
+          )}
           {MODES.map((value) => (
             <span
               key={value}
@@ -473,7 +525,7 @@ export function Composer() {
               className="mode-description"
               hidden={mode !== value}
             >
-              {MODE_INFO[value].description}
+              {modeDescription(value)}
             </span>
           ))}
         </div>
@@ -482,6 +534,13 @@ export function Composer() {
         {hasPlan && mode === 'plan' && conversationId !== undefined && running && (
           <p id={lockReasonId} className="composer-hint muted">
             {LOCK_RUNNING_HINT}
+          </p>
+        )}
+
+        {showAuto && autoHint !== null && <p className="composer-hint muted">{autoHint}</p>}
+        {showAuto && !autoOn && running && (
+          <p id={autoReasonId} className="composer-hint muted">
+            {AUTO_RUNNING_HINT}
           </p>
         )}
 

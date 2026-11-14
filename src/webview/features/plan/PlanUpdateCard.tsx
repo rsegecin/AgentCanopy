@@ -123,6 +123,8 @@ function CurrentPlanCard({
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
   // An Agent turn of another conversation holds the folder (while this one runs, the running hint says it).
   const folderBusy = useViewState((s) => s.review.busy && !isTurnRunning(s.active?.turns));
+  const autoOn = useViewState((s) => s.agentAuto.offered && s.active?.meta.agentAuto === true);
+  const autoCommands = useViewState((s) => s.agentAuto.commands);
   const titleId = useId();
   const decisionsId = useId();
   const stillId = useId();
@@ -240,6 +242,16 @@ function CurrentPlanCard({
           </p>
         )}
       </div>
+      {autoOn && (
+        <p className="plan-hint muted plan-auto">
+          <Icon name="pass-filled" />
+          <span>
+            {autoCommands
+              ? 'Runs with Auto: commands and edits run without asking.'
+              : 'Runs with Auto: edits run without asking. Commands still ask.'}
+          </span>
+        </p>
+      )}
       {running && (
         <p id={runningId} className="plan-hint muted">
           {RUNNING_HINT}

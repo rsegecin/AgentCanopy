@@ -209,4 +209,15 @@ describe('stylesheets', () => {
     expect(text).not.toContain('.header-warning');
     expect(text).not.toContain('.review-scroll');
   });
+
+  it('marks the Auto switch on by weight and an outline, not by colour, and in high contrast', () => {
+    const text = strip(all);
+    const rule = text.match(/\.auto-switch--on\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/font-weight:\s*600/);
+    expect(rule?.[1]).toMatch(/outline:\s*1px solid/);
+    expect(rule?.[1]).not.toMatch(/(?:^|[;\s])(?:color|background(?:-color)?)\s*:/);
+    expect(strip(entries.find((e) => e.name === 'contrast.css')?.css ?? '')).toContain(
+      '.auto-switch--on',
+    );
+  });
 });

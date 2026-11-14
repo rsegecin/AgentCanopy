@@ -85,6 +85,12 @@
 .plan-hint {
   font-size: 0.9em;
 }
+.plan-auto {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+}
 
 .plan-lock--on {
   font-weight: 600;

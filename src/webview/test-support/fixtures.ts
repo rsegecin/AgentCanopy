@@ -464,3 +464,8 @@ export function makeRestorePreview(over: Partial<RestorePreview> = {}): RestoreP
     ...over,
   };
 }
+
+/** The view state fields for Auto being offered by the settings. Spread into `makeState`. */
+export function autoOffered(commands = true): Pick<ViewState, 'agentAuto'> {
+  return { agentAuto: { offered: true, commands } };
+}

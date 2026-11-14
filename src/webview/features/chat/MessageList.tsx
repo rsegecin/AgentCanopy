@@ -112,17 +112,24 @@ const MessageItem = memo(function MessageItem({
         <article className="message message--user" aria-label="You">
           <div className="message-meta">
             {executingVersion !== undefined ? (
-              <span className="plan-label-line">
-                <Icon name="play" />
-                <span>{`Plan approved: executing version ${String(executingVersion)}`}</span>
-              </span>
+              <>
+                <span className="plan-label-line">
+                  <Icon name="play" />
+                  <span>{`Plan approved: executing version ${String(executingVersion)}`}</span>
+                </span>
+                {message.auto === true && <span className="badge">Auto</span>}
+              </>
             ) : message.mode === 'plan' ? (
               <span className="plan-label-line">
                 <Icon name="checklist" />
                 <span>Plan request</span>
               </span>
             ) : (
-              <span className="badge">{MODE_LABEL[message.mode]}</span>
+              <span className="badge">
+                {message.auto === true
+                  ? `${MODE_LABEL[message.mode]} · Auto`
+                  : MODE_LABEL[message.mode]}
+              </span>
             )}
             {actions}
           </div>

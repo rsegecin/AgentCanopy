@@ -25,6 +25,9 @@ export function QueuedMessage() {
   const conversationId = useViewState((s) => s.active?.meta.id);
   const storedMode = useViewState((s) => s.active?.meta.mode);
   const queued = useViewState((s) => s.active?.queued ?? null);
+  // The queued message has no flag of its own: Auto cannot turn on while the turn runs, so the
+  // conversation's switch says it, and the label follows when the user turns it off.
+  const autoOn = useViewState((s) => s.agentAuto.offered && s.active?.meta.agentAuto === true);
   const turns = useViewState((s) => s.active?.turns);
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
   const reviewBusy = useViewState((s) => s.review.busy);
@@ -98,7 +101,11 @@ export function QueuedMessage() {
       <div className="queued-head">
         <Icon name="clock" />
         <span className="queued-label">Queued</span>
-        <span>{MODE_LABEL[queued.mode]}</span>
+        <span>
+          {queued.mode === 'agent' && autoOn
+            ? `${MODE_LABEL.agent} · Auto`
+            : MODE_LABEL[queued.mode]}
+        </span>
         {count > 0 && <span>{count === 1 ? '1 attachment' : `${String(count)} attachments`}</span>}
       </div>
       <p

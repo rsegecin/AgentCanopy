@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen, waitFor, within } from '@testing-library/re
 import { describe, expect, it } from 'vitest';
 import {
   assistantMessage,
+  autoOffered,
   convId,
   makeActive,
   makeAside,
@@ -1134,5 +1135,304 @@ describe('Composer mode and model', () => {
     const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Model' });
     expect(Array.from(select.options).map((o) => o.value)).toEqual(['default', 'opus', 'custom-x']);
     expect(select.value).toBe('custom-x');
+  });
+});
+
+describe('Composer Auto switch', () => {
+  const radio = (name: string) => screen.getByRole<HTMLInputElement>('radio', { name });
+  const auto = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Auto' });
+  const noAuto = () => screen.queryByRole('button', { name: 'Auto' });
+  const REASON = 'Auto can be turned on when the turn ends.';
+  const open = (
+    over: {
+      mode?: 'ask' | 'plan' | 'agent';
+      on?: boolean;
+      running?: boolean;
+      commands?: boolean;
+      offered?: boolean;
+    } = {},
+    extra: Partial<ViewState> = {},
+  ) =>
+    makeState({
+      ...(over.offered === false ? {} : autoOffered(over.commands ?? true)),
+      active: makeActive('c1', {
+        meta: {
+          mode: over.mode ?? 'agent',
+          ...(over.on === undefined ? {} : { agentAuto: over.on }),
+        },
+        turns: [makeTurn({ status: over.running === true ? 'running' : 'completed' })],
+      }),
+      ...extra,
+    });
+
+  it('is hidden when the settings do not offer it, also while on', () => {
+    const { init } = renderWithHost(<Composer />, open({ offered: false }));
+    expect(noAuto()).toBeNull();
+    init(open({ offered: false, on: true }), 1);
+    expect(noAuto()).toBeNull();
+    expect(screen.queryByText(/Auto is on/)).toBeNull();
+  });
+
+  it.each(['ask', 'plan'] as const)('is hidden in %s mode while off', (mode) => {
+    renderWithHost(<Composer />, open({ mode }));
+    expect(noAuto()).toBeNull();
+  });
+
+  it('is shown in Agent mode while off, not pressed, and enabled', () => {
+    renderWithHost(<Composer />, open());
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    expect(auto().disabled).toBe(false);
+    expect(auto().getAttribute('aria-describedby')).toBeNull();
+    expect(screen.queryByText(/Auto is on/)).toBeNull();
+  });
+
+  it.each(['ask', 'plan', 'agent'] as const)('is shown and pressed in %s mode while on', (mode) => {
+    renderWithHost(<Composer />, open({ mode, on: true }));
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+    expect(auto().classList.contains('auto-switch--on')).toBe(true);
+    // Not only colour: the icon changes too.
+    expect(auto().querySelector('.codicon-pass-filled')).not.toBeNull();
+  });
+
+  it('is not pressed when the flag is false or absent (a conversation stored before Auto)', () => {
+    const { init } = renderWithHost(<Composer />, open({ on: false }));
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    init(open(), 1);
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('posts exactly conversation.setAuto with the id and the new value, and does not move by itself', () => {
+    const { host, init } = renderWithHost(<Composer />, open());
+    fireEvent.click(auto());
+    expect(host.postedOf('conversation.setAuto')).toEqual([
+      { type: 'conversation.setAuto', conversationId: convId('c1'), on: true },
+    ]);
+    expect(host.posted.filter((m) => m.type !== 'ready')).toHaveLength(1);
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    // The user declined the dialog: the host's state did not change, nor does the switch.
+    init(open(), 1);
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    // The user accepted: the host's state moves it.
+    init(open({ on: true }), 2);
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('posts on: false from the on state and waits for the host', () => {
+    const { host } = renderWithHost(<Composer />, open({ on: true }));
+    fireEvent.click(auto());
+    expect(host.postedOf('conversation.setAuto')).toEqual([
+      { type: 'conversation.setAuto', conversationId: convId('c1'), on: false },
+    ]);
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+  });
+
+  describe('for a conversation that is not open yet', () => {
+    const draft = (on: boolean, mode: 'ask' | 'agent' = 'agent') =>
+      makeState({
+        ...autoOffered(),
+        defaults: { mode, model: 'default' },
+        draftAgentAuto: on,
+      });
+
+    it('reads draftAgentAuto and posts without an id', () => {
+      const { host, init } = renderWithHost(<Composer />, draft(false));
+      expect(auto().getAttribute('aria-pressed')).toBe('false');
+      fireEvent.click(auto());
+      expect(host.postedOf('conversation.setAuto')).toEqual([
+        { type: 'conversation.setAuto', on: true },
+      ]);
+      expect(auto().getAttribute('aria-pressed')).toBe('false');
+      init(draft(true), 1);
+      expect(auto().getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(auto());
+      expect(host.postedOf('conversation.setAuto')[1]).toEqual({
+        type: 'conversation.setAuto',
+        on: false,
+      });
+    });
+
+    it('is hidden in Ask mode while off and shown while the draft flag is on', () => {
+      const { init } = renderWithHost(<Composer />, draft(false, 'ask'));
+      expect(noAuto()).toBeNull();
+      init(draft(true, 'ask'), 1);
+      expect(auto().getAttribute('aria-pressed')).toBe('true');
+    });
+
+    it('appears when the user picks Agent mode', () => {
+      renderWithHost(<Composer />, draft(false, 'ask'));
+      fireEvent.click(radio('Agent'));
+      expect(auto()).toBeTruthy();
+    });
+  });
+
+  describe('while a turn runs', () => {
+    it('is disabled while off, with its reason tied by aria-describedby, and posts nothing', () => {
+      const { host } = renderWithHost(<Composer />, open({ running: true }));
+      expect(auto().disabled).toBe(true);
+      const reason = screen.getByText(REASON);
+      expect(auto().getAttribute('aria-describedby')).toBe(reason.id);
+      fireEvent.click(auto());
+      expect(host.postedOf('conversation.setAuto')).toHaveLength(0);
+    });
+
+    it('stays enabled for turning it off, and posts on: false', () => {
+      const { host } = renderWithHost(<Composer />, open({ running: true, on: true }));
+      expect(auto().disabled).toBe(false);
+      expect(screen.queryByText(REASON)).toBeNull();
+      fireEvent.click(auto());
+      expect(host.postedOf('conversation.setAuto')).toEqual([
+        { type: 'conversation.setAuto', conversationId: convId('c1'), on: false },
+      ]);
+    });
+
+    it('is enabled again when the turn ends', () => {
+      const { init } = renderWithHost(<Composer />, open({ running: true }));
+      init(open(), 1);
+      expect(auto().disabled).toBe(false);
+      expect(screen.queryByText(REASON)).toBeNull();
+    });
+  });
+
+  describe('when the composer is blocked', () => {
+    it('disables turning it on, pointing to the notice, but never turning it off', () => {
+      const { init } = renderWithHost(<Composer />, open({}, { trusted: false }));
+      expect(auto().disabled).toBe(true);
+      const notice = screen.getByText(/workspace is not trusted/).closest('[role="status"]');
+      expect(auto().getAttribute('aria-describedby')).toBe(notice?.id);
+      init(open({ on: true }, { trusted: false }), 1);
+      expect(auto().disabled).toBe(false);
+    });
+
+    it('does the same while the provider is not ready', () => {
+      const { init } = renderWithHost(
+        <Composer />,
+        open({}, { provider: makeProvider({ installed: false }) }),
+      );
+      expect(auto().disabled).toBe(true);
+      init(open({ on: true }, { provider: makeProvider({ installed: false }) }), 1);
+      expect(auto().disabled).toBe(false);
+    });
+  });
+
+  describe('the hint', () => {
+    it('says commands and edits run without asking in Agent mode', () => {
+      renderWithHost(<Composer />, open({ on: true }));
+      expect(
+        screen.getByText('Auto is on: commands and edits in this folder run without asking.'),
+      ).toBeTruthy();
+    });
+
+    it('says commands still ask when the settings keep them asking', () => {
+      renderWithHost(<Composer />, open({ on: true, commands: false }));
+      expect(
+        screen.getByText(
+          'Auto is on: edits in this folder run without asking. Commands still ask.',
+        ),
+      ).toBeTruthy();
+      expect(screen.queryByText(/commands and edits/)).toBeNull();
+    });
+
+    it.each(['ask', 'plan'] as const)('says it is on for the Agent turns in %s mode', (mode) => {
+      renderWithHost(<Composer />, open({ mode, on: true }));
+      expect(screen.getByText("Auto is on for this conversation's Agent turns.")).toBeTruthy();
+    });
+
+    it('is not a blocking hint: Send stays enabled', () => {
+      renderWithHost(<Composer />, open({ on: true }));
+      type('go');
+      expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(false);
+      expect(box().getAttribute('aria-describedby')).toBeNull();
+    });
+  });
+
+  describe('the mode description', () => {
+    const OFF = 'Can edit files and run tools, with your approval.';
+    const WITH_COMMANDS =
+      'Can edit files and run commands. Protected files and anything outside the folder still ask.';
+    const WITHOUT_COMMANDS =
+      'Can edit files. Commands, protected files and anything outside the folder still ask.';
+    const describedBy = (name: string) =>
+      document.getElementById(radio(name).getAttribute('aria-describedby') as string);
+    const visibleDescription = () =>
+      Array.from(document.querySelectorAll<HTMLElement>('.mode-description'))
+        .filter((el) => !el.hidden)
+        .map((el) => el.textContent);
+    const draftState = (on: boolean, commands: boolean, mode: 'ask' | 'plan' | 'agent' = 'agent') =>
+      makeState({
+        ...autoOffered(commands),
+        defaults: { mode, model: 'default' },
+        draftAgentAuto: on,
+      });
+
+    const cases = [
+      ['an open conversation', (on: boolean, commands: boolean) => open({ on, commands })],
+      ['a draft', (on: boolean, commands: boolean) => draftState(on, commands)],
+    ] as const;
+
+    describe.each(cases)('for %s', (_label, state) => {
+      it('keeps the approval sentence while Auto is off', () => {
+        renderWithHost(<Composer />, state(false, true));
+        expect(describedBy('Agent')?.textContent).toBe(OFF);
+        expect(visibleDescription()).toEqual([OFF]);
+      });
+
+      it('says commands run, and what still asks, while Auto is on with commands', () => {
+        renderWithHost(<Composer />, state(true, true));
+        expect(describedBy('Agent')?.textContent).toBe(WITH_COMMANDS);
+        expect(visibleDescription()).toEqual([WITH_COMMANDS]);
+        expect(screen.queryByText(OFF)).toBeNull();
+      });
+
+      it('says commands still ask while Auto is on without commands', () => {
+        renderWithHost(<Composer />, state(true, false));
+        expect(describedBy('Agent')?.textContent).toBe(WITHOUT_COMMANDS);
+        expect(visibleDescription()).toEqual([WITHOUT_COMMANDS]);
+        expect(screen.queryByText(OFF)).toBeNull();
+      });
+    });
+
+    const READ_ONLY = {
+      ask: 'Read-only. Ask about your code; nothing is changed.',
+      plan: 'Read-only. Build a plan to review before any change.',
+    } as const;
+
+    it.each(['ask', 'plan'] as const)(
+      'is unchanged in %s mode while Auto is on, for an open conversation and a draft',
+      (mode) => {
+        const { init } = renderWithHost(<Composer />, open({ mode, on: true }));
+        expect(visibleDescription()).toEqual([READ_ONLY[mode]]);
+        expect(describedBy(mode === 'ask' ? 'Ask' : 'Plan')?.textContent).toBe(READ_ONLY[mode]);
+        init(draftState(true, true, mode), 1);
+        expect(visibleDescription()).toEqual([READ_ONLY[mode]]);
+        expect(describedBy(mode === 'ask' ? 'Ask' : 'Plan')?.textContent).toBe(READ_ONLY[mode]);
+      },
+    );
+
+    it('says the draft hint is about the Agent turns while the composer is in Ask or Plan mode', () => {
+      renderWithHost(<Composer />, draftState(true, true, 'ask'));
+      expect(screen.getByText("Auto is on for this conversation's Agent turns.")).toBeTruthy();
+      expect(screen.queryByText(/first message/)).toBeNull();
+    });
+  });
+
+  it('follows the mode chosen during a turn: Agent chosen during a Plan turn shows the switch', () => {
+    const state = open({ mode: 'plan', running: true });
+    renderWithHost(<Composer />, state);
+    expect(noAuto()).toBeNull();
+    fireEvent.click(radio('Agent'));
+    expect(auto().disabled).toBe(true);
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('follows the mode chosen during a turn for the hint while on', () => {
+    renderWithHost(<Composer />, open({ mode: 'plan', running: true, on: true }));
+    expect(screen.getByText("Auto is on for this conversation's Agent turns.")).toBeTruthy();
+    fireEvent.click(radio('Agent'));
+    expect(
+      screen.getByText('Auto is on: commands and edits in this folder run without asking.'),
+    ).toBeTruthy();
+    fireEvent.click(radio('Ask'));
+    expect(screen.getByText("Auto is on for this conversation's Agent turns.")).toBeTruthy();
+    expect(auto().disabled).toBe(false);
   });
 });

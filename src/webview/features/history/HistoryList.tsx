@@ -60,6 +60,7 @@ function Row({
   onOpened: () => void;
 }) {
   const post = usePost();
+  const autoOffered = useViewState((s) => s.agentAuto.offered);
   const [mode, setMode] = useState<RowMode>('idle');
   const [title, setTitle] = useState(conversation.title);
   const renameInput = useRef<HTMLInputElement>(null);
@@ -197,6 +198,13 @@ function Row({
             <span className="badge badge--attention">
               <Icon name="bell" />
               <span>{conversation.pendingPrompts} waiting for your answer</span>
+            </span>
+          )}
+          {autoOffered && conversation.agentAuto === true && (
+            <span className="history-flag">
+              <Icon name="pass-filled" />
+              <span>Auto</span>
+              <VisuallyHidden>. Auto is on for this conversation's Agent turns.</VisuallyHidden>
             </span>
           )}
           {conversation.aside !== undefined && <AsideFlag parentTitle={parentTitle} />}

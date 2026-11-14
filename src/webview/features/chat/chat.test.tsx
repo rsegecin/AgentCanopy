@@ -6,9 +6,12 @@ import {
   assistantMessage,
   convId,
   makeActive,
+  makePlanDoc,
+  makePlanVersion,
   makeState,
   makeTurn,
   msgId,
+  turnId,
   userMessage,
 } from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
@@ -500,5 +503,54 @@ describe('summarizeToolInput', () => {
     expect(summarizeToolInput('x'.repeat(500)).length).toBeLessThanOrEqual(120);
     expect(summarizeToolInput(undefined)).toBe('');
     expect(summarizeToolInput({})).toBe('');
+  });
+});
+
+describe('the Auto badge on user messages', () => {
+  const article = () => screen.getByRole('article', { name: 'You' });
+  const stateOf = (message: ReturnType<typeof userMessage>) =>
+    makeState({ active: makeActive('c1', { messages: [message] }) });
+
+  it('says "Agent · Auto" for an Agent message sent with Auto', () => {
+    renderWithHost(
+      <MessageList />,
+      stateOf(userMessage('u1', 'go', { mode: 'agent', auto: true })),
+    );
+    expect(within(article()).getByText('Agent · Auto')).toBeTruthy();
+    expect(within(article()).queryByText('Agent')).toBeNull();
+  });
+
+  it.each([
+    ['without the field', {}],
+    ['with auto false', { auto: false }],
+  ] as const)('says plain "Agent" for an Agent message %s', (_name, over) => {
+    renderWithHost(<MessageList />, stateOf(userMessage('u1', 'go', { mode: 'agent', ...over })));
+    expect(within(article()).getByText('Agent')).toBeTruthy();
+    expect(article().textContent).not.toContain('Auto');
+  });
+
+  it('adds a visible Auto marker to the plan execution message, and none without it', () => {
+    const plan = (): ReturnType<typeof makePlanDoc> =>
+      makePlanDoc({
+        versions: [makePlanVersion(1)],
+        approvals: [
+          { version: 1, contentHash: 'hash-v1', approvedAt: 9, executionTurnId: turnId('t-exec') },
+        ],
+      });
+    const exec = (over: Partial<ReturnType<typeof userMessage>>) =>
+      makeState({
+        active: makeActive('c1', {
+          plan: plan(),
+          messages: [
+            userMessage('u2', 'ignored', { turnId: turnId('t-exec'), mode: 'agent', ...over }),
+          ],
+        }),
+      });
+    const { init } = renderWithHost(<MessageList />, exec({ auto: true }));
+    expect(within(article()).getByText('Plan approved: executing version 1')).toBeTruthy();
+    expect(within(article()).getByText('Auto')).toBeTruthy();
+    init(exec({}), 1);
+    expect(within(article()).getByText('Plan approved: executing version 1')).toBeTruthy();
+    expect(within(article()).queryByText('Auto')).toBeNull();
   });
 });

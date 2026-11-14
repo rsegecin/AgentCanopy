@@ -187,8 +187,13 @@
 .composer-hint {
   font-size: 0.85em;
 }
-.composer-modes .plan-lock {
+.composer-modes :is(.plan-lock, .auto-switch) {
   padding: 1px 8px;
+}
+/* On is told by the filled icon, the bold label and the outline, not by colour. */
+.auto-switch--on {
+  font-weight: 600;
+  outline: 1px solid var(--vscode-focusBorder);
 }
 
 /* The message queued behind a running turn, directly above the composer. */

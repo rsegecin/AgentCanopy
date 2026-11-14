@@ -3,6 +3,7 @@ import { fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Mode, QueuedMessage as Queued, TurnStatus, ViewState } from '../../../shared';
 import {
+  autoOffered,
   convId,
   makeActive,
   makeConfigChange,
@@ -445,5 +446,50 @@ describe('QueuedMessage Edit and the composer mode', () => {
     edit();
     expect(host.postedOf('conversation.setMode')).toHaveLength(0);
     expect(host.postedOf('queue.edit')).toHaveLength(1);
+  });
+});
+
+describe('QueuedMessage Auto label', () => {
+  const withAuto = (
+    auto: boolean | undefined,
+    over: { offered?: boolean; mode?: Mode } = {},
+  ): ViewState => {
+    const base = state({ queued: queued({ mode: over.mode ?? 'agent' }) });
+    return {
+      ...base,
+      ...(over.offered === false ? {} : autoOffered()),
+      active: {
+        ...base.active!,
+        meta: { ...base.active!.meta, ...(auto === undefined ? {} : { agentAuto: auto }) },
+      },
+    };
+  };
+  const head = () => region().querySelector('.queued-head') as HTMLElement;
+
+  it('reads "Agent · Auto" for a queued Agent message while the conversation has Auto on', () => {
+    renderWithHost(<QueuedMessage />, withAuto(true));
+    expect(within(head()).getByText('Agent · Auto')).toBeTruthy();
+  });
+
+  it.each([
+    ['Auto is off', withAuto(false)],
+    ['the flag is absent', withAuto(undefined)],
+    ['the setting does not offer Auto', withAuto(true, { offered: false })],
+  ] as const)('reads plain "Agent" when %s', (_name, s) => {
+    renderWithHost(<QueuedMessage />, s);
+    expect(within(head()).getByText('Agent')).toBeTruthy();
+    expect(head().textContent).not.toContain('Auto');
+  });
+
+  it('follows the switch when the user turns Auto off', () => {
+    const { init } = renderWithHost(<QueuedMessage />, withAuto(true));
+    expect(within(head()).getByText('Agent · Auto')).toBeTruthy();
+    init(withAuto(false), 1);
+    expect(within(head()).getByText('Agent')).toBeTruthy();
+  });
+
+  it.each(['plan', 'ask'] as const)('does not mark a queued %s message', (mode) => {
+    renderWithHost(<QueuedMessage />, withAuto(true, { mode }));
+    expect(head().textContent).not.toContain('Auto');
   });
 });

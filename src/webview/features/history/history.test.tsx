@@ -2,7 +2,14 @@
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { ViewState } from '../../../shared';
-import { convId, makeActive, makeState, makeSummary, msgId } from '../../test-support/fixtures';
+import {
+  autoOffered,
+  convId,
+  makeActive,
+  makeState,
+  makeSummary,
+  msgId,
+} from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
 import { HistoryList, highlightTerms } from './HistoryList';
 import { groupByDay } from './grouping';
@@ -425,5 +432,48 @@ describe('highlightTerms', () => {
 
   it('returns the text unchanged for an empty query', () => {
     expect(highlightTerms('plain', '  ')).toEqual(['plain']);
+  });
+});
+
+describe('the Auto flag', () => {
+  const rowOf = (title: string) =>
+    screen.getByRole('button', { name: new RegExp(`^${title}`) }).closest('li') as HTMLElement;
+  const list = (extra: Partial<ViewState>) =>
+    makeState({
+      conversations: [
+        makeSummary('a', {
+          title: 'With auto',
+          mode: 'agent',
+          agentAuto: true,
+          updatedAt: at(0, 9),
+        }),
+        makeSummary('b', { title: 'Without', mode: 'agent', updatedAt: at(0, 8) }),
+        makeSummary('c', {
+          title: 'Turned off',
+          mode: 'agent',
+          agentAuto: false,
+          updatedAt: at(0, 7),
+        }),
+      ],
+      ...extra,
+    });
+
+  it('marks a conversation with Auto on, with an icon, visible text and words for screen readers', () => {
+    renderList(list(autoOffered()));
+    const flag = rowOf('With auto').querySelector('.history-flag') as HTMLElement;
+    expect(flag.querySelector('.codicon')).not.toBeNull();
+    expect(within(flag).getByText('Auto')).toBeTruthy();
+    expect(flag.querySelector('.visually-hidden')?.textContent).toContain('Auto is on');
+  });
+
+  it('does not mark a conversation without it or with it off', () => {
+    renderList(list(autoOffered()));
+    expect(within(rowOf('Without')).queryByText('Auto')).toBeNull();
+    expect(within(rowOf('Turned off')).queryByText('Auto')).toBeNull();
+  });
+
+  it('shows no flag when the setting does not offer Auto', () => {
+    renderList(list({}));
+    expect(screen.queryByText('Auto')).toBeNull();
   });
 });

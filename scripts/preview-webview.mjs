@@ -887,6 +887,65 @@ function page(origin, query) {
       );
       a.asides = [${JSON.stringify(asideSamples)}[asideVariant === 'running' ? 'streaming' : 'done']];
     }
+    // ?auto=1: Auto is offered and on in the open conversation (Agent mode): an Agent message and the
+    // plan execution message were sent with it, its tool cards show "Auto-approved" next to the ones
+    // approved by the user and by the policy, the composer shows the switch on and its hint, and the
+    // plan card says it runs with Auto. A read outside the folder still waits for the user. Use
+    // ?tab=history to see the flag in History.
+    // ?auto=draft: no conversation is open, the composer is in Agent mode and the draft flag is on.
+    const autoVariant = params.get('auto');
+    if (autoVariant === '1' && state.active) {
+      const a = state.active;
+      state.agentAuto = { offered: true, commands: true };
+      a.meta = { ...a.meta, mode: 'agent', agentAuto: true };
+      state.conversations = state.conversations.map((c) => (c.id === a.meta.id ? { ...c, mode: 'agent', agentAuto: true } : c));
+      const at = (id, name, input, extra) => ({
+        kind: 'tool',
+        call: { id, name, input, inputTruncated: false, status: 'done', approval: 'auto', parentId: null, startedAt: Date.now(), endedAt: Date.now(), ...extra },
+      });
+      const before = a.messages.findIndex((m) => m.id === 'm5');
+      a.messages = [
+        ...a.messages.slice(0, before),
+        {
+          role: 'user',
+          id: 'm4a',
+          turnId: 't2b',
+          createdAt: Date.now() - 40000,
+          text: 'Run the existing tests first.',
+          mode: 'agent',
+          attachments: [],
+          auto: true,
+        },
+        {
+          role: 'assistant',
+          id: 'm4b',
+          turnId: 't2b',
+          createdAt: Date.now() - 38000,
+          parts: [
+            at('toolu_a1', 'Bash', { command: 'npm test', description: 'Run the unit tests' }, { resultPreview: 'Tests 120 passed' }),
+            at('toolu_a2', 'Bash', { command: 'git status --short', description: 'Show changed files' }),
+            at('toolu_a3', 'Edit', { file_path: 'src/server/router.ts', old_string: 'app.use(v1Router)', new_string: 'app.use(limit, v1Router)' }),
+            at('toolu_a4', 'Bash', { command: 'rm -rf build' }, { approval: 'user' }),
+            at('toolu_a5', 'Edit', { file_path: 'src/server/rate-limit.ts', old_string: 'a', new_string: 'b' }, { approval: 'policy' }),
+            { kind: 'text', text: 'The tests pass.' },
+          ],
+        },
+        ...a.messages.slice(before).map((m) => (m.id === 'm5' ? { ...m, auto: true } : m)),
+      ];
+      a.turns = [
+        ...a.turns.filter((t) => t.id !== 't3'),
+        { id: 't2b', mode: 'agent', model: 'sonnet', startedAt: Date.now() - 40000, endedAt: Date.now() - 35000, status: 'completed' },
+        ...a.turns.filter((t) => t.id === 't3'),
+      ];
+    }
+    if (autoVariant === 'draft') {
+      state.active = null;
+      state.review = { entries: [], configChanges: [], busy: false };
+      state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
+      state.defaults = { ...state.defaults, mode: 'agent' };
+      state.agentAuto = { offered: true, commands: true };
+      state.draftAgentAuto = true;
+    }
     // ?changes=both: no turn runs and the folder is free, so the changes card shows one configuration
     // change and the file changes together (the card's body scrolls past 320px, hence a single one).
     if (params.get('changes') === 'both' && state.active) {
@@ -979,7 +1038,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft)`,
   );
 } else {
   const chrome =
@@ -1031,6 +1090,9 @@ if (!process.argv.includes('--check')) {
     { name: 'chat-aside-streaming-dark', query: '?tab=chat&aside=running', size: '520,1500' },
     { name: 'chat-aside-switch-dark', query: '?tab=chat&sendMode=ask', size: '520,1500' },
     { name: 'chat-aside-done-light', query: '?tab=chat&aside=done&theme=light', size: '520,1500' },
+    { name: 'chat-auto-dark', query: '?tab=chat&auto=1', size: '520,1800' },
+    { name: 'chat-auto-draft-dark', query: '?tab=chat&auto=draft', size: '520,700' },
+    { name: 'history-auto-dark', query: '?tab=history&auto=1', size: '520,700' },
     { name: 'history-light', query: '?tab=history&theme=light', size: '520,700' },
     { name: 'history-aside-dark', query: '?tab=history&aside=history', size: '520,700' },
     { name: 'checkpoints-dark', query: '?tab=checkpoints', size: '520,700' },

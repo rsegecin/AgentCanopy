@@ -560,3 +560,25 @@ describe('tool card accessibility', () => {
     expect(described?.textContent).toContain('Done');
   });
 });
+
+describe('approval by Auto', () => {
+  it('shows "Auto-approved" next to the other approval labels', () => {
+    render([
+      call('Bash', { command: 'ls' }, { id: 'a', approval: 'auto' }),
+      call('Bash', { command: 'pwd' }, { id: 'b', approval: 'user' }),
+      call(
+        'Edit',
+        { file_path: 'a.ts', old_string: 'a', new_string: 'b' },
+        { id: 'c', approval: 'policy' },
+      ),
+    ]);
+    const headers = Array.from(document.querySelectorAll('.tool-card-header')).map(
+      (h) => h.textContent ?? '',
+    );
+    expect(headers[0]).toContain('Auto-approved');
+    expect(headers[1]).toContain('Approved by you');
+    expect(headers[1]).not.toContain('Auto-approved');
+    expect(headers[2]).toContain('Allowed by AgentCanopy');
+    expect(headers[2]).not.toContain('Auto-approved');
+  });
+});

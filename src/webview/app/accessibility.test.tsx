@@ -13,6 +13,7 @@ import { HistoryList } from '../features/history/HistoryList';
 import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDock';
 import {
   assistantMessage,
+  autoOffered,
   makeActive,
   makeAside,
   makeCheckpoint,
@@ -969,6 +970,77 @@ describe('keyboard, names, roles and states', () => {
 });
 
 /* ------------------------------------------------------------------ 8. text alternatives, scrollable boxes */
+
+describe('the Auto switch', () => {
+  const stateOf = (
+    over: { on?: boolean; running?: boolean; mode?: 'ask' | 'agent' } = {},
+    extra: Partial<ViewState> = {},
+  ) =>
+    makeState({
+      ...autoOffered(),
+      active: makeActive('c1', {
+        meta: { mode: over.mode ?? 'agent', agentAuto: over.on === true },
+        turns: [makeTurn({ status: over.running === true ? 'running' : 'completed' })],
+      }),
+      ...extra,
+    });
+  const auto = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Auto' });
+
+  it('has a name and a pressed state', () => {
+    const { init } = renderWithHost(<Composer />, stateOf());
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    init(stateOf({ on: true }), 1);
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+    expect(auto().getAttribute('type')).toBe('button');
+  });
+
+  it('exposes why it cannot be turned on, with the real disabled attribute', () => {
+    renderWithHost(<Composer />, stateOf({ running: true }));
+    expect(auto().disabled).toBe(true);
+    const ids = (auto().getAttribute('aria-describedby') ?? '').split(' ');
+    expect(ids.map((id) => document.getElementById(id)?.textContent)).toEqual([
+      'Auto can be turned on when the turn ends.',
+    ]);
+  });
+
+  it('exposes the notice as the reason while the composer is blocked', () => {
+    renderWithHost(<Composer />, stateOf({}, { trusted: false }));
+    expect(auto().disabled).toBe(true);
+    const reason = document.getElementById(auto().getAttribute('aria-describedby') ?? '');
+    expect(reason?.textContent).toContain('not trusted');
+  });
+
+  it('does not convey the on state by colour alone', () => {
+    const { init } = renderWithHost(<Composer />, stateOf());
+    const off = auto().querySelector('.codicon')?.className;
+    init(stateOf({ on: true }), 1);
+    // The state is in the pressed attribute, the icon, and the hint line in words; the class adds
+    // weight and an outline (checked in styles.test.ts).
+    expect(auto().querySelector('.codicon')?.className).not.toBe(off);
+    expect(auto().querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/^Auto is on:/)).toBeTruthy();
+  });
+
+  it('is turned off in every mode, so it is never stuck on', () => {
+    renderWithHost(<Composer />, stateOf({ on: true, mode: 'ask', running: true }));
+    expect(auto().disabled).toBe(false);
+  });
+
+  it('is flagged in History in words, not by the icon alone', () => {
+    renderWithHost(
+      <HistoryList onOpened={() => undefined} />,
+      makeState({
+        ...autoOffered(),
+        conversations: [makeSummary('a', { title: 'Talk', mode: 'agent', agentAuto: true })],
+      }),
+    );
+    const flag = document.querySelector('.history-flag') as HTMLElement;
+    expect(flag.textContent).toContain('Auto');
+    expect(flag.querySelector('.visually-hidden')?.textContent).toContain('Auto is on');
+    expect(flag.querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+  });
+});
 
 describe('scrollable boxes and text alternatives', () => {
   it('gives the changes card a name, a toggle that states what it controls, and a reachable scroll box', () => {

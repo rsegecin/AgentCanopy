@@ -96,6 +96,7 @@ body.vscode-high-contrast
     .plan-option--chosen,
     .prompt-card--needs-answer,
     .plan-lock--on,
+    .auto-switch--on,
     .segmented-option:has(input:checked),
     .reference-option--active,
     .tab[aria-selected='true']
@@ -106,6 +107,7 @@ body.vscode-high-contrast-light
     .plan-option--chosen,
     .prompt-card--needs-answer,
     .plan-lock--on,
+    .auto-switch--on,
     .segmented-option:has(input:checked),
     .reference-option--active,
     .tab[aria-selected='true']
