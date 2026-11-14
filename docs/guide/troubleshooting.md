@@ -41,11 +41,20 @@ Close the folder in the other window (or that window), then try again. If the ot
 ## Other reasons an Agent turn does not start
 
 - "Another agent turn is running in this folder. Stop it or wait for it to finish."
-- "The last turn changed tool or editor configuration. Review those changes before starting another turn." Open the Review tab and **Keep** or **Revert** each file. See [Reviewing changes](reviewing-changes.md#configuration-changes).
+- "The last turn changed tool or editor configuration. Keep or revert those changes in the changes card below the chat before starting another Agent turn." A turn in Agent mode changed Claude Code or editor configuration, such as a file under `.claude/agents`, and the changes await your decision. In Agent mode the message box already disables Send and says where to decide, and **Approve and Execute** on a plan is disabled with the same hint. Look under the chat for the **Changes** card, whose **Configuration changes** section lists each file. Open its diff from its path, then **Keep** or **Revert** each one. See [Reviewing changes](reviewing-changes.md#configuration-changes). Ask and Plan are not blocked.
+
+## A message is queued, or a side question will not start
+
+- "A turn is already running in this conversation." Only Agent and Plan messages can be sent while a turn runs; an Ask message becomes a side question. A side question opened as a conversation cannot start another one while it runs: wait for the answer or stop it.
+- "A message is already waiting for this turn. Edit or remove it first." One message can be queued per conversation. Use **Edit** or **Remove** on the chip above the message box, or **Send now**.
+- A queued message that is not sent when the turn ends. A message of any mode stays queued after a stop or an error, and the chip offers **Send**. A queued Agent message also waits while configuration changes are undecided and while an Agent turn runs in the same folder: its **Send** is disabled and the chip says what it waits for. A queued Plan message is not held back by those two. A queued message is kept in memory only, so closing or reloading the window loses it.
+- "The side question could not be started." A warning in the chat view. The side question did not get going and leaves nothing behind. Send it again.
+- "A side question is already running. Wait for it or stop it." One side question runs at a time per conversation. Stop it with **Stop** on its card, or wait. See [Ask mode](ask-mode.md#ask-while-the-agent-works).
+- A side question that did not see something you did in the running turn. It knows the conversation up to the last finished turn only.
 
 ## An interrupted turn and "Recover now"
 
-If VS Code closes or crashes during an Agent turn, AgentCanopy notices at the next start. The turn is marked interrupted, and the files that changed are listed in the Review tab as "Changed around an interrupted turn", because AgentCanopy cannot tell which of them the agent made. A note says: "AgentCanopy was closed while this turn was running, so it cannot tell which of these changes the agent made."
+If VS Code closes or crashes during an Agent turn, AgentCanopy notices at the next start. The turn is marked interrupted, and the files that changed are listed in the Changes card as "Changed around an interrupted turn", because AgentCanopy cannot tell which of them the agent made. A note says: "AgentCanopy was closed while this turn was running, so it cannot tell which of these changes the agent made."
 
 Claude Code may still be running. AgentCanopy tries to stop the old process. When it cannot be sure the process has ended, a banner says "Claude Code from an interrupted turn may still be running (process N). Stop it, then choose Recover now." (or "is still running ... Stop it, then reload the window."). Stop the process yourself, then click **Recover now** on the banner and confirm "Recover the interrupted turn now?" Do this only after Claude Code has stopped; otherwise its later changes are not tracked. On Windows a process cannot be matched by its start time, so AgentCanopy cannot be sure it is the old one and shows this banner whenever a process with the recorded id is still alive.
 

@@ -4,48 +4,58 @@ Plan is for work you want to think through before anything changes. The agent ex
 
 ## Create a plan
 
-1. Choose **Plan** under the message box and describe the goal.
+1. Choose **Plan** under the message box and describe the goal. Your message is marked "Plan request" in the chat.
 2. The agent reads your code with the same four read-only tools as [Ask mode](ask-mode.md), plus one more tool, `submit_plan`, which saves the plan. The same checks that keep Ask read-only apply here.
-3. Each save is a new immutable version of the plan. The chat shows a card, "Plan updated to version N", with a short summary of what changed and the buttons **Open plan**, **View changes** and **Revert to version N-1**. The Plan tab appears as soon as a plan exists.
+3. When there are choices to make, the agent asks you first, before it writes the plan. The question appears in the chat as a **Plan options** card. Pick your options and submit; the agent goes on with your answers and writes a plan that follows them.
+4. Each save is a new immutable version of the plan. The chat shows a plan card for it, in the order things happened: request, the agent's activity, options, plan.
+
+You can choose Plan while the agent works: the mode applies to the next message and does not affect the running turn. A Plan message sent meanwhile is queued and sent when the turn completes; see [Agent mode](agent-mode.md#send-while-the-agent-works).
 
 If the agent answers in chat without saving a plan, a card says: "No plan was saved in this turn. Ask for the plan again, or switch to Ask mode if you only wanted an answer."
 
-## What a plan contains
+## The plan card
 
-The Plan tab shows the title, objective, requirements, analysis, architecture, relevant files (with what happens to each), stages with their dependencies and acceptance checks, external dependencies, diagrams, alternatives that were considered, decisions to make, open questions, a testing strategy and acceptance criteria. Diagrams are written in Mermaid and drawn with Mermaid's strict security level.
+The newest card is the working one. It shows:
+
+- The plan's title, a button that opens the plan as a read-only Markdown document in an editor tab. It is the source, exactly the text that is approved, so what you read is what the agent receives. VS Code's own **Open Preview** shows it rendered.
+- The version ("Version 4, restored by you from version 1" after a revert) and a short summary of what changed.
+- **Your decisions**, the options you chose, and **Still to decide**, the decision points and open questions the plan still carries.
+- **Approve and Execute**, **View changes** and **Revert to version N-1**, and the time of each approval of this version.
+
+The document holds the title, objective, requirements, analysis, architecture, relevant files (with what happens to each), stages with their dependencies and acceptance checks, external dependencies, diagrams, alternatives that were considered, decisions to make, open questions, a testing strategy and acceptance criteria. Diagrams are in the document as Mermaid source text.
+
+The chat does not draw a plan's diagrams or its stage dependency diagram, and file names in a plan are not links. Each version compares only with the version before it (see below), and a plan cannot be exported: the document opened from the title is the way to read or copy it. There is no Plan tab.
 
 ## Answer questions and make decisions
 
-- **Decisions to make** are choices between approaches. Pick an option; the agent's recommendation is marked.
+- **Decisions to make** are choices between approaches. Pick an option on the plan card; the agent's recommendation is marked.
 - **Open questions** take a single choice, several choices or free text.
-- Questions the agent asks in chat (question cards) are stored as decisions too.
+- Questions the agent asks in chat (the plan options and other question cards) are stored as decisions too.
 
 Your answers are listed under **Your decisions**. They belong to you, not to the model: a new version cannot change them, and they carry over to later versions as long as the question is still in the plan. The next turn receives them.
 
 ## Versions, compare and revert
 
-- Use the **Version** menu to read an older version. Older versions are read-only.
-- **Compare with...** opens VS Code's diff editor on the two versions as Markdown.
-- **Revert to this version** saves a copy of that version as a new latest version. Nothing is deleted.
-- **Export** opens the version as Markdown in an editor tab, and **Open in editor** moves the plan view into the editor area.
+- Every version has its own card in the chat. Older cards are compact and read-only: the title opens that version, **View changes** compares it with the version before it in VS Code's diff editor, and **Restore this version** saves a copy of it as a new latest version. Restore is not shown when its content equals the latest.
+- On the newest card, **View changes** compares it with the version before, and **Revert to version N-1** saves a copy of that version as the new latest. Nothing is deleted.
 
 ## Lock the plan
 
-**Lock plan** (next to the mode selector, and **Locked** in the Plan tab) removes the plan tool from the turn. While locked, the agent can answer questions about the plan but cannot change it. Ask mode always works with the plan locked.
+**Lock plan** (next to the mode selector) removes the plan tool from the turn. While locked, the agent can answer questions about the plan but cannot change it. Ask mode always works with the plan locked. The lock can only be changed between turns.
 
 ## Approve and execute
 
-**Approve and execute version N** is the only way a plan runs. It is shown for the latest version and is disabled while a turn is running.
+**Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running or while configuration changes from an earlier Agent turn await your decision in the Changes card.
 
 1. Click it. A native VS Code dialog, "Approve and execute this plan?", names the version and warns if questions or decisions are still unanswered.
 2. Confirm with **Approve and Execute**. AgentCanopy records the approval for that exact version and content before anything starts. If the plan changed since you looked at it, you are asked to review it and approve again.
-3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt.
+3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt. In the chat its message reads "Plan approved: executing version N".
 
-From then on the usual Agent rules apply: edits are tracked, commands ask, and you [review the changes](reviewing-changes.md) afterwards. The plan shows the time of each approval.
+From then on the usual Agent rules apply: edits are tracked, commands ask, and you [review the changes](reviewing-changes.md) afterwards. The plan card shows the time of each approval.
 
 ## Switch modes freely
 
-You can change the mode of a conversation between turns. The conversation keeps one Claude Code session, and each turn gets the tool set of its own mode. A branch of the conversation gets its own copy of the plan as it stood when the fork point's turn ended; see [Checkpoints and branches](checkpoints-and-branches.md).
+You can change the mode of a conversation at any time, also while the agent works: the choice applies to the next message and does not affect the running turn. The conversation keeps one Claude Code session, and each turn gets the tool set of its own mode. A branch of the conversation gets its own copy of the plan as it stood when the fork point's turn ended; see [Checkpoints and branches](checkpoints-and-branches.md).
 
 ## Related
 

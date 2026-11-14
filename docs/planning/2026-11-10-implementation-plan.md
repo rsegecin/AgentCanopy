@@ -13,7 +13,7 @@
 | 6. Forking and checkpoints | Done. Exact and rebuilt branches and checkpoint restore verified live against the real CLI; a four-reviewer pass found 2 blockers and 9 major issues, all fixed with regression tests |
 | 7. Polish and release | Done. Accessibility pass, documentation, security review (1 critical, fixed and verified live), VSIX built, installed in a clean profile and tested there |
 | 8. Pasted images | Done in code. Image input through `--input-format stream-json` probed live on Windows (CLI 2.1.323): image read, resume, whole and cut forks, Ask-mode permission flow, 5.85 MB image. Unit and integration tests pass; the chip renders in the preview under the CSP. Not yet tried by hand in VS Code; the live image test is written and not run |
-| 9. Chat cards and concurrent send | In progress. Plan: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md` |
+| 9. Chat cards and concurrent send | Done in code (plan: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md`). Unit tests and the VS Code integration tests pass; every card renders in the preview under the CSP. Each phase was reviewed by independent reviewers and what they confirmed was fixed with regression tests. Not yet tried by hand in VS Code; the live tests were not run, so the new Plan-mode prompt wording is unverified against the real CLI |
 
 Approved by the owner on 2026-11-10. Updated at every phase commit.
 
@@ -23,6 +23,16 @@ Phase 9 (added 2026-11-13 at the owner's request): the Plan and Review tabs are 
 - **Note on C11**: the plan card's title opens the plan as read-only Markdown source, exactly the text that is hashed and sent on approval. The rendered preview is not opened automatically, because it can load remote images from model-written text; VS Code's own Open Preview stays available. Executing a plan still goes through the native modal.
 - **Accepted losses**: rendered Mermaid and the stage-dependency diagram for plans, clickable file links in the plan, comparing arbitrary plan versions (each card compares with the version before it), the "No longer in the plan" list, exporting a plan as an untitled document.
 - A queued message is kept in memory only and is lost if the window reloads before it is sent. A side question knows the conversation up to the last finished turn, not the work in progress, and never affects the running turn.
+
+Decided while Phase 9 was built (not in the plan as written):
+
+- **The mode can be changed while a turn runs.** The host refuses to change a conversation's mode under a running turn, so without this a side question could not be reached during an Agent turn, nor a Plan message queued behind one. The choice is kept in the view and applies to the next message; the running turn is not affected.
+- A side question's branch has its own copy of the plan, like any other branch, so the plan is attached read-only to the question. Its first turn always starts a new session with the transcript rebuilt, and never holds or copies the parent's session.
+- A queued Agent message also waits while an Agent turn of another conversation runs in the folder, instead of being used up by a turn the tracker refuses. An Ask message sent in the instant a turn is ending is queued and sent as an ordinary turn.
+- Editing a queued message returns its text through `prefill-composer`, which now goes in front of what the user typed instead of replacing it.
+- The plan card still lists decisions whose question is no longer in the plan, each tagged "No longer in the plan"; only the separate list is gone.
+- The hint to reject the whole file, for a single change that may hold the user's own work, moved from the panel to the editor with the hunk actions.
+- `roadmap/` is excluded from Prettier, like `docs/`.
 
 Phase 8 (added 2026-11-12 at the owner's request): images pasted into the composer. The plan's "Images are not supported in the first version" (section 2) is lifted. Image bytes stay in the extension host's memory until the turn ends and are never stored; the conversation keeps a reference (SHA-256, type, size). A turn with images adds `--input-format stream-json` and sends one stream-json user line; every other turn is sent exactly as before. No Agent SDK.
 

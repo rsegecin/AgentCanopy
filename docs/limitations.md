@@ -58,19 +58,29 @@ This page lists what AgentCanopy does not do, does not guarantee, or cannot undo
 - Forking never changes files, so a branch can see a folder that is newer than the point it was forked from. The branch says so when later turns changed files.
 - You cannot fork from the last message of a turn that is still running.
 
+## Sending while the agent works
+
+- **Nothing can be added to a running turn.** Claude Code reads its prompt once, when the turn starts, and AgentCanopy knows no documented way to steer a turn that has begun. A message sent while the agent works is queued (Agent and Plan) or answered apart (Ask).
+- **One queued message per conversation.** A second one is refused until you edit, remove or send the first.
+- **A queued message is lost if the window reloads** before it is sent. It is kept in memory only, never stored.
+- **Send now stops the running turn first**, with the limits of Stop, including that on Windows the Claude Code session keeps nothing of the stopped turn (see Platform below).
+- **A side question does not see the turn in progress.** It knows the conversation up to the last finished turn, with the context rebuilt from the visible messages, so it has the limits of a rebuilt branch (see above). It has its own copy of the plan, read-only, and what is decided there does not reach the original conversation's plan. The agent never sees the question or its answer.
+- **One side question at a time per conversation**, and none inside a side question that you opened as a conversation. Each one is a branch stored as a conversation, a copy of the finished turns, until you delete it.
+
 ## Platform
 
 - **Tested on macOS.** Windows and Linux are covered by the CI configuration, which has not been run yet. Expect problems there.
 - **On Windows, 8.3 short names are not recognised as protected paths.** A short name such as `.GIT~1` for `.git` is not matched by the protected-path list, so an edit through it does not get the extra prompt.
 - **Windows supports the native install only** (`claude.exe`), not npm shims.
-- **Stopping a turn on Windows is a hard stop.** On macOS and Linux AgentCanopy interrupts Claude Code first, and the partial answer is kept.
+- **Stopping a turn on Windows is a hard stop.** On macOS and Linux AgentCanopy interrupts Claude Code first, and the partial answer is kept. On Windows the process and its children are killed, so the Claude Code session keeps nothing of the stopped turn. That includes a stop made by **Send now** on a queued message: the message is sent into a session that does not contain the stopped turn.
 - **On Windows, the process of an interrupted turn cannot be matched by its start time**, so after a crash AgentCanopy may ask you to stop the old process yourself and choose **Recover now**.
 - Virtual workspaces and folders that are not on the local file system are not supported. In an untrusted workspace nothing runs and only history is readable.
 
 ## Interface
 
 - **A compromised webview could still start a turn or allow a single command without a native dialog.** Native dialogs guard the high-impact actions, and the Content Security Policy and the HTML sanitizer exist to keep script out of the view in the first place. [SECURITY.md](../SECURITY.md) lists what a compromised view could still do.
-- **Mermaid diagrams use the classic layout only.** The ELK layout engine is not shipped with AgentCanopy because of its license (EPL-2.0). A diagram that explicitly asks for the ELK layout cannot be drawn and shows its source instead.
+- **Plans are cards in the chat and a read-only Markdown document, nothing more.** The document is the source: a plan's diagrams are shown as Mermaid text, not drawn, and there is no stage dependency diagram. File names in a plan are not links. A plan version compares only with the version before it, and a plan cannot be exported. Review of single changes (hunks) is only in the editor, through CodeLens, gutter marks and the keys, not in the Changes card.
+- **Mermaid diagrams in chat messages use the classic layout only.** The ELK layout engine is not shipped with AgentCanopy because of its license (EPL-2.0). A diagram that explicitly asks for the ELK layout cannot be drawn and shows its source instead.
 - Links in Mermaid diagrams are inert: their text stays and nothing opens.
 - Diagrams are drawn only when their code block is complete, at Mermaid's strict security level, and with labels as plain SVG text rather than HTML.
 - Accessibility has been checked with automated tests only. It has not been tested with a screen reader. See the README.

@@ -2,11 +2,11 @@
 
 After an Agent turn, every file the agent changed is listed for review. Accepting and rejecting are AgentCanopy decisions and have nothing to do with Git staging. The changes are already on disk while you review; rejecting puts the earlier content back.
 
-Accept and reject are disabled while a turn is running in the folder ("Wait for the turn to finish."). Accepting through a command or a CodeLens while an Agent turn runs says "Wait for the turn to finish before accepting changes."
+While an Agent turn runs in the folder, the Changes card stays but lists no files. In their place it says: "File changes can be reviewed when the turn ends." The configuration section stays too. Accepting through a command or a CodeLens while an Agent turn runs says "Wait for the turn to finish before accepting changes."
 
 ## Where to review
 
-- **Review tab** in the AgentCanopy view. It appears when there is something to review and shows a count of pending changes.
+- **The Changes card** under the chat in the AgentCanopy view. It appears when there is something to review or decide. Review of single changes is not in the view; it is only in the editor, below.
 - **Status bar.** An item such as "2 agent changes" opens all changes in one diff editor.
 - **The file itself.** Changed lines are marked in the gutter. Above the file there are **Accept File** and **Reject File** actions, and above each change **Accept Change**, **Reject Change** and **Show Diff**. If the file has unsaved edits, the actions are replaced by "Save to review the agent's changes".
 - **Editor title bar.** Accept, reject and diff icons appear when the open file has pending changes.
@@ -23,11 +23,15 @@ In an editor showing a file with pending changes:
 
 On macOS, Alt is the Option key. The cursor must be in the change, and the file must be saved.
 
-## The Review tab
+## The Changes card
 
-Each file shows what happened to it (Added, Modified, Deleted, Permissions or Type changed), its path (click to open the diff), the lines added and removed, and the buttons **Accept**, **Reject** and **Diff**. Open the arrow beside a file to see its changes line by line, each with **Accept Change** and **Reject Change**. At the top are **Accept All**, **Reject All** and **Open All in Diff Editor**.
+The card sits between the chat and the message box, also when no conversation is open and in the chat opened in the editor area. Its header, **Changes**, summarizes what is there, for example "2 configuration changes · 3 pending". The arrow in the header collapses the files below it. The configuration section, when there is one, stays visible whatever you do.
 
-Accepted files move to a collapsed **Accepted** list and stay readable. Line-by-line review works for UTF-8 text files up to 2 MiB. Other files are accepted or rejected as a whole, and binary files have no diff.
+**Files.** Each file shows what happened to it (Added, Modified, Deleted, Permissions or Type changed), its path, the lines added and removed, and the buttons **Accept** and **Reject**. Click the path to open the file's diff in VS Code's diff editor. At the top are **Accept All**, **Reject All** and **Open All in Diff Editor**. Reject All includes a file whose source is uncertain only when you tick it (see below). Accepted files move to a collapsed **Accepted** group, or the line "No pending changes, N accepted", and stay readable.
+
+**Single changes.** The card does not list changes line by line. Review them in the editor: the gutter marks, CodeLens and the keys above. Line-by-line review works for UTF-8 text files up to 2 MiB. Other files are accepted or rejected as a whole, and binary files have no diff.
+
+**The workspace snapshot.** The card appears only when there are changed files or configuration changes, and only while it is shown does it show the snapshot. While AgentCanopy prepares the baseline of the folder, the card shows its progress, and when the baseline is incomplete it says so. With nothing to review there is no card, so no progress and no warning.
 
 ## Source uncertain
 
@@ -49,7 +53,7 @@ A file marked **Cannot be restored** can be accepted, but **Reject** is disabled
 - larger than `agentCanopy.snapshots.maxFileSizeMB` (10 MB by default),
 - beyond the `agentCanopy.snapshots.maxTotalSizeMB` budget (512 MB by default).
 
-Files the agent edits with its own file tools are captured before the edit whatever their size, up to 256 MB. Files matching sensitive patterns, such as `.env` and key files, are not kept as an after-state, so a restore of one of them cannot recreate what the agent wrote there. When the baseline is incomplete, the Review tab says so, for example when a folder has more files than AgentCanopy tracks, so that changes to some of them are not seen at all.
+Files the agent edits with its own file tools are captured before the edit whatever their size, up to 256 MB. Files matching sensitive patterns, such as `.env` and key files, are not kept as an after-state, so a restore of one of them cannot recreate what the agent wrote there. When the baseline is incomplete, the Changes card says so while it is shown, for example when a folder has more files than AgentCanopy tracks, so that changes to some of them are not seen at all.
 
 ## Rejecting
 
@@ -67,11 +71,13 @@ File restore does not undo Git operations, database changes, network calls or an
 
 ## Configuration changes
 
-AgentCanopy compares a set of files before and after every Agent turn: `.claude/settings.json` and `.claude/settings.local.json`, `.mcp.json`, `.vscode/settings.json`, `tasks.json`, `launch.json` and `mcp.json`, the files under `.claude/skills`, `hooks`, `commands` and `agents`, `.husky`, and Git's `config` and `hooks` (in the folder and at the Git root). If any changed, a warning icon appears in the header. Click it to open the Review tab, which shows:
+AgentCanopy compares a set of files before and after every Agent turn: `.claude/settings.json` and `.claude/settings.local.json`, `.mcp.json`, `.vscode/settings.json`, `tasks.json`, `launch.json` and `mcp.json`, the files under `.claude/skills`, `hooks`, `commands` and `agents`, `.husky`, and Git's `config` and `hooks` (in the folder and at the Git root). If any changed, the Changes card shows a **Configuration changes** section with this warning, and the section stays visible, also when the rest of the card is collapsed:
 
-"The last turn changed tool or editor configuration. Such files can make later commands run without asking. Decide for each before the next Agent turn."
+"The last turn changed tool or editor configuration. Such files can make later commands run without asking. Keep or revert each one before the next Agent turn."
 
-For each file choose **Show Changes**, **Keep** or **Revert**. Revert is disabled when the earlier content was not kept. Keep and Revert both ask you to confirm in a native dialog, because either one is final: keeping drops the only copy of the earlier file and lifts the block on Agent turns. The next Agent turn will not start until every file is decided.
+For each file, click its path to see the diff, then choose **Keep** or **Revert**. Revert is disabled when the earlier content was not kept. Keep and Revert both ask you to confirm in a native dialog, because either one is final: keeping drops the only copy of the earlier file and lifts the block on Agent turns.
+
+While a configuration change is undecided, an Agent turn does not start. In Agent mode the message box disables Send and says: "Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode." Ask and Plan still work. **Approve and Execute** on a plan is disabled too, with a hint, and a queued Agent message waits.
 
 ## Related
 

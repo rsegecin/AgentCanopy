@@ -8,7 +8,23 @@ Choose **Agent** under the message box and send your request, or [approve a plan
 
 If files have unsaved changes, a warning lists them: the agent reads from disk, so it only sees what is saved. Set `agentCanopy.unsavedFiles` to `ignore` to turn this warning off.
 
-AgentCanopy refuses to start an Agent turn while another turn is running in the same folder, while the last turn's configuration changes are undecided (see [Reviewing changes](reviewing-changes.md)), or while another VS Code window is tracking the same folder. [Troubleshooting](troubleshooting.md) covers each message.
+An Agent turn does not start in these cases. [Troubleshooting](troubleshooting.md) covers each message.
+
+- **Configuration changes from the last turn are undecided** (see [Reviewing changes](reviewing-changes.md#configuration-changes)). In Agent mode the message box disables Send and says where to decide, in the Changes card under the chat. Ask and Plan still work, and **Approve and Execute** on a plan is disabled too.
+- **Another Agent turn is running in the same folder.**
+- **Another VS Code window is tracking the same folder.**
+
+## Send while the agent works
+
+**Stop** and **Send** are both shown while a turn runs. Nothing can be added to a running turn, so an Agent message sent meanwhile is queued. The mode you choose under the message box applies to the next message and does not affect the running turn: you can change it while the agent works, to **Agent** or **Plan** to queue an instruction of that mode, or to **Ask** to ask a side question. There is one queued message per conversation, and the chip above the message box shows its text with **Edit** (back into the message box), **Remove** and **Send now**.
+
+- The queued message is sent when the running turn completes.
+- If the turn was stopped or ended with an error, a message of any mode stays queued and the chip offers **Send** instead.
+- A queued Agent message also waits while configuration changes are undecided or an Agent turn is running in the same folder in another conversation. Its **Send** is then disabled, and a line on the chip says what it waits for. A queued Plan message is sent regardless of those two.
+- **Send now** stops the running turn and then sends the message. Stopping on Windows is a hard stop; see [limitations](../limitations.md#platform).
+- The queued message is kept in memory only. If the window reloads before it is sent, it is gone.
+
+A question in Ask mode is not queued; see [Ask mode](ask-mode.md#ask-while-the-agent-works). If a side question could not be started, a warning appears in the chat view: "The side question could not be started."
 
 ## Project Claude Code settings
 
@@ -55,13 +71,13 @@ Each tool card shows one of four labels: "Approved by you" (this includes a save
 
 ## Stop a turn
 
-Click **Stop** in the message box. On macOS and Linux, AgentCanopy interrupts Claude Code first and escalates only if it does not stop. On Windows, stopping ends the process and its children at once.
+Click **Stop**, next to **Send** in the message box while a turn runs. Pressing Escape in the message box moves focus to Stop. Stopping keeps a queued message; it does not send it. On macOS and Linux, AgentCanopy interrupts Claude Code first and escalates only if it does not stop. On Windows, stopping ends the process and its children at once.
 
 ## After the turn
 
-- The Review tab lists the changed files. Accept or reject them; see [Reviewing changes](reviewing-changes.md).
+- The Changes card under the chat lists the changed files. Accept or reject them; see [Reviewing changes](reviewing-changes.md).
 - If the agent changed Git state, a note says: "The agent changed Git state (commits, branch or stash). Undoing file changes does not undo that."
-- If the agent changed Claude Code or editor configuration, you must decide on each file before the next Agent turn.
+- If the agent changed Claude Code or editor configuration, the Changes card asks you to decide on each file before the next Agent turn.
 - Each turn is a step you can go back to; see [Checkpoints and branches](checkpoints-and-branches.md).
 - Files you reverted since the last turn are listed in the next prompt, so the agent does not assume its earlier edits still exist.
 

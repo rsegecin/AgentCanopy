@@ -45,7 +45,7 @@ To delete the stored contents and history of a folder at once, run **AgentCanopy
 
 A branch is a new conversation that remembers which conversation and which message it came from. Use **Fork from here** on a message. A fork point is a turn boundary. Forking at one of your messages keeps the turns before it and puts that message back in the message box so you can rephrase it. Forking at an assistant message keeps that whole turn. The original conversation is not changed.
 
-The top of a branch names its parent, with a link to open it, and says what kind of context the branch has. A message that has branches shows a marker with the number of branches and a way to open each.
+The top of a branch names its parent, with a link to open it, and says what kind of context the branch has. A message that has branches shows a marker with the number of branches and a way to open each. A side question (below) has no marker: its card in the chat is the marker.
 
 You cannot branch from the last message of a turn that is still running: "Wait for the turn to finish before branching from its last message." You can branch from the user message of a running turn, which keeps only the turns before it.
 
@@ -61,6 +61,12 @@ An exact branch that later loses its session (Claude Code removed it) is relabel
 If turns that the branch does not keep changed files in the folder, the branch shows a notice: "The files in the workspace include changes made after this point in the conversation. Branching does not change files; use the checkpoint history to restore them." **Forking never touches your files.** The agent in a branch sees the folder as it is now.
 
 A branch gets its own copy of the plan as it stood when the fork point's turn ended, so changes to the plan in one conversation do not change the other.
+
+### Side questions
+
+A question sent in Ask mode while the agent works is a branch that AgentCanopy makes for you; see [Ask mode](ask-mode.md#ask-while-the-agent-works). It keeps the turns that had finished, so its first turn always uses a rebuilt context, because the parent's session is in use and the running turn is not part of the copy. It gets its own copy of the conversation's plan, attached read-only, and decisions made there are not written to the parent's plan. The parent's conversation, session and files are not touched, and the agent in the parent never sees the question.
+
+The answer is shown in a **Side question** card in the parent, where the agent had got to when you asked. History lists the branch under its conversation, marked as a side question. If you open it, it is a normal conversation whose header says it is a side question of its parent, and later turns there do not change the card. Deleting the original conversation keeps the side question as a conversation of its own, still marked as a side question in History, and it cannot have side questions of its own. If the side question could not start, nothing is left behind.
 
 ### Restore and branch from here
 

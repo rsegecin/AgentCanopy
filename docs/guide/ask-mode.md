@@ -10,6 +10,19 @@ Ask is for questions about your code. The agent can read and search files in you
 
 If the agent needs a decision from you, it shows a question card with options and an **Other** field. Answer it and press **Submit**; the turn continues with your answer.
 
+## Ask while the agent works
+
+The mode you choose applies to the next message and does not affect the running turn, so you can switch to **Ask** while the agent works and send a message in the same conversation. The question is answered alongside, in a **Side question** card in the chat, at the point where the running turn had got to. The message box says: "Asked as a side question: the agent keeps working and does not see it."
+
+- It knows the conversation up to the last finished turn, not the work in progress. The agent never sees the question or its answer.
+- It runs in its own conversation, a branch that keeps the finished turns, with the context rebuilt from the visible messages (see [Checkpoints and branches](checkpoints-and-branches.md#pending-exact-or-rebuilt)). The branch gets its own copy of the conversation's plan, like any other branch, attached read-only as in any Ask turn; decisions made there are not written to the original conversation's plan, and **Open as conversation** continues with that copy. It is read-only like any Ask turn, and a prompt it raises, such as a read outside the workspace, appears inside the side question card.
+- One side question runs at a time per conversation: while the agent's turn is still running, Send in Ask mode is disabled until the side question has finished or you stop it with **Stop** on its card. Once the agent's turn has ended, an Ask message is an ordinary turn. A side question has no side questions of its own: in one that you opened as a conversation, Send waits while its turn runs.
+- The card has **Open as conversation**, which opens the branch to continue with follow-up questions. History lists it under its conversation as a side question. Later turns in the branch do not change the card, which keeps showing the first answer.
+
+To queue an instruction for the agent instead, choose **Agent** or **Plan** before you send: see [Agent mode](agent-mode.md#send-while-the-agent-works).
+
+An Ask message sent when nothing is running is an ordinary Ask turn.
+
 ## What the agent can do
 
 Claude Code is started with exactly four tools: Read, Grep, Glob and AskUserQuestion. Nothing else is offered to the model: no edit tools, no shell, no other tool servers, no slash commands.

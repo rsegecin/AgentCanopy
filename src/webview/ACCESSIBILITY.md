@@ -10,6 +10,17 @@ Check this when you add or change UI. `app/accessibility.test.tsx` and `app/styl
 - If an update removes or disables the focused control, use `useFocusRecovery` (`app/focus.ts`) and give the container `tabIndex={-1}`. Do not remount a form to reset it.
 - A tab change moves focus only if it was already lost; never take it from the composer.
 
+## Cards in the chat and above the composer
+
+The view has three tabs (Chat, Checkpoints, History; Checkpoints only once there is a step). Plans, the agent's questions, side questions and the changes of a turn are cards, not tabs. Every card is a labelled region or group, takes `tabIndex={-1}` so focus can land on it, and uses `useFocusRecovery` for the control that may go away.
+
+- **Changes card** (`features/review/ChangesDock.tsx`, between the log and the composer): a `section` named by its "Changes" heading. The header is a disclosure button (`aria-expanded`, `aria-controls`) only while there are files to collapse; the configuration section is outside the collapsed part. The body is a scrolling `role="group"` named "Changes details" with `tabIndex={0}`. Buttons name the file: "Open diff of src/a.ts", "Accept src/a.ts", "Reject src/a.ts", "Keep …", "Revert …", "Include in Reject All: …". A disabled Revert or Reject points to its reason. Focus recovery falls back to the composer's textarea. While the baseline is prepared, one polite status repeats the progress at most every 5 seconds.
+- **Plan cards** (`features/plan/PlanUpdateCard.tsx`): the current card is a `section` named by its title, which is a button ("Title, open version N"). "Your decisions" and "Still to decide" are named groups. Approve and Execute, when disabled, points to the reason (a turn is running, configuration changes are pending, questions have no answer). Older cards are groups named "Plan version N"; View changes and Restore this version say which version in hidden text. One wrapper stays mounted while a card changes between current, older and one-line, and recovery sends focus to the title button of the card shown. The "Plan options" card is the agent's question card, a named group; "Needs your answer" is text, and a new question is scrolled into view, never focused.
+- **Queued message** (`features/chat/QueuedMessage.tsx`, above the composer): a `section` named "Queued message" with a `role="status"` line that says when it will be sent or why not. Its buttons are named "Edit queued message", "Remove queued message" and "Send now, queued message" (or "Send queued message"); a disabled Send points to the status line. The text is clamped and becomes a focusable named group only when it overflows. Focus recovery falls back to the composer.
+- **Composer**: Stop sits beside Send while a turn runs. Escape in the textarea moves focus to Stop. The reason Send is disabled, or the note that an Ask message will be asked as a side question, is text tied to the textarea with `aria-describedby`.
+- **Side question card** (`features/chat/AsideCard.tsx`, in the log at its anchor): a `section` named "Side question: <question>", so several cards differ. Its answer uses the transcript's part renderers and is never in a live region. A status line says "Answering…", "Answered." (once, when it has finished) or "Stopped."; the error of a failed side question is a `role="alert"` line instead, and the rest is polite. The buttons are "Stop side question: <question>" and "Open as conversation: <question>". When Stop goes away, focus stays on the card. A permission or question prompt inside the card is answered there, and one that waits for the user is announced like any other prompt.
+- **History** marks a side question with an icon and the visible words "Side question", and says it in words for screen readers like the branch flag.
+
 ## Names, roles, states
 
 - Say what a control acts on: "Reject src/a.ts". Icon-only buttons use `IconButton` with a `label`.
@@ -33,3 +44,7 @@ Check this when you add or change UI. `app/accessibility.test.tsx` and `app/styl
 
 - Do not add smooth scrolling or animation outside the reduced-motion rules.
 - Long paths, commands and titles wrap or scroll in their own box. Try 260 px width and 200% zoom.
+
+## What was checked
+
+The rules above are covered by automated tests (`app/accessibility.test.tsx`, `app/styles.test.ts` and the component tests) and by this checklist. They have not been tested with a screen reader, so expect rough edges.

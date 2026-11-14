@@ -34,7 +34,14 @@ This writes `agentcanopy-0.1.0.vsix` to the repository root. In VS Code, run **E
 4. Choose a mode (Ask, Plan or Agent) and a model under the message box. New conversations start in the mode set by `agentCanopy.defaultMode`, which is `ask`.
 5. Type a message and press Enter (Shift+Enter adds a line). Type `@` to attach a file or folder, or use the buttons beside the model selector to add a file, a folder, the editor selection or the current problems. **AgentCanopy: Add Selection to Chat** is also in the editor context menu.
 
-The tabs are Chat, History and, when there is something to show, Plan, Review and Checkpoints. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
+The tabs are Chat, Checkpoints and History. Checkpoints appears once there is a step in the folder's history. Plans, the agent's questions and the changes an Agent turn made are cards in the chat, not tabs. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
+
+## While the agent works
+
+You can type and send at any moment. **Stop** and **Send** are both shown while a turn runs. Nothing can be added to a running turn, because Claude Code reads its prompt once when the turn starts, so what happens to a message you send depends on its mode. The mode you choose under the message box applies to the next message and does not affect the running turn, so you can change it while the agent works: choose Ask to ask a side question, or Agent or Plan to queue an instruction of that mode.
+
+- **Agent or Plan.** The message is queued: one per conversation, shown as a chip above the message box with **Edit**, **Remove** and **Send now**. It is sent when the turn completes. After a stop or an error, a message of any mode stays queued and the chip offers **Send**. A queued Agent message also waits, with its **Send** disabled and a line saying what it waits for, while configuration changes are undecided or an Agent turn runs in another conversation of the same folder; a queued Plan message is sent regardless. **Send now** stops the running turn and sends the message. A queued message is kept in memory only, so a window reload loses it.
+- **Ask.** The question is answered alongside, in a **Side question** card in the chat, while the agent keeps working. It knows the conversation up to the last finished turn, not the work in progress, and the agent never sees it. One side question runs at a time per conversation. It is a branch: History lists it under its conversation as a side question, and **Open as conversation** on the card continues it.
 
 ## Project settings that can run programs
 
@@ -61,7 +68,8 @@ Details: [docs/guide/ask-mode.md](docs/guide/ask-mode.md).
 
 Plan is read-only like Ask, with one added tool that saves a plan.
 
-- Each save is a new immutable version. You can answer the plan's decisions and questions, compare two versions in VS Code's diff editor, and revert to an earlier version.
+- The plan is a sequence of cards in the chat: your request, the agent's questions about the options (a plan options card, asked before the plan is written), and one plan card per saved version. The card's title opens the plan as a read-only Markdown document.
+- Each save is a new immutable version. The newest card lists your decisions and what is still to decide, and offers **Approve and Execute**, **View changes** (the version before against this one in VS Code's diff editor) and **Revert to the version before**. An older card opens, compares and restores its own version.
 - A lock switches the plan tool off, so the agent can discuss the plan but not change it. Ask mode always works with the plan locked.
 - **Approve and execute** is the only way a plan runs. You confirm in a native dialog, and an Agent turn starts on the same conversation with the approved version embedded.
 
@@ -81,19 +89,19 @@ Details: [docs/guide/agent-mode.md](docs/guide/agent-mode.md).
 
 ## Reviewing changes
 
-After an Agent turn, the Review tab lists every file the agent changed, with its added and removed lines. Open a file's diff in VS Code's diff editor from there, or from the command **AgentCanopy: Show Agent Changes for File**. In the normal editor, changed lines are marked and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
+When an Agent turn ends, a **Changes** card appears under the chat. It lists every file the agent changed, with its added and removed lines, and while an Agent turn runs in the folder it says "File changes can be reviewed when the turn ends." in place of the file list. Click a path to open the file's diff in VS Code's diff editor, or use the command **AgentCanopy: Show Agent Changes for File**. The card has **Accept All**, **Reject All** and **Open All in Diff Editor**, **Accept** and **Reject** for each file, and a collapsed **Accepted** group. You can collapse the card. Review of single changes is in the editor: changed lines are marked in the gutter and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
 
-| Action                          | Where                                  | Key           |
-| :------------------------------ | :------------------------------------- | :------------ |
-| Next / previous change          | Editor with pending changes            | Alt+] / Alt+[ |
-| Accept the change at the cursor | Editor with pending changes            | Alt+Enter     |
-| Reject the change at the cursor | Editor with pending changes            | Alt+Backspace |
-| Accept or reject a whole file   | Editor title bar, CodeLens, Review tab | none          |
-| Accept All, Reject All          | Review tab, Command Palette            | none          |
+| Action                          | Where                                    | Key           |
+| :------------------------------ | :--------------------------------------- | :------------ |
+| Next / previous change          | Editor with pending changes              | Alt+] / Alt+[ |
+| Accept the change at the cursor | Editor with pending changes              | Alt+Enter     |
+| Reject the change at the cursor | Editor with pending changes              | Alt+Backspace |
+| Accept or reject a whole file   | Editor title bar, CodeLens, Changes card | none          |
+| Accept All, Reject All          | Changes card, Command Palette            | none          |
 
 - Files that may hold your own work (you changed them too, they changed outside one of the agent's tool calls, or they were reconstructed after an interruption) are listed apart. Rejecting one always asks first. Reject All leaves them out unless you tick them, and never rejects a file that both of you changed or that was reconstructed after an interruption.
 - A file marked **Cannot be restored** was not captured before the agent changed it, so you can accept it but not put the old content back.
-- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the Review tab shows a warning and you must **Keep** or **Revert** each file, with a confirmation, before the next Agent turn.
+- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the Changes card shows a warning with each file, and you must **Keep** or **Revert** each one, with a confirmation, before the next Agent turn. That section stays visible, also when you collapse the card. Until you decide, Send is disabled in Agent mode and says where to decide; Ask and Plan still work.
 
 Details: [docs/guide/reviewing-changes.md](docs/guide/reviewing-changes.md).
 
@@ -105,7 +113,7 @@ Every Agent turn, reject and restore is a step in a per-folder history.
 - A restore is a step of its own, so it can be undone. Retention (`agentCanopy.checkpoints.keepOperations`, `keepDays`) never removes anything a review entry still needs or anything after the last Agent turn.
 - File restore does not undo Git operations, database changes, network calls or anything outside the folder.
 
-A message has a **Fork from here** action that starts a branch: a new conversation that remembers where it came from.
+A message has a **Fork from here** action that starts a branch: a new conversation that remembers where it came from. A side question (see above) is a branch too, made for you.
 
 - A branch is exact only when its first turn runs on a copy of the parent's Claude Code session: the whole session, or a cut at the last kept turn when the installed CLI supports it, `agentCanopy.forks.exactEarlierMessages` is on and that turn finished normally.
 - Otherwise the context is rebuilt from the visible messages. The branch header says which one it got and names what was not carried over: tool inputs and outputs, reasoning, attached files and selections, and earlier messages that did not fit.
@@ -163,13 +171,14 @@ All commands are in the Command Palette under the category AgentCanopy. The revi
 - A command you allow in Agent mode runs with your privileges unless the sandbox setting is on.
 - Changes a command makes to ignored, oversized or over-budget files are detected but cannot be restored.
 - Background tasks are disabled, so the agent cannot leave a dev server running between turns.
-- Images are not supported in messages, and the agent has text search but no symbol search.
+- Images can only be pasted, at most 5 images and 5 MB together per message, and a message with an image still needs text. The agent has text search but no symbol search.
+- Nothing can be added to a running turn: an Agent or Plan message waits in a queue, and a side question does not see the work in progress.
 - Windows supports the native Claude Code install only, and stopping a turn there is a hard stop.
 
 ## Keyboard, contrast and screen readers
 
 - The review keys above work when the editor shows a file with pending changes. Every review action is also a command in the Command Palette.
-- The tabs (Chat, Plan, Review, Checkpoints, History) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
+- The tabs (Chat, Checkpoints, History) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
 - Controls have text names that say what they act on, state is never shown by color alone, and the interface uses only VS Code theme colors, with extra borders in high-contrast themes. Animation respects the reduced-motion setting.
 - Streaming text is not announced. A short status line announces that the agent is working, finished, failed or was stopped, and when it waits for your answer.
 - This has been checked with automated tests and a written checklist (`src/webview/ACCESSIBILITY.md`). It has not yet been tested with a screen reader, so expect rough edges.
