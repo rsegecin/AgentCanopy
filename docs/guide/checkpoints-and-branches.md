@@ -60,6 +60,8 @@ An exact branch that later loses its session (Claude Code removed it) is relabel
 
 If turns that the branch does not keep changed files in the folder, the branch shows a notice: "The files in the workspace include changes made after this point in the conversation. Branching does not change files; use the checkpoint history to restore them." **Forking never touches your files.** The agent in a branch sees the folder as it is now.
 
+A branch starts with [Auto](agent-mode.md#auto) off, also when the conversation it came from has it on, and so does a side question and the branch that **Restore and Branch From Here** makes. Turn it on in the branch if you want it.
+
 A branch gets its own copy of the plan as it stood when the fork point's turn ended, so changes to the plan in one conversation do not change the other. The turns copied into a branch show the plan execution message as "Execute plan version N" and have no plan options cards, because branches never carry prompts; the answers are still listed on the plan card under "Your decisions".
 
 ### Side questions

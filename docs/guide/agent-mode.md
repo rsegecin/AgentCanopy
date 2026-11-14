@@ -41,17 +41,19 @@ If there is something, a native dialog, "This project configures Claude Code to 
 - **Edits inside the workspace folder** are applied and tracked. They are not blocked, because you review them afterwards. Set `agentCanopy.agent.editApproval` to `ask` to be asked before every edit.
 - **Reads and searches inside the folder** (Read, Grep, Glob) go through without a prompt. Outside the folder they ask.
 - **Calls you already approved for good.** A command with a saved always-allow rule runs without asking, and so does an MCP tool you chose to always allow. Rules in your own Claude Code user settings can still pre-approve some other kinds of tool calls; the tool card then says "Allowed by Claude Code", and AgentCanopy cannot tell which rule allowed it. This never applies to terminal commands, reads or web access, which always reach AgentCanopy's policy. AgentCanopy does not switch off your own Claude Code permission settings.
+- **Commands and, with `editApproval` on `ask`, edits inside the folder, when Auto is on for the conversation.** Auto is off until you turn it on in a native dialog. See [Auto](#auto).
 
-## What always asks
+## What asks
 
 A permission card appears in the chat, and the turn waits for you. The card shows the full text of the request. You can type a note under "Tell the agent what to do instead" before denying; the agent receives it. A command is shown in full: every line is shown, each line break is marked, long runs of blank lines are counted, the title gives the number of lines, and a warning appears for a command of more than one line. The card is not height-limited, so a second command cannot hide below the first.
 
-- **Protected paths.** Edits to `.git`, `.vscode`, `.claude`, `.husky` and `.devcontainer` (at any depth), `.github/workflows`, `.mcp.json`, `.npmrc`, `.netrc`, `.env` and `.env.*` ask, even with `editApproval` on `auto`. These files can change what runs later or hold secrets.
-- **Anything outside the workspace.** Editing a file outside the folder asks.
-- **Every terminal command**, including harmless ones such as `ls`, unless you saved an always-allow rule for that exact command. Choices are **Allow once**, **Always allow** and **Deny**.
-- **Web search and fetch**, and **tools from other tool servers** (MCP). Each use asks. For an MCP tool you can choose **Always allow**.
+- **Protected paths.** Edits to `.git`, `.vscode`, `.claude`, `.husky` and `.devcontainer` (at any depth), `.github/workflows`, `.mcp.json`, `.npmrc`, `.netrc`, `.env` and `.env.*` ask, even with `editApproval` on `auto` and with Auto on. These files can change what runs later or hold secrets.
+- **Anything outside the workspace.** Editing or reading a file outside the folder asks, also with Auto on.
+- **Terminal commands**, including harmless ones such as `ls`, unless you saved an always-allow rule for that exact command or Auto is on for the conversation. Choices are **Allow once**, **Always allow** and **Deny**. A command that asks to run outside the sandbox always asks, with or without Auto, and no always-allow rule is offered for it.
+- **Web search and fetch**, unless Auto is on and `agentCanopy.agent.auto.webTools` is on, and **tools from other tool servers** (MCP), also with Auto on. Each use asks. For an MCP tool you can choose **Always allow**.
+- **Other tools that need permission** (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`, and any tool AgentCanopy does not know), also with Auto on.
 
-Set `agentCanopy.agent.alwaysAskCommands` to ask before every terminal command and to ignore all saved always-allow rules.
+Set `agentCanopy.agent.alwaysAskCommands` to ask before every terminal command and to ignore all saved always-allow rules. It also stops Auto from approving commands.
 
 ## Always allow
 
@@ -59,15 +61,67 @@ Set `agentCanopy.agent.alwaysAskCommands` to ask before every terminal command a
 
 If the command could run code from your project or write files (any command not known to only look at things, such as `npm test` or `make`, and also an otherwise harmless one with an environment prefix or with an option that writes output or runs a program, such as `sort -o` or `git -c`), the card warns: "This command runs code from the project, which can do anything you can do." Such a command can rewrite the files that hold your approvals. Think twice before allowing it for good.
 
-Rules are stored per workspace folder, at most 200 of them. If a rule cannot be saved, the command still runs once and you are told: "The command was allowed this once, but the rule to always allow it could not be saved." A PowerShell command always asks.
+Rules are stored per workspace folder, at most 200 of them. If a rule cannot be saved, the command still runs once and you are told: "The command was allowed this once, but the rule to always allow it could not be saved." No always-allow rule can be saved for a PowerShell command, so it asks every time, unless Auto is on.
+
+## Auto
+
+Auto is a switch, per conversation, with which Agent turns run terminal commands and edits inside the folder without a prompt for each one. It is off until you turn it on. It exists because approving every `ls` is slow, and it removes a safeguard on purpose: with Auto on, nothing reviews a command before it runs, and the command runs with your privileges. Text in files, tool output or web pages the agent reads can steer it into running something you would have refused. Read [Security](../../SECURITY.md#auto) before you use it.
+
+### Turn it on
+
+1. In Agent mode, click **Auto** next to the mode selector. You can do this before the first message of a new conversation: the first message you send, in any mode, then creates the conversation with Auto on, in the folder the dialog named.
+2. A native dialog, "Turn on Auto for this conversation?" (for a new conversation, "Turn on Auto for the new conversation?"), opens. It starts with two labelled lines, `Folder: <path>` (the home directory shown as `~`, a very long path shortened in the middle with an ellipsis so that its start and its end stay visible; the folder's display name is not shown, because a workspace file can set it to anything) and `Conversation: <title>` (a long title is cut; `Conversation: new` for a new conversation), then says: "Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges." With `agentCanopy.agent.alwaysAskCommands` on it says instead that edits run without asking and commands still ask. It states what is known about the sandbox: not sandboxed; requested by your settings but not verifiable, in which case a command cannot leave it; or set but not available on this platform. It lists what still asks, says that review and checkpoints undo file changes inside the folder only, not what a command does outside it, to Git or over the network, and that a command can change protected files without asking. It also says that Auto stays on for the conversation, also for queued messages and approved plans, until you turn it off.
+3. Confirm with **Turn On Auto**. The webview can ask for the dialog but only the dialog turns Auto on.
+
+Auto can only be turned on for the conversation the view shows; for any other, the refusal reads "Open the conversation to turn Auto on." It can only be turned on between turns. The switch is disabled while a turn runs ("Auto can be turned on when the turn ends."), and it is refused while a plan approval dialog is open, while another Auto dialog is open, in an untrusted workspace, for a conversation whose folder is closed and when `agentCanopy.agent.auto.enabled` is off. If anything that the dialog depends on changes while it is open, including the three settings its text names, Auto is not turned on and a warning says so. See [Troubleshooting](troubleshooting.md#auto-messages).
+
+### Turn it off
+
+Click **Auto** again. There is no dialog, it works at any time, and it takes effect at once, also in a running turn: the next permission request of that turn asks again. A command that is already running is not stopped; use **Stop** for that. Whether a turn runs with Auto is decided when it is sent, so turning Auto on cannot change a turn that already runs, and turning it off can. If the change cannot be saved, Auto is off in this window until it reloads, and a warning says so: "Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later."
+
+### What runs without asking, and what still asks
+
+| Call | With Auto on |
+| :- | :- |
+| Terminal command (Bash, PowerShell) | Runs, labelled "Auto-approved". Asks while `agentCanopy.agent.alwaysAskCommands` is on, and always asks when it carries `dangerouslyDisableSandbox` (a request to run outside the sandbox) |
+| Command with a saved always-allow rule | Runs, labelled "Approved by you": the rule is checked first |
+| Edit inside the folder | Runs. With `editApproval` on `ask` it is labelled "Auto-approved"; with `auto` it is "Allowed by AgentCanopy", as without Auto |
+| Edit on a protected path | Asks |
+| Edit or read outside the folder | Asks |
+| Read inside the folder | Runs, as without Auto |
+| Web fetch and web search | Asks, unless `agentCanopy.agent.auto.webTools` is on. Then they run, labelled "Auto-approved" |
+| Tool from another tool server (MCP) | Asks, unless you saved an always-allow rule |
+| Any other tool that asks (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`, unknown tools) | Asks |
+| `AskUserQuestion` | Shown to you, as always |
+| AgentCanopy's own tools | Denied, as always |
+
+Tools that Claude Code runs without asking (subagent launch, tool search, scheduling and messaging tools) never reach AgentCanopy's policy, with or without Auto; their cards say "Allowed by Claude Code". When Auto covers commands, the agent is told in its prompt that Auto is on and what still asks; with `agentCanopy.agent.alwaysAskCommands` on, the prompt is the ordinary Agent one.
+
+### What shows that it is on
+
+- The **Auto** switch next to the mode selector is pressed and has a filled icon, and a line under the selector says "Auto is on: commands and edits in this folder run without asking." (with `alwaysAskCommands` on: "Auto is on: edits in this folder run without asking. Commands still ask."). In Ask and Plan mode the switch stays visible while Auto is on, so you can turn it off first, and the line says "Auto is on for this conversation's Agent turns." The Agent mode description under the selector changes too.
+- Messages sent with Auto are marked "Agent · Auto". The plan execution message "Plan approved: executing version N" has an "Auto" mark. The queued message chip says "Agent · Auto" while Auto is on. History flags the conversation with "Auto".
+- The plan card says "Runs with Auto: commands and edits run without asking.", and the plan approval dialog says that Auto is on.
+- Tool cards of calls that Auto approved say "Auto-approved".
+
+### Where it applies
+
+Auto belongs to one conversation. A new conversation, a branch, a side question and **Restore and Branch From Here** start with it off, whatever the conversation they came from had. A queued message has no setting of its own: it runs with the conversation's Auto at the moment it is sent. **Approve and Execute** on a [plan](plan-mode.md#approve-and-execute) runs with the conversation's Auto too.
+
+### Settings
+
+- `agentCanopy.agent.auto.enabled` (default on) offers the Auto switch. Turning it off hides the switch and Auto applies nowhere at once; stored Auto flags and the switch of any new conversation are cleared, so turning the setting on again turns nothing back on. This covers every conversation on this machine, also in workspaces that are closed at the time: when such a workspace is opened later, its conversations no longer have Auto. This is only noticed while AgentCanopy is running in some window; see [Limitations](../limitations.md).
+- `agentCanopy.agent.auto.webTools` (default off) lets Auto also approve web fetch and web search. Off by default because a fetched page can carry instructions for the agent and a request can send file contents out.
+
+A setting that narrows Auto takes effect at once, also for a running turn: turning `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off makes the next call ask, and it stays in effect for the rest of that turn even if you change it back. A setting that widens what runs applies from the next turn.
 
 ## Who allowed each call
 
-Each tool card shows one of four labels: "Approved by you" (this includes a saved always-allow rule you created), "Allowed by AgentCanopy" (the edit and read rules above), "Allowed by Claude Code" (only for tools that your own Claude Code settings pre-approve, never for commands) and "Not verified by AgentCanopy".
+Each tool card shows one of five labels: "Approved by you" (this includes a saved always-allow rule you created), "Allowed by AgentCanopy" (the edit and read rules above), "Allowed by Claude Code" (Claude Code allowed the call on its own: tools it runs without asking, such as launching a subagent, and tools that your own Claude Code settings pre-approve; never commands, edits, reads or web access, which always reach AgentCanopy's policy), "Auto-approved" (approved by Auto, see above) and "Not verified by AgentCanopy".
 
 ## Run commands in a sandbox
 
-`agentCanopy.agent.sandbox` turns on Claude Code's sandbox for the agent's commands on macOS, Linux and WSL2. Commands can then write only inside the workspace folder and temporary directories. Commands still ask for approval. Without the sandbox, a command you allow runs with your own privileges and can do anything you can. Claude Code creates a `.claude/.cc-writes` folder in the workspace while the sandbox is on; AgentCanopy ignores it.
+`agentCanopy.agent.sandbox` turns on Claude Code's sandbox for the agent's commands on macOS, Linux and WSL2. Commands can then write only inside the workspace folder and temporary directories. Commands still ask for approval, unless Auto is on for the conversation. AgentCanopy requests the sandbox through Claude Code's settings and cannot verify that it is active, and it does not exist on native Windows. With Auto on and the sandbox set, a command cannot leave the sandbox. Without the sandbox, a command you allow runs with your own privileges and can do anything you can. Claude Code creates a `.claude/.cc-writes` folder in the workspace while the sandbox is on; AgentCanopy ignores it.
 
 ## Stop a turn
 

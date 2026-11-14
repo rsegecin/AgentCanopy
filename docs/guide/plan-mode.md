@@ -47,11 +47,21 @@ Your answers are listed under **Your decisions**. They belong to you, not to the
 
 **Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running, while configuration changes from an earlier Agent turn await your decision in the Changes card, or while an Agent turn of another conversation runs in the same folder ("Another agent turn is running in this folder.").
 
-1. Click it. A native VS Code dialog, "Approve and execute this plan?", names the version and warns if questions or decisions are still unanswered.
+1. Click it. A native VS Code dialog, "Approve and execute this plan?", names the version and warns if questions or decisions are still unanswered. If [Auto](agent-mode.md#auto) is on for the conversation, it also says so: "Auto is on for this conversation: terminal commands and edits inside the folder will run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask.").
 2. Confirm with **Approve and Execute**. AgentCanopy records the approval for that exact version and content before anything starts. If the plan changed since you looked at it, you are asked to review it and approve again.
 3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt. In the chat its message reads "Plan approved: executing version N" (in a branch, the copied turns show "Execute plan version N").
 
-From then on the usual Agent rules apply: edits are tracked, commands ask, and you [review the changes](reviewing-changes.md) afterwards. The plan card shows the time of each approval.
+From then on the usual Agent rules apply: edits are tracked, commands ask unless Auto is on, and you [review the changes](reviewing-changes.md) afterwards. The plan card shows the time of each approval.
+
+### Auto and plan execution
+
+The execution turn runs with the conversation's [Auto](agent-mode.md#auto) as it is when you click **Approve and Execute**. If Auto is on:
+
+- The plan card shows a line: "Runs with Auto: commands and edits run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Runs with Auto: edits run without asking. Commands still ask.").
+- The approval dialog says so, as quoted above.
+- The execution message "Plan approved: executing version N" carries an "Auto" mark.
+
+The **Auto** switch stays visible in Plan mode while Auto is on, so you can turn it off before you approve. Turning it off needs no dialog. If you turn it off while the approval dialog is open, the turn runs without Auto. Turning Auto on is not possible while the approval dialog is open.
 
 ## Switch modes freely
 

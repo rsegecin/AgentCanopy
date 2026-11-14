@@ -83,7 +83,37 @@ Messages that start "Claude Code offered tools that are not allowed in a read-on
 
 ## A command asks even though it is harmless
 
-In Agent mode every terminal command asks, including `ls`, unless you chose **Always allow** for that exact command. This is deliberate. Reads inside the workspace do not ask, and reads outside it do. Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable.
+In Agent mode a terminal command asks, including `ls`, unless you chose **Always allow** for that exact command or [Auto](agent-mode.md#auto) is on for the conversation. This is deliberate. Reads inside the workspace do not ask, and reads outside it do. Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable. For everything at once, see Auto.
+
+## Why did a command still ask with Auto on?
+
+Auto is on when the Auto switch is pressed and the setting `agentCanopy.agent.auto.enabled` is on. A command can still ask for these reasons:
+
+- `agentCanopy.agent.alwaysAskCommands` is on. It wins over Auto, and the composer hint says "Auto is on: edits in this folder run without asking. Commands still ask."
+- The command asks to run outside the sandbox (`dangerouslyDisableSandbox`). Auto never approves that. With Auto and `agentCanopy.agent.sandbox` on, a turn cannot leave the sandbox at all.
+- Auto was turned off, by you or because the setting `agentCanopy.agent.auto.enabled` was turned off. Turning it off takes effect at once, also in a running turn: the next request asks. Turning the setting off also clears Auto in every conversation on this machine, also in workspaces that are closed at the time, so turning the setting on again does not turn Auto back on. This is only noticed while AgentCanopy is running in some window; see [Limitations](../limitations.md).
+- A setting that narrows Auto was changed during the turn. Turning `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off takes effect at once, also in a running turn, and stays in effect for the rest of that turn even if you change it back: the next call asks. A setting that widens what runs, such as turning `alwaysAskCommands` off or `webTools` on, applies from the next turn.
+- The turn started before Auto was on. Whether a turn runs with Auto is decided when it is sent, and turning Auto on cannot change a turn that is already running.
+- The call is a side question. A side question is a branch and starts without Auto, and it is read-only anyway.
+- It is not a command. Protected files, anything outside the folder, other tools and MCP tools ask with Auto on, and so do web fetch and web search unless `agentCanopy.agent.auto.webTools` is on.
+
+## Auto messages
+
+These appear as warnings in the chat view.
+
+| Message | What to do |
+| :- | :- |
+| Auto is turned off in the settings (agentCanopy.agent.auto.enabled). | Turn the setting on, then use the Auto switch |
+| Wait for the current turn to finish before turning on Auto. | Auto can only be turned on between turns. Wait for the turn to end or stop it |
+| The dialog to turn on Auto is already open. | Answer the dialog that is open first |
+| Open the conversation to turn Auto on. | Auto can only be turned on for the conversation the view shows. Open the conversation, then use the Auto switch |
+| Auto can be turned on for a new conversation only before its first message. | The conversation was created or is being created, so the switch no longer belongs to a draft. Turn Auto on in the conversation that is open |
+| Auto was not turned on: the conversation changed while the dialog was open. | A turn started, the conversation or its folder changed, or one of the settings the dialog names (`alwaysAskCommands`, `agentCanopy.agent.auto.webTools`, `agentCanopy.agent.sandbox`) changed while you read it. Nothing was turned on. Turn Auto on again and read the new dialog |
+| Auto could not be turned on. The AgentCanopy log has the details. | The conversation could not be written to storage. Auto is off. Check the log and try again |
+| Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later. | You turned Auto off and storage failed. It is off in this window until it reloads, and the next save of the conversation retries it. Check the Auto switch after a reload and the log for the reason |
+| Auto is off in this window, but that could not be saved for other workspaces on this machine. AgentCanopy will try again. | You turned `agentCanopy.agent.auto.enabled` off and the machine-wide reset could not be written. Do nothing in this window. If the warning persists, check that VS Code's global storage folder is writable, and turn Auto off by hand in the conversations of other workspaces |
+
+The workspace and folder warnings of any other action also apply to Auto: an untrusted workspace, a closed folder or a conversation that is gone refuses it with the usual message.
 
 ## An always-allow rule was not saved
 
