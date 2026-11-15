@@ -718,3 +718,42 @@ describe('decide: malformed requests never throw', () => {
     expect(warnings).toHaveLength(1);
   });
 });
+
+describe('decide: paths the host cannot judge', () => {
+  let root: string;
+  let folder: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    root = await makeTempDir('readonly-unjudged');
+    folder = join(root, 'folder');
+    outside = join(root, 'outside');
+    await writeTree(folder, { 'src/a.ts': 'a' });
+    await writeTree(outside, { 'dir/inner.txt': 'i' });
+  });
+  afterEach(() => removeDir(root));
+
+  it('a Grep whose path has a leading space asks, showing the text as given', async () => {
+    const value = ' src';
+    const { context, prompts } = makeContext({ folderPath: folder, answer: DENY });
+    const decision = await policy.decide(request('Grep', { pattern: 'x', path: value }), context);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ category: 'read-outside', detail: value });
+    expect(decision.response.behavior).toBe('deny');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'a Glob with a backslash pattern into a real directory outside asks',
+    async () => {
+      const { context, prompts } = makeContext({ folderPath: folder, answer: DENY });
+      const pattern = `${join(outside, 'dir')}\\*`;
+      const decision = await policy.decide(request('Glob', { pattern }), context);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        category: 'read-outside',
+        detail: `${join(outside, 'dir')}/*`,
+      });
+      expect(decision.response.behavior).toBe('deny');
+    },
+  );
+});

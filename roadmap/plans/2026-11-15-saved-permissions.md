@@ -1,24 +1,39 @@
 # Saved permissions, per-folder switches and a Permissions view
 
-Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **Paused after stage s1**: two of six stages are committed.
+Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **Resumed on 2026-11-15** after the pause that followed stage s1.
 
 ## Progress
 
-Updated at every stage commit. Last update: 2026-11-15, after stage s1.
+Updated at every stage commit. Last update: 2026-11-15, with the path fix that precedes s2.
 
-**Paused by the owner on 2026-11-15**, when asked how to go on given that some checks of the plan fail on this machine without the change (see below). Nothing of s2 to s5 has been started, and the working tree holds no uncommitted Phase 11 work. Before s2 starts, the owner decides which bar the stages are held to:
+**Resumed by the owner on 2026-11-15**, with two decisions:
 
-- compare with the untouched checkout (type check and lint pass, no test fails that does not fail there, the format check passes with line endings ignored), as s1 was; or
-- first make the failing tests and the format check pass on Windows, in commits outside this plan, and then hold the stages to the plan's checks as written.
+- **The bar for s2 to s5 is the one s1 used**: type check and lint pass, no test fails that does not fail on the untouched checkout, and the format check passes with line endings ignored (`npx prettier --check --end-of-line auto .`). The Windows failures are not fixed in this plan.
+- **Two gaps in the path judgement that existed before Phase 11 are closed first**, in a commit outside the six stages (see "The path fix" below).
 
 | Stage | State | Commit |
 | :- | :- | :- |
 | s0. Decisions, roadmap file and CLI facts | Done | `35e7a14` |
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
-| s2. Grant store and policy | Not started. Next, once the owner says to continue | |
+| The path fix (outside the stages, before s2) | Done | The commit that carries this update |
+| s2. Grant store and policy | Next | |
 | s3. Host: wiring, dialogs and view state | Not started. Needs s2 | |
-| s4. Webview: Permissions view and card wording | Not started. Needs s1 only, so it can be built alongside s2 | |
+| s4. Webview: Permissions view and card wording | Being built | |
 | s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
+
+### The path fix
+
+Found by a review of the design before s2, and confirmed by replaying `checkPath` and `checkPattern` on Windows: a search path with a leading space (`" C:\Users\you\.ssh"`) resolved to a path below the workspace folder, and a Glob pattern written with backslashes (`C:\Users\you\.ssh\*`) had an empty literal prefix because the pattern was split on `/` only. Both were judged as inside the folder, so they ran without a prompt in every mode. Whether the CLI then searches the outside location was not tested in a run; the fix does not depend on it.
+
+The rule now, in `src/core/policy/readonly/targets.ts` (`cannotJudge`, `splitPattern`): a path or pattern the host cannot be sure to resolve the way the CLI will is judged as outside the folder, with no real path, and is shown as given. So it asks, and no switch or saved directory of s2 covers it.
+
+- On every platform: a value with whitespace or a control character at either end.
+- On Windows: a value rooted without a drive (`/c/Users/...`, `\Users\...`), a drive letter without a separator (`C:Users`), and a segment other than `.` and `..` that ends in a dot or a space (`.ssh.`). For a glob pattern the last rule looks at the literal prefix only.
+- On Windows a backslash in a glob pattern separates segments, so the literal prefix of `C:\Users\you\.ssh\*` is judged where it points.
+
+This is the one exception to the acceptance criterion "with nothing saved and all switches off, every permission decision is the same as before the change": these inputs now ask. No existing test expectation was edited. One test that failed on Windows before now passes ("glob patterns asks for /*" in `policy/readonly/decide.test.ts`), because `/*` is rooted without a drive.
+
+Not changed, and still as the comment in `targets.ts` says: a `..` segment after the first wildcard of a pattern, and brace expansion that reaches a parent folder, are not analysed for the inside judgement. s2 never covers such a pattern.
 
 ### What exists after s1
 
@@ -38,7 +53,8 @@ Updated at every stage commit. Last update: 2026-11-15, after stage s1.
   - Two vary from run to run under load: `session/forks.test.ts` ("is rebuilt when the provider cannot cut at a message") and `workspace/tracker/findings.test.ts` ("two hosts taking over the same stale lock").
   - `npm run format:check` fails on every file whose working copy has CRLF line endings (111 files at the time of s1; `core.autocrlf` is `true` and Prettier expects LF). `npx prettier --check --end-of-line auto .` passes for every file.
   - `npm run typecheck` and `npm run lint` pass.
-- **The bar used for s1**: type check and lint pass, no test fails that does not fail on the untouched checkout, and the format check passes with line endings ignored. Whether s2 to s5 use the same bar is the owner's open decision (above). Fixing the Windows failures is not part of this plan.
+- **The bar used for s1**: type check and lint pass, no test fails that does not fail on the untouched checkout, and the format check passes with line endings ignored. The owner chose the same bar for s2 to s5 on 2026-11-15. Fixing the Windows failures is not part of this plan.
+- **The baseline measured again on 2026-11-15 at `80edf64`**: 18 tests fail (the 17 above and the `locate.test.ts` one), 3183 pass. The names are compared after every step.
 - **The version bump to 0.1.2** in `package.json` and `package-lock.json` was uncommitted before Phase 11 and is not part of it. It stays uncommitted: of `package.json` only the hunk with the new command was staged (`git apply --cached` with that hunk).
 - **CLI facts** (s0, from the documentation, not probed): `WebFetch` reports a redirect to another host instead of following it, so the agent's second call is judged on its own host; the `PowerShell` tool carries its command in `command`. Recorded in `docs/protocol/claude-cli.md`, section 13.
 - **Small differences from the plan in s1**: `settings.open` is already the real handler, since it needs nothing from later stages. The extension id reaches `src/vscode/host/ui.ts` as `UiParts.extensionId`, set from `context.extension.id` in `activate.ts`. The test that a prompt stored without `alwaysRule.kind` still loads is in `src/core/conversations/store.test.ts`, next to the schema test in `src/shared/index.test.ts`.
