@@ -83,7 +83,7 @@ Messages that start "Claude Code offered tools that are not allowed in a read-on
 
 ## A command asks even though it is harmless
 
-In Agent mode a terminal command asks, including `ls`, unless you chose **Always allow** for that exact command or [Auto](agent-mode.md#auto) is on for the conversation. This is deliberate. Reads inside the workspace do not ask, and reads outside it do. Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable. For everything at once, see Auto.
+In Agent mode a terminal command asks, including `ls`, unless you chose **Always allow** for that exact command or [Auto](agent-mode.md#auto) is on for the conversation. This is deliberate. Reads inside the workspace do not ask, and reads outside it do, unless you allowed them for the folder (see [Permissions](agent-mode.md#permissions)). Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable, and for PowerShell for plain commands made of letters, digits, spaces and `_ . / \ : -`. For everything at once, see Auto.
 
 ## Why did a command still ask with Auto on?
 
@@ -95,7 +95,7 @@ Auto is on when the Auto switch is pressed and the setting `agentCanopy.agent.au
 - A setting that narrows Auto was changed during the turn. Turning `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off takes effect at once, also in a running turn, and stays in effect for the rest of that turn even if you change it back: the next call asks. A setting that widens what runs, such as turning `alwaysAskCommands` off or `webTools` on, applies from the next turn.
 - The turn started before Auto was on. Whether a turn runs with Auto is decided when it is sent, and turning Auto on cannot change a turn that is already running.
 - The call is a side question. A side question is a branch and starts without Auto, and it is read-only anyway.
-- It is not a command. Protected files, anything outside the folder, other tools and MCP tools ask with Auto on, and so do web fetch and web search unless `agentCanopy.agent.auto.webTools` is on.
+- It is not a command. Protected files, edits outside the folder, other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search, unless `agentCanopy.agent.auto.webTools` is on or a switch or saved site of the folder covers them.
 
 ## Auto messages
 
@@ -119,11 +119,40 @@ The workspace and folder warnings of any other action also apply to Auto: an unt
 
 If you chose **Always allow** for a command and the rule could not be written, you see: "The command was allowed this once, but the rule to always allow it could not be saved." The command ran, and the next one asks again. Check the log for the reason. A folder can hold at most 200 saved rules.
 
+For a folder or a web site the message is "It was allowed this once, but the permission to always allow it could not be saved."; a PowerShell command gets the message above, like a Bash command. The call ran and the next one asks again. Check the log for the reason. A workspace folder can hold at most 200 saved folders, sites and PowerShell commands together; remove some in the Permissions tab.
+
+## Permissions messages
+
+These appear as warnings in the chat view. They come from the Permissions tab and from **Always allow** on a card. See [Agent mode](agent-mode.md#permissions) for how the tab works.
+
+| Message | What to do |
+| :- | :- |
+| A permissions dialog is already open. | Answer the dialog that is open first. Turning a switch on and **Allow a folder...** each open one, and only one can be open at a time |
+| The folder or the trust of the workspace changed while the dialog was open, so nothing was changed. | The view moved to a conversation of another folder, or the workspace stopped being trusted, while you read the dialog. Nothing was turned on or saved. Do it again from the folder you mean |
+| The permission could not be removed. | The entry is still saved and still allows its calls. Try **Remove** again, and check the log for the reason |
+| The switch could not be changed. | The switch kept its old state, also when you meant to turn it off. Check what it shows, try again, and check the log for the reason |
+| That folder could not be read. | The folder you picked does not exist, is not a folder or could not be opened. Pick another |
+| That folder is inside the workspace folder, where reads never ask. | There is nothing to allow: reads inside the workspace folder never ask |
+| That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask. | These are never saved. Read the file once with **Allow once** when the agent asks |
+| That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location. | Pick the folder that holds the files you mean, not one above it |
+| That folder is already inside a saved folder. | It already counts. The saved folder is listed under Saved permissions |
+
+Turning a switch on or choosing **Allow a folder...** also does nothing in an untrusted workspace or in a window with no folder: the tab disables its controls and says why.
+
+## A read or a web call asks although I allowed it
+
+- The target is a credential location, AgentCanopy's own storage, on Windows a network path, a search that starts at your home folder or above it, or on Windows the temp folder. These always ask, whatever is on or saved. See [limitations](../limitations.md#saved-permissions-and-switches).
+- The path is written in a form AgentCanopy cannot judge (whitespace at either end, or on Windows a path rooted without a drive, a drive letter without a separator, or a segment that ends in a dot or a space), or a pattern has `..` after a wildcard or an alternative in braces that starts at a root.
+- The permission belongs to another workspace folder. Another project, or another folder of the same window, has its own.
+- A saved site matches the exact host: `a.docs.example.com`, `example.com` and `docs.example.com:8443` are not `docs.example.com`. An address with a user name or password is never matched by a saved site.
+- In Ask and Plan, web tools stay off while `agentCanopy.ask.webTools` is off, whatever is saved. The call is refused and does not ask.
+- You removed the permission or turned the switch off. That applies to the next request, also in a running turn.
+
 ## Delete stored file contents and change history
 
 AgentCanopy keeps captured file contents, the list of agent changes and the checkpoint history for each folder. To remove them for one folder, run **AgentCanopy: Delete Stored File Contents and Change History for This Folder**. In a window with several folders it asks which one unless the active file settles it.
 
-A native dialog asks you to confirm. It deletes the captured file contents, the list of pending agent changes (and accepted ones) and the checkpoint history, and the journal of an interrupted turn. It leaves your files, your conversations and plans and your always-allow rules alone. It cannot be undone. Afterwards AgentCanopy starts capturing the folder again.
+A native dialog asks you to confirm. It deletes the captured file contents, the list of pending agent changes (and accepted ones) and the checkpoint history, and the journal of an interrupted turn. It leaves your files, your conversations and plans, your always-allow rules and your saved permissions alone. It cannot be undone. Afterwards AgentCanopy starts capturing the folder again.
 
 The command refuses while an Agent turn is running in the folder ("An agent turn is running in this folder. Wait for it to finish.") and while a configuration change waits for your decision ("A configuration change is waiting for your decision. Keep or revert it first."). Do what the message says and run it again.
 

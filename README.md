@@ -34,7 +34,7 @@ This writes `agentcanopy-0.1.0.vsix` to the repository root. In VS Code, run **E
 4. Choose a mode (Ask, Plan or Agent) and a model under the message box. New conversations start in the mode set by `agentCanopy.defaultMode`, which is `ask`.
 5. Type a message and press Enter (Shift+Enter adds a line). Type `@` to attach a file or folder, or use the buttons beside the model selector to add a file, a folder, the editor selection or the current problems. **AgentCanopy: Add Selection to Chat** is also in the editor context menu.
 
-The tabs are Chat, Checkpoints and History. Checkpoints appears once there is a step in the folder's history. Plans, the agent's questions and the changes an Agent turn made are cards in the chat, not tabs. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
+The tabs are Chat, Checkpoints, History and Permissions. Checkpoints appears once there is a step in the folder's history. Permissions appears while something is saved for the folder or a switch is on, and **More actions > Permissions** opens it at any time. Plans, the agent's questions and the changes an Agent turn made are cards in the chat, not tabs. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
 
 ## While the agent works
 
@@ -59,7 +59,7 @@ Ask cannot change your files.
 
 - Claude Code is started with exactly four tools: Read, Grep, Glob and AskUserQuestion. Web search and fetch are added only if you turn on `agentCanopy.ask.webTools`.
 - At the start of every turn AgentCanopy checks the tool list, the tool servers, the permission mode and the folder that Claude Code reports, and it watches every tool call and hook event after that. Any mismatch stops the turn.
-- Reading a file outside the workspace folder asks you first, and so does every use of web search or fetch.
+- Reading a file outside the workspace folder asks you first, and so does every use of web search or fetch, unless you allowed it for the folder (see [Agent mode](docs/guide/agent-mode.md#permissions)).
 - When the turn ends, AgentCanopy compares file metadata in the folder with how it was before and reports any change. It only reports; it never reverts.
 
 Details: [docs/guide/ask-mode.md](docs/guide/ask-mode.md).
@@ -81,7 +81,8 @@ Agent can edit files and run commands.
 
 - Edits inside the workspace are applied without asking and are tracked for review. `agentCanopy.agent.editApproval` can make every edit ask.
 - A terminal command asks first, including harmless ones such as `ls`, unless you chose **Always allow** for that exact command or turned on Auto for the conversation (see below). Reads inside the workspace go through without a prompt. Reads outside it, edits to protected paths, edits outside the workspace and web access ask first.
-- **Always allow** is offered only for a plain literal command, never one that starts with an environment variable, and you confirm it in a native dialog.
+- **Always allow** is offered for a plain literal command (never one that starts with an environment variable), a plain PowerShell command, a folder to read from and a web site to fetch from, and you confirm it in a native dialog.
+- **Permissions** is a tab, also opened by **AgentCanopy: Show Permissions**. For the workspace folder it lists what you saved with **Always allow**, with **Remove** for each, and has three switches, off by default, that let reads outside the folder, web fetch and web search run without asking; credential locations and AgentCanopy's own storage always ask, and edits outside the folder do too. Turning a switch on and adding a folder need a native dialog, removing and turning off do not, and nothing is stored in the repository or in VS Code settings. A saved site or the fetch switch lets file contents leave in an address; read [SECURITY.md](SECURITY.md#permissions).
 - **Auto** is a switch next to the mode selector, per conversation, off by default. After you confirm a native dialog, terminal commands and edits inside the workspace run without asking for each one. This removes a safeguard on purpose: commands then run unreviewed with your privileges, and review and checkpoints do not undo what they do outside the folder, to Git or over the network. Protected paths, anything outside the workspace, other tools and MCP tools still ask, web access too unless `agentCanopy.agent.auto.webTools` is on, and commands too while `agentCanopy.agent.alwaysAskCommands` is on. Turning Auto off needs no dialog and works at once, also during a turn. A new conversation, a branch and a side question start with it off. Read [SECURITY.md](SECURITY.md#auto) first.
 - A permission card shows every line of a command, marks each line break and says how many lines there are.
 - Each tool card shows who allowed the call: you, AgentCanopy, Auto ("Auto-approved") or Claude Code, when it allowed the call on its own: tools it runs without asking, such as launching a subagent, and tools your own Claude Code settings pre-approve; never commands, edits, reads or web access, which always reach AgentCanopy's policy.
@@ -163,6 +164,7 @@ All commands are in the Command Palette under the category AgentCanopy. The revi
 | Sign In to Claude Code                                         | Open a terminal running `claude auth login`                                                           |
 | Show Logs                                                      | Open the AgentCanopy output channel                                                                   |
 | Ask Again About This Folder's Claude Code Project Settings     | Clear your answer about the project's Claude Code settings, so the next turn asks again               |
+| Show Permissions                                               | Open the Permissions tab: what is allowed without asking in the folder, and what is saved             |
 | Delete Stored File Contents and Change History for This Folder | Delete the captured file contents, the list of agent changes and the checkpoint history of one folder |
 | Show Agent Changes for File / Show All Agent Changes           | Open the diff of one file or of every pending file                                                    |
 | Accept / Reject Agent Changes in File                          | Decide on a whole file                                                                                |
@@ -183,7 +185,7 @@ All commands are in the Command Palette under the category AgentCanopy. The revi
 ## Keyboard, contrast and screen readers
 
 - The review keys above work when the editor shows a file with pending changes. Every review action is also a command in the Command Palette.
-- The tabs (Chat, Checkpoints, History) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
+- The tabs (Chat, Checkpoints, History, Permissions) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
 - Controls have text names that say what they act on, state is never shown by color alone, and the interface uses only VS Code theme colors, with extra borders in high-contrast themes. Animation respects the reduced-motion setting.
 - Streaming text is not announced. A short status line announces that the agent is working, finished, failed or was stopped, and when it waits for your answer.
 - This has been checked with automated tests and a written checklist (`src/webview/ACCESSIBILITY.md`). It has not yet been tested with a screen reader, so expect rough edges.

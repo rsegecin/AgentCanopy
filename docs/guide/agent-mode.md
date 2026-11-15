@@ -39,8 +39,8 @@ If there is something, a native dialog, "This project configures Claude Code to 
 ## What happens without asking
 
 - **Edits inside the workspace folder** are applied and tracked. They are not blocked, because you review them afterwards. Set `agentCanopy.agent.editApproval` to `ask` to be asked before every edit.
-- **Reads and searches inside the folder** (Read, Grep, Glob) go through without a prompt. Outside the folder they ask.
-- **Calls you already approved for good.** A command with a saved always-allow rule runs without asking, and so does an MCP tool you chose to always allow. Rules in your own Claude Code user settings can still pre-approve some other kinds of tool calls; the tool card then says "Allowed by Claude Code", and AgentCanopy cannot tell which rule allowed it. This never applies to terminal commands, reads or web access, which always reach AgentCanopy's policy. AgentCanopy does not switch off your own Claude Code permission settings.
+- **Reads and searches inside the folder** (Read, Grep, Glob) go through without a prompt. Outside the folder they ask, unless you allowed them for this folder; see [Permissions](#permissions).
+- **Calls you already approved for good.** A command with a saved always-allow rule runs without asking, and so does an MCP tool you chose to always allow. So do a read or search in a folder you saved or while the reads switch is on, a web fetch to a site you saved or while the fetch switch is on, and a web search while the search switch is on; see [Permissions](#permissions). Rules in your own Claude Code user settings can still pre-approve some other kinds of tool calls; the tool card then says "Allowed by Claude Code", and AgentCanopy cannot tell which rule allowed it. This never applies to terminal commands, reads or web access, which always reach AgentCanopy's policy. AgentCanopy does not switch off your own Claude Code permission settings.
 - **Commands and, with `editApproval` on `ask`, edits inside the folder, when Auto is on for the conversation.** Auto is off until you turn it on in a native dialog. See [Auto](#auto).
 
 ## What asks
@@ -48,20 +48,49 @@ If there is something, a native dialog, "This project configures Claude Code to 
 A permission card appears in the chat, and the turn waits for you. The card shows the full text of the request. You can type a note under "Tell the agent what to do instead" before denying; the agent receives it. A command is shown in full: every line is shown, each line break is marked, long runs of blank lines are counted, the title gives the number of lines, and a warning appears for a command of more than one line. The card is not height-limited, so a second command cannot hide below the first.
 
 - **Protected paths.** Edits to `.git`, `.vscode`, `.claude`, `.husky` and `.devcontainer` (at any depth), `.github/workflows`, `.mcp.json`, `.npmrc`, `.netrc`, `.env` and `.env.*` ask, even with `editApproval` on `auto` and with Auto on. These files can change what runs later or hold secrets.
-- **Anything outside the workspace.** Editing or reading a file outside the folder asks, also with Auto on.
+- **Anything outside the workspace.** Editing a file outside the folder asks, also with Auto on, with only **Allow once** and **Deny**. Reading or searching outside the folder asks too, also with Auto on, unless the folder's reads switch is on or you saved a folder that holds the target (see [Permissions](#permissions)). When one folder covers everything the call touches and may be saved, the card also offers **Always allow**. Credential locations and AgentCanopy's own storage always ask, with only **Allow once** and **Deny**.
 - **Terminal commands**, including harmless ones such as `ls`, unless you saved an always-allow rule for that exact command or Auto is on for the conversation. Choices are **Allow once**, **Always allow** and **Deny**. A command that asks to run outside the sandbox always asks, with or without Auto, and no always-allow rule is offered for it.
-- **Web search and fetch**, unless Auto is on and `agentCanopy.agent.auto.webTools` is on, and **tools from other tool servers** (MCP), also with Auto on. Each use asks. For an MCP tool you can choose **Always allow**.
+- **Web search and fetch**, unless a switch or a saved site of this folder covers it, or Auto is on and `agentCanopy.agent.auto.webTools` is on, and **tools from other tool servers** (MCP), also with Auto on. Each use asks. For a fetch you can choose **Always allow** for the site, and for an MCP tool for the tool; a search card has no **Always allow**.
 - **Other tools that need permission** (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`, and any tool AgentCanopy does not know), also with Auto on.
 
-Set `agentCanopy.agent.alwaysAskCommands` to ask before every terminal command and to ignore all saved always-allow rules. It also stops Auto from approving commands.
+Set `agentCanopy.agent.alwaysAskCommands` to ask before every terminal command and to ignore all saved always-allow rules for commands and tools. It also stops Auto from approving commands. It does not change reads or web access: saved folders, saved sites and switches still apply.
 
 ## Always allow
 
-**Always allow** is only offered for a plain command that does not start with an environment variable (`NAME=value`, which can change what runs, such as `PATH`): letters, digits, spaces and the characters `_ . / : = @ % + , ~ -`, up to 300 characters, with no quotes, pipes, redirections, substitutions or globs. The saved rule is exactly that command, `Bash(<command>)`, and the card shows it. A native dialog, "Always allow this?", asks you to confirm; if you decline, the command is allowed once.
+**Always allow** is only offered for a plain command that does not start with an environment variable (`NAME=value`, which can change what runs, such as `PATH`): letters, digits, spaces and the characters `_ . / : = @ % + , ~ -`, up to 300 characters, with no quotes, pipes, redirections, substitutions or globs. The saved rule is exactly that command, `Bash(<command>)`, and the card shows it. A native dialog, "Always allow this?", asks you to confirm; it names the command. If you decline, the command is allowed once.
+
+**Always allow** is offered for three other things, with the same dialog and the same result when you decline:
+
+- **A PowerShell command**, only when it is plain: letters, digits, spaces and the characters `_ . / \ : -`, from 1 to 300 characters, with no space at either end. The saved rule is `PowerShell(<command>)`, and it matches that exact text. It warns about project code in the same way as a Bash command, with its own short list of commands known to only look at things (such as `Get-ChildItem`, `Get-Content` and `git status`). With `agentCanopy.agent.alwaysAskCommands` on it is not offered and a saved one is ignored.
+- **A folder**, on the card of a read or search outside the folder. The card says that **Always allow** would allow reads and searches in that folder and below, and shows the folder that would be saved: the path itself when it is a folder, otherwise the folder that holds it. The dialog names that folder and the workspace folder it is saved for. It is not offered when the folder is a drive or filesystem root, your home folder or a folder above it, a credential location or AgentCanopy's own storage or a folder inside one of them, a folder that holds one of them, or on Windows a network path (`\\server\share`). It is not offered either when the path contains a line break, another control character or an invisible direction-changing character, when the request uses a path form that AgentCanopy cannot judge or a pattern with `..` after a wildcard or with an alternative in braces that starts at a root, a drive or your home folder (see [limitations](../limitations.md#saved-permissions-and-switches)), or when the targets of one call are not in one folder, for example a search path and a pattern that lead to different places. The call then asks with **Allow once** and **Deny** only.
+- **A web site**, on the card of a web fetch. The card says that **Always allow** would allow fetching any address on that site, and the dialog names the site and the workspace folder. It is not offered for an address that has a user name or password, is not `http` or `https`, has a backslash, a space or a control character, or cannot be read as an address.
 
 If the command could run code from your project or write files (any command not known to only look at things, such as `npm test` or `make`, and also an otherwise harmless one with an environment prefix or with an option that writes output or runs a program, such as `sort -o` or `git -c`), the card warns: "This command runs code from the project, which can do anything you can do." Such a command can rewrite the files that hold your approvals. Think twice before allowing it for good.
 
-Rules are stored per workspace folder, at most 200 of them. If a rule cannot be saved, the command still runs once and you are told: "The command was allowed this once, but the rule to always allow it could not be saved." No always-allow rule can be saved for a PowerShell command, so it asks every time, unless Auto is on.
+Everything you save belongs to one workspace folder, and the [Permissions](#permissions) tab lists it. Rules for Bash commands and tools from other tool servers are at most 200 per folder, and so are the saved folders, sites and PowerShell commands together. If a rule for a command (Bash or PowerShell) or a tool cannot be saved, the call still runs once and you are told: "The command was allowed this once, but the rule to always allow it could not be saved." If a folder or a site cannot be saved, the call is allowed once and you are told: "It was allowed this once, but the permission to always allow it could not be saved." A PowerShell command that is not plain asks every time, unless Auto is on.
+
+## Permissions
+
+The **Permissions** tab shows what is allowed without asking in the workspace folder the view shows, and lets you take it away. Open it from **More actions > Permissions**, or run **AgentCanopy: Show Permissions**. Its tab button is in the tab list while the folder has something saved or a switch on, and while the tab is selected. The switches, saved folders and saved sites apply in Ask, Plan and Agent mode alike; saved commands and tools only in Agent mode.
+
+Everything on the tab belongs to one workspace folder. It is stored in the extension's storage for the workspace, never in the repository or in VS Code settings, so another project asks again and a clone of the repository brings nothing with it.
+
+- **Allowed without asking in this folder.** Three switches, each showing **Ask** or **Allow**, all off until you turn them on:
+  - **Reads outside the folder**: the agent reads and searches files anywhere on this machine without asking, in every mode. What it reads is sent to the model. Credential locations and AgentCanopy's own storage still ask, and so do edits outside the folder.
+  - **Web fetch**: any web address is fetched without asking. A page can carry instructions for the agent, and an address can carry file contents out.
+  - **Web search**: every search runs without asking. The query leaves your machine.
+
+  There is no switch for commands (Auto is that, per conversation) or for tools from other tool servers. In Ask and Plan the web tools exist only while `agentCanopy.ask.webTools` is on, and the tab says so while it is off.
+- **Saved permissions.** Everything you chose **Always allow** for in this folder, in groups: folders, web sites, commands (Bash and PowerShell, with the warning about project code where it applies) and tools. It also lists the commands and tools you saved before this tab existed. Each entry has **Remove**. **Allow a folder...** opens the system's folder picker to save a folder without waiting for a card.
+- **Always asks.** What no switch or saved permission covers: edits outside the folder, edits to protected files, tools that are not from a tool server, and credential locations and AgentCanopy's own storage.
+- **Settings for every project.** The current value of six settings that shape what asks, read-only: `agentCanopy.agent.editApproval`, `agentCanopy.agent.alwaysAskCommands`, `agentCanopy.ask.webTools`, `agentCanopy.agent.auto.enabled`, `agentCanopy.agent.auto.webTools` and `agentCanopy.agent.sandbox`. **Open Settings** opens the editor's settings on this extension, where you change them. They apply to every project on this machine.
+
+Adding and removing are not alike:
+
+- **Adding needs a native dialog.** Turning a switch on and **Allow a folder...** (after you pick the folder) each open one, which names the workspace folder and what would be allowed, and nothing changes unless you confirm. They are refused in an untrusted workspace, when the view has no folder and while another permissions dialog is open. If the folder the view shows or the trust of the workspace changes while the dialog is open, nothing is changed. A folder you pick can also be refused with a message of its own: see [Troubleshooting](troubleshooting.md#permissions-messages).
+- **Removing needs no dialog.** Turning a switch off and **Remove** work at once, also while a turn is running: the next request of that turn asks again.
+
+A saved permission or a switch that allows a call is checked before Auto, and the call is labelled "Approved by you". `agentCanopy.agent.alwaysAskCommands` ignores saved commands and tools but not folders, sites or switches. What the saved permissions cover and do not cover is in [limitations](../limitations.md#saved-permissions-and-switches).
 
 ## Auto
 
@@ -84,12 +113,13 @@ Click **Auto** again. There is no dialog, it works at any time, and it takes eff
 | Call | With Auto on |
 | :- | :- |
 | Terminal command (Bash, PowerShell) | Runs, labelled "Auto-approved". Asks while `agentCanopy.agent.alwaysAskCommands` is on, and always asks when it carries `dangerouslyDisableSandbox` (a request to run outside the sandbox) |
-| Command with a saved always-allow rule | Runs, labelled "Approved by you": the rule is checked first |
+| Command with a saved always-allow rule (Bash or PowerShell) | Runs, labelled "Approved by you": the rule is checked first |
 | Edit inside the folder | Runs. With `editApproval` on `ask` it is labelled "Auto-approved"; with `auto` it is "Allowed by AgentCanopy", as without Auto |
 | Edit on a protected path | Asks |
-| Edit or read outside the folder | Asks |
+| Edit outside the folder | Asks |
+| Read outside the folder | Asks, unless the folder's reads switch is on or a saved folder covers it. Then it runs, labelled "Approved by you": saved permissions are checked before Auto, and Auto never covers a read. Credential locations always ask |
 | Read inside the folder | Runs, as without Auto |
-| Web fetch and web search | Asks, unless `agentCanopy.agent.auto.webTools` is on. Then they run, labelled "Auto-approved" |
+| Web fetch and web search | Run, labelled "Approved by you", when the folder's switch for it is on or, for a fetch, its site is saved: saved permissions are checked before Auto. Otherwise they ask, unless `agentCanopy.agent.auto.webTools` is on. Then they run, labelled "Auto-approved" |
 | Tool from another tool server (MCP) | Asks, unless you saved an always-allow rule |
 | Any other tool that asks (`Skill`, `Monitor`, `ExitPlanMode`, `EnterWorktree`, `Workflow`, unknown tools) | Asks |
 | `AskUserQuestion` | Shown to you, as always |
@@ -117,7 +147,7 @@ A setting that narrows Auto takes effect at once, also for a running turn: turni
 
 ## Who allowed each call
 
-Each tool card shows one of five labels: "Approved by you" (this includes a saved always-allow rule you created), "Allowed by AgentCanopy" (the edit and read rules above), "Allowed by Claude Code" (Claude Code allowed the call on its own: tools it runs without asking, such as launching a subagent, and tools that your own Claude Code settings pre-approve; never commands, edits, reads or web access, which always reach AgentCanopy's policy), "Auto-approved" (approved by Auto, see above) and "Not verified by AgentCanopy".
+Each tool card shows one of five labels: "Approved by you" (this includes a saved always-allow rule you created, and a call that a saved folder, site or PowerShell command or a switch you turned on in the Permissions tab allowed), "Allowed by AgentCanopy" (the edit and read rules above), "Allowed by Claude Code" (Claude Code allowed the call on its own: tools it runs without asking, such as launching a subagent, and tools that your own Claude Code settings pre-approve; never commands, edits, reads or web access, which always reach AgentCanopy's policy), "Auto-approved" (approved by Auto, see above) and "Not verified by AgentCanopy".
 
 ## Run commands in a sandbox
 

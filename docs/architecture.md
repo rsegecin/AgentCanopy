@@ -44,9 +44,9 @@ Every turn runs `claude -p --output-format stream-json --verbose --include-parti
 
 | Mode | Tools and settings | Host policy |
 | :- | :- | :- |
-| Ask | `--tools Read,Grep,Glob,AskUserQuestion`, strict MCP config, no slash commands, hooks disabled | Default deny; reads inside the folder pass, reads outside ask |
+| Ask | `--tools Read,Grep,Glob,AskUserQuestion`, strict MCP config, no slash commands, hooks disabled | Default deny; reads inside the folder pass, reads outside ask unless a saved permission covers them |
 | Plan | Ask, plus the plan tool unless the plan is locked | Same as Ask |
-| Agent | Default tools, `ask` rules for the edit tools, saved allow rules, tool hooks, optional sandbox | Edits inside the folder pass; protected paths, outside paths, commands, web and external tools ask, except what Auto approves (see Permission flow) |
+| Agent | Default tools, `ask` rules for the edit tools, saved allow rules, tool hooks, optional sandbox | Edits inside the folder pass; protected paths, outside paths, commands, web and external tools ask, except what a saved permission or Auto approves (see Permission flow) |
 
 ## Turn flow
 
@@ -115,6 +115,13 @@ The settings file AgentCanopy writes for each turn adds `ask` rules, so Claude C
 
 Agent mode's Auto is a change to the Agent policy and nothing else in this flow. `ConversationMeta.agentAuto` holds the flag; the host keeps a set of conversations that were turned off but could not be saved, and one function (`autoOn` in the session controller) answers for the whole host. Whether a turn has Auto is decided once per send, where the execution profile is built, and can only be taken away afterwards: the policy reads it live (`PolicyContext.auto`), so turning Auto off, or the setting off, applies from the next request of a running turn. With Auto applying, the policy approves with source `auto` terminal commands, edits inside the folder when `editApproval` is `ask`, and web tools only with `agentCanopy.agent.auto.webTools`. A stored always-allow rule is checked first and approves as `user`. A command that carries `dangerouslyDisableSandbox`, protected paths, anything outside the folder, MCP and other tools are never approved by Auto. When the turn starts with Auto and the sandbox is configured, the settings file sets `sandbox.allowUnsandboxedCommands: false`, so a command cannot leave the sandbox in that turn; otherwise only `enabled` and `autoAllowBashIfSandboxed: false` are set. Turning Auto on goes through a native dialog and is checked again after it.
 
+Saved permissions are a second store next to the rule store, and they are decided by the same policies.
+
+- **Two stores.** The rule store (`src/core/policy/agent/rules.ts`) holds Bash commands and MCP tools in the CLI's rule syntax and passes them to Claude Code as allow rules. The grant store (`src/core/policy/grants/store.ts`) holds what Claude Code never sees: per workspace folder, the switches that are on (`read-outside`, `web-fetch`, `web-search`) and the grants, which are directories to read, web sites (the host, with a port that is not the default) and plain PowerShell commands. It is one file per folder key, `permissions/<key>.json` in the workspace storage next to `rules/`, written like the rule files: validated on load, a temporary file and a rename, queued, owner-only mode, at most 200 grants. `createSavedPermissions` lists both stores for the Permissions view with opaque ids (a hash of the entry), removes by id from the store the entry came from, and tells whether what a card offered to save is saved now.
+- **Two inputs.** `createReadOnlyPolicy` and `createAgentPolicy` take `grants` (the grant store) and `sensitiveRoots`, a function that returns AgentCanopy's workspace and global storage directories. `PolicyContext` does not change, and without `grants` every decision is the plain one. `grants/sensitive.ts` decides what is sensitive from real paths: the credential locations under the home folder, `AppData` or `Library`, the storage directories and, on Windows, paths that start with two backslashes. That check wins over every switch and grant, and it also decides which directory may be offered or saved (`canGrantDirectory`, `checkDirectoryToGrant`).
+- **Read at every request.** The policy reads the grant store after the last `await` of a decision, and decides from what it read with nothing awaited in between, as it reads `context.auto`. A removal, or a switch turned off, therefore applies to the next request of a running turn. A call a saved permission allows returns approval `user`, and saved permissions are checked before Auto.
+- **Adding goes through the host.** The webview can send `permissions.remove` (an entry id), `permissions.setSwitch`, `permissions.addDirectory` and `settings.open`; none names a folder or a path. A permission is added, or a switch turned on, only after a native dialog, and the controller checks again after it that the workspace is trusted and the view shows the same folder. Removing and turning a switch off need no dialog.
+
 ## The workspace log and what derives from it
 
 `src/core/workspace` has four parts.
@@ -138,7 +145,7 @@ A branch is a conversation with a parent, a fork point and the parent's id of th
 
 ## Webview and security
 
-The webview has a closed Content Security Policy. Markdown goes through markdown-it with HTML off and then through DOMPurify; Mermaid runs with `securityLevel: 'strict'` and is loaded lazily, with its ELK layout engine replaced by a stub at build time. Every message in both directions is validated against a zod union. High-impact approvals use native modals, which webview content cannot trigger. See [SECURITY.md](../SECURITY.md).
+The webview has a closed Content Security Policy. Markdown goes through markdown-it with HTML off and then through DOMPurify; Mermaid runs with `securityLevel: 'strict'` and is loaded lazily, with its ELK layout engine replaced by a stub at build time. Every message in both directions is validated against a zod union. High-impact approvals use native modals, which webview content cannot trigger. The Permissions tab (`src/webview/features/permissions/PermissionsView.tsx`) shows the saved permissions of the view's folder, the three switches, what always asks and the machine-wide settings from `ViewState.permissions` and `ViewState.policySettings`. It is reached from the overflow menu, and from the command **AgentCanopy: Show Permissions**, which posts `show-tab: permissions`. It can ask the host to remove an entry, change a switch, start the folder picker or open the editor's settings, and nothing else: whatever adds a permission is the host's native dialog. See [SECURITY.md](../SECURITY.md).
 
 ## Testing seams
 

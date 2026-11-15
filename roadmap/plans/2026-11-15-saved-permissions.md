@@ -1,10 +1,10 @@
 # Saved permissions, per-folder switches and a Permissions view
 
-Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **Resumed on 2026-11-15** after the pause that followed stage s1.
+Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **Built on 2026-11-15**: all six stages are committed. The six manual checks of stage s5 are still to be done.
 
 ## Progress
 
-Updated at every stage commit. Last update: 2026-11-15, with stage s3.
+Updated at every stage commit. Last update: 2026-11-15, with stage s5.
 
 **Resumed by the owner on 2026-11-15**, with two decisions:
 
@@ -17,9 +17,32 @@ Updated at every stage commit. Last update: 2026-11-15, with stage s3.
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
 | The path fix (outside the stages, before s2) | Done | `1207288` |
 | s2. Grant store and policy | Done | `709e607` |
-| s3. Host: wiring, dialogs and view state | Done | The commit that carries this update |
+| s3. Host: wiring, dialogs and view state | Done | `fad63fe` |
 | s4. Webview: Permissions view and card wording | Done | `15fbce7` |
-| s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
+| s5. Documentation, full verification and status | Done | The commit that carries this update |
+
+### What was verified at the end, and what was not
+
+On 2026-11-15, Windows 10, at the commit of s5:
+
+- `npm run typecheck`, `npm run lint` and `npm run build` pass.
+- `npx prettier --check --end-of-line auto .` passes. `npm run format:check` as written fails on 113 files, for line endings only.
+- `npm test`: 3676 tests; 17 fail, every one of them in the baseline of the untouched checkout. The eighteenth baseline failure ("glob patterns asks for /\*") passes since the path fix.
+- `npm run test:integration`: 46 pass (43 and 3), among them "the show permissions command runs".
+- `node scripts/preview-webview.mjs --check` with `CHROME_PATH` set: 25 screens rendered under the CSP, none with a diagnostic. The four Permissions screenshots were read at s4.
+- The documents (`docs/guide/agent-mode.md`, `docs/guide/ask-mode.md`, `docs/limitations.md`, `SECURITY.md`, `docs/guide/troubleshooting.md`, `docs/architecture.md`, `README.md`, `CHANGELOG.md`) describe the behaviour as built. Every sentence about what asks, what runs and what is refused was read against the policy code, its tests and `src/core/session/text.ts`; ten were corrected in that review.
+
+Not done:
+
+- **The six manual checks of s5 in the Extension Development Host.** Nothing of Phase 11 has been tried by hand in VS Code.
+- **The live test** in `test/live/ask.live.test.ts` was not written: it is written and run only when asked.
+- **No run against the CLI** for the path forms of the path fix or for `WebFetch` on a redirect.
+- **No screen reader and no high-contrast theme.**
+
+### Open points for the owner
+
+- **Two pattern forms are still judged by their literal prefix for the inside-the-folder judgement**, as before Phase 11: a `..` after the first wildcard (`src/*/../../x`) and an alternative in braces that starts elsewhere (`{a,/etc/*}`). The comment in `targets.ts` says so and `docs/limitations.md` now does too. s2 keeps such a pattern from being covered by a switch or a saved folder. Judging them as outside, like the forms of the path fix, would be a small change of the same kind; it was not made, because the owner approved the fix for two named forms.
+- **The version bump to 0.1.2** in `package.json` and the lockfile is still uncommitted and is not part of this phase.
 
 ### The path fix
 
@@ -274,7 +297,7 @@ Primary model, no code.
 - Primary: `src/shared/permissions.ts`, `prompts.ts`, `view-state.ts`, `protocol.ts`, `index.ts`, schema tests in `index.test.ts`, `src/core/contracts/app.ts`, the command in `package.json`.
 - `implementation`: `src/vscode/host/ui.ts` (`pickDirectory`, `openSettings`), `src/vscode/host/activate.ts` (the command), `src/core/session/controller.ts` (`showPermissions`, the message cases, `policySettings`), `state.ts`, the fake UI port in `test-support.ts`, tests in `views.test.ts`, `test/unit/manifest.test.ts`, `test/integration/activation.test.ts`.
 
-### s2. Grant store and policy (next)
+### s2. Grant store and policy (done, `709e607`)
 
 `implementation`, primary reviews. Depends on s1.
 
@@ -297,7 +320,7 @@ Files: `src/core/policy/grants/{store,sensitive,web,saved,index}.ts` with `store
 
 Done when: the checks pass; every existing policy test passes with its expectations unedited; the tests above exist and pass, including the sensitive-path and symlink cases; nothing under `src/core/policy` imports `vscode` or React.
 
-### s3. Host: wiring, dialogs and view state
+### s3. Host: wiring, dialogs and view state (done, `fad63fe`)
 
 `implementation`, primary reviews with the trust model as the checklist. Depends on s2.
 
@@ -321,7 +344,7 @@ Files: `src/core/session/{controller,turn,prompts,text,state,view,test-support}.
 
 Done when: the checks pass; every caller of `GrantStore.add` and `GrantStore.setSwitch(..., true)` is behind a resolved native dialog (the primary model reads each one); the tests above pass; existing session tests pass with only the calls to the changed `onAlwaysAllowChosen` signature edited.
 
-### s4. Webview: Permissions view and card wording
+### s4. Webview: Permissions view and card wording (done, `15fbce7`)
 
 `implementation`, primary reviews and reads the preview screenshots. Depends on s1 only.
 
@@ -336,7 +359,7 @@ Tests: `features/permissions/permissions.test.tsx` (each kind renders; `permissi
 
 Done when: the checks pass; `npm run build && node scripts/preview-webview.mjs --check` renders the view and the two new cards under the CSP and the screenshots were read; the webview imports only from `src/shared`; every control is reachable and operable by keyboard.
 
-### s5. Documentation, full verification and status
+### s5. Documentation, full verification and status (done)
 
 `implementation` writes, primary reviews every sentence against the code. Depends on s3 and s4.
 
