@@ -4,7 +4,7 @@ Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, a
 
 ## Progress
 
-Updated at every stage commit. Last update: 2026-11-15, with stage s4.
+Updated at every stage commit. Last update: 2026-11-15, with stage s2.
 
 **Resumed by the owner on 2026-11-15**, with two decisions:
 
@@ -16,9 +16,9 @@ Updated at every stage commit. Last update: 2026-11-15, with stage s4.
 | s0. Decisions, roadmap file and CLI facts | Done | `35e7a14` |
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
 | The path fix (outside the stages, before s2) | Done | `1207288` |
-| s2. Grant store and policy | Being built | |
-| s3. Host: wiring, dialogs and view state | Not started. Needs s2 | |
-| s4. Webview: Permissions view and card wording | Done | The commit that carries this update |
+| s2. Grant store and policy | Done | The commit that carries this update |
+| s3. Host: wiring, dialogs and view state | Next | |
+| s4. Webview: Permissions view and card wording | Done | `15fbce7` |
 | s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
 
 ### The path fix
@@ -44,6 +44,27 @@ Not changed, and still as the comment in `targets.ts` says: a `..` segment after
   - `ViewState.permissions` is always `{ folder: null, switches: [], saved: [] }`. Stage s3 fills it.
   - `src/webview/app/App.tsx` ignored a `show-tab` event for `permissions`, because the tab did not exist yet. Stage s4 replaced that line with the tab.
 - No policy decision has changed. Every permission request is decided exactly as before Phase 11.
+
+### What exists after s2
+
+- `src/core/policy/grants/`: the grant store (`createGrantStore`), the sensitive-location checks (`sensitive.ts`), `fetchSite`, `createSavedPermissions`, and `checkDirectoryToGrant`, which the host calls before it saves a folder picked in the view. Both policy factories take `grants` and `sensitiveRoots`. `exactPowerShellCommand` and `runsProjectCodePowerShell` are in `agent/commands.ts`.
+- The host does not pass `grants` yet, so every decision is still the one before Phase 11, apart from the path fix. s3 wires it.
+- Verified for s2: type check, lint, the format check with line endings ignored, the build, and all unit tests (3623; the 17 baseline failures that remain after the path fix and no other). The policy folder was run again after one test added in review was corrected. No existing test expectation was edited. Not run on this machine: the file-mode test of the store (it runs off Windows only) and the test that case is kept on Linux.
+
+Rules added in s2 so that "credential locations always ask" holds where the plan's text did not reach:
+
+- **A target that holds a sensitive location is not covered by the switch**: a search from the home directory, from an ancestor of it or from a parent of the extension's storage asks (`containsSensitive`). `canGrantDirectory` refuses such a directory too.
+- **On Windows a real path that starts with two backslashes or two slashes is sensitive**: a network share or an administrative share such as `\\localhost\C$` keeps that form after resolving, so it cannot be told apart from the home directory. It is never covered and cannot be saved.
+- **A pattern is never covered** when the part after its literal prefix has a `..` component, or an alternative in braces that starts at a root, a drive or the home folder (`{a,/etc/*}`).
+- **"Always allow" for a directory is offered only for a plain path**: absolute, and unchanged by `escapeOneLine`, so the card and the dialog show exactly what is saved. This is stricter than `escapeForDisplay`, which keeps a newline.
+- **A saved directory that may not be granted covers nothing** at decision time (a hand-edited file); it is still listed, so it can be removed.
+- **A site is `URL.host`**, taken by `fetchSite` when offering, saving and matching; an address with a backslash, whitespace or a control character has no site.
+
+Other differences from the plan in s2:
+
+- Bash and MCP prompts keep `alwaysRule` without `kind`, so their tests are unedited. A PowerShell prompt has `kind: 'command'` and the rule text `PowerShell(<command>)`; `saved.has` tells the stores apart by `kind` and that prefix.
+- The read tests set `HOME` and `USERPROFILE` to a temporary directory (`useHome` in `readonly/test-support.ts`): the temporary directories lie under the real home, on Windows under `AppData`, which is sensitive. For the guides: with the reads switch on, a read in the temp folder still asks on Windows.
+- `decideRead` collects every outside target (the path and the pattern); before, it kept the last one. The prompt's `detail` is unchanged.
 
 ### What exists after s4
 

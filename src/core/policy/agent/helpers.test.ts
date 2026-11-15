@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { exactCommandRule, isProtectedPath, runsProjectCode } from './index';
+import {
+  exactCommandRule,
+  exactPowerShellCommand,
+  isProtectedPath,
+  runsProjectCode,
+  runsProjectCodePowerShell,
+} from './index';
 
 describe('isProtectedPath', () => {
   it.each([
@@ -309,5 +315,118 @@ describe('runsProjectCode', () => {
     'CI=1',
   ])('%j can run project code', (command) => {
     expect(runsProjectCode(command)).toBe(true);
+  });
+});
+
+describe('exactPowerShellCommand', () => {
+  it.each([
+    'npm test',
+    'Get-ChildItem',
+    'Get-Content -Path .\\notes.txt',
+    '.\\run.ps1',
+    'C:\\tools\\build.ps1 -Release',
+    './scripts/build.sh',
+    'git status',
+    'a  b',
+    'a'.repeat(300),
+  ])('keeps %j', (command) => {
+    expect(exactPowerShellCommand(command)).toBe(command);
+  });
+
+  it.each([
+    ['an empty string', ''],
+    ['only spaces', '   '],
+    ['a variable', 'echo $x'],
+    ['a semicolon', 'a; b'],
+    ['a pipe', 'ls | wc'],
+    ['a backtick', 'echo `n'],
+    ['double quotes', 'echo "x"'],
+    ['single quotes', "echo 'x'"],
+    ['parentheses', '(Get-Date)'],
+    ['an ampersand', 'a & b'],
+    ['a call operator', '& .\\x.ps1'],
+    ['a redirection', 'ls > f'],
+    ['braces', '@{a=1}'],
+    ['a glob', 'ls *.txt'],
+    ['a comma', 'a,b'],
+    ['an equals sign', 'x=1'],
+    ['a newline', 'ls\nrm x'],
+    ['a tab', 'ls\tx'],
+    ['a non-ASCII letter', 'echo ü'],
+    ['a bidi control', 'ls \u202e'],
+    ['a leading space', ' ls'],
+    ['a trailing space', 'ls '],
+    ['301 characters', 'a'.repeat(301)],
+  ])('refuses %s', (_name, command) => {
+    expect(exactPowerShellCommand(command)).toBeUndefined();
+  });
+});
+
+describe('runsProjectCodePowerShell', () => {
+  const INERT_WORDS = [
+    'get-childitem',
+    'get-content',
+    'get-location',
+    'get-item',
+    'test-path',
+    'resolve-path',
+    'select-string',
+    'get-date',
+    'ls',
+    'dir',
+    'gci',
+    'cat',
+    'type',
+    'gc',
+    'pwd',
+    'gl',
+  ];
+
+  it.each(INERT_WORDS)('%s is inert in any case, alone and with arguments', (word) => {
+    const mixed = [...word].map((c, i) => (i % 2 === 0 ? c.toUpperCase() : c)).join('');
+    for (const name of [word, word.toUpperCase(), mixed]) {
+      expect(runsProjectCodePowerShell(name)).toBe(false);
+      expect(runsProjectCodePowerShell(`${name} -Path src`)).toBe(false);
+    }
+  });
+
+  it.each(['git status', 'git status -s', 'git diff HEAD', 'GIT log --oneline', 'git branch -a'])(
+    '%j is inert',
+    (command) => {
+      expect(runsProjectCodePowerShell(command)).toBe(false);
+    },
+  );
+
+  it.each([
+    'git',
+    'git -c x status',
+    'git -C x status',
+    'git push',
+    'git commit -m x',
+    'git log --output=out.txt',
+    'git diff --ext-diff',
+    '.\\run.ps1',
+    '. .\\x.ps1',
+    '\\\\server\\x.exe',
+    'C:\\tools\\x.exe',
+    './build.sh',
+    'scripts/x',
+    'npm test',
+    'npx vitest',
+    'node x.js',
+    'Invoke-Expression x',
+    'iex x',
+    'Start-Process x',
+    'Remove-Item x',
+    'lsx',
+    'get-childitem2',
+    'ls; npm test',
+    'Get-Content x | iex',
+    'echo $(npm test)',
+    ' ls',
+    'ls ',
+    '',
+  ])('%j can run project code', (command) => {
+    expect(runsProjectCodePowerShell(command)).toBe(true);
   });
 });

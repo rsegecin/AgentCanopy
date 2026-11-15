@@ -1,5 +1,6 @@
 import type { TurnPolicy } from '../../contracts';
 import { silentLogger, type Logger } from '../../contracts';
+import type { GrantStore, PolicyAccess } from '../grants';
 import { decideReadOnly } from './decide';
 import { inspectEvent, newGuardState, type GuardState } from './guard';
 
@@ -7,13 +8,27 @@ import { inspectEvent, newGuardState, type GuardState } from './guard';
  * The policy of the read-only modes. Ask and Plan run under it; Agent mode has its own policy
  * (src/core/policy/agent), and `createModePolicy` picks one per turn.
  *
+ * With `grants`, reads outside the folder and web calls honour the folder's switches and saved
+ * permissions, and `sensitiveRoots` (AgentCanopy's storage directories) always ask. Without it every
+ * decision is the plain one.
+ *
  * The guard keeps state for the turn it watches, so every conversation gets its own, keyed on the
  * conversation id. A conversation runs one turn at a time, so a turn's state is dropped when its
  * `result` event has been seen, and a `session` event (the first event of a turn) always starts a
  * fresh one. A turn that is killed before its result leaves one small entry until the next turn.
  */
-export function createReadOnlyPolicy(options: { logger?: Logger } = {}): TurnPolicy {
+export function createReadOnlyPolicy(
+  options: { logger?: Logger; grants?: GrantStore; sensitiveRoots?: () => string[] } = {},
+): TurnPolicy {
   const logger = options.logger ?? silentLogger;
+  const access: PolicyAccess | undefined =
+    options.grants === undefined
+      ? undefined
+      : {
+          grants: options.grants,
+          sensitiveRoots: options.sensitiveRoots ?? (() => []),
+          logger,
+        };
   const guards = new Map<string, GuardState>();
 
   return {
@@ -33,7 +48,7 @@ export function createReadOnlyPolicy(options: { logger?: Logger } = {}): TurnPol
     },
 
     decide(request, context) {
-      return decideReadOnly(request, context, logger);
+      return decideReadOnly(request, context, logger, access);
     },
 
     inspect(event, context) {

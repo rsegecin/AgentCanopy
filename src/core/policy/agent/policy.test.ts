@@ -10,11 +10,15 @@ import {
 } from '../../../shared';
 import type { AgentEvent } from '../../../shared';
 import type { PermissionRequest, PolicyDecision } from '../../contracts';
+import type { GrantStore } from '../grants';
 import {
   makeContext,
   makeTempDir,
+  openGrantStore,
+  recordingLogger,
   removeDir,
   sessionEvent,
+  useHome,
   writeTree,
   type FakeAsk,
 } from '../readonly/test-support';
@@ -1163,6 +1167,335 @@ describe('agent policy', () => {
 
     it('every other test here runs with Auto off', () => {
       expect(setup().ask.context.auto).toBe(false);
+    });
+  });
+});
+
+describe('agent policy with saved permissions', () => {
+  const KEY = 'folder-1' as FolderKey;
+  const ONCE_DENY = ['allow-once', 'deny'];
+  const ONCE_ALWAYS_DENY = ['allow-once', 'allow-always', 'deny'];
+  let root: string;
+  let folder: string;
+  let outside: string;
+  let home: string;
+  let storage: string;
+  let restoreHome: () => void;
+  let grants: GrantStore;
+
+  // The temporary directories lie under the real home (under AppData on Windows, which is
+  // sensitive), so these tests run with a home directory of their own.
+  beforeEach(async () => {
+    root = await makeTempDir('agent-saved');
+    folder = join(root, 'folder');
+    outside = join(root, 'outside');
+    home = join(root, 'home');
+    storage = join(root, 'ext', 'storage');
+    await writeTree(folder, { 'src/a.ts': 'a' });
+    await writeTree(outside, { 'secret.txt': 's' });
+    await fs.mkdir(join(home, '.ssh'), { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    restoreHome = useHome(home);
+    grants = await openGrantStore(join(root, 'permissions'));
+  });
+  afterEach(async () => {
+    restoreHome();
+    await removeDir(root);
+  });
+
+  function setup(
+    options: {
+      answer?: PromptAnswer | undefined;
+      settings?: Partial<Settings>;
+      auto?: boolean;
+      grants?: GrantStore | null;
+      logger?: Parameters<typeof createAgentPolicy>[0]['logger'];
+    } = {},
+  ) {
+    const rules = fakeRules();
+    const store = options.grants === null ? undefined : (options.grants ?? grants);
+    const policy = createAgentPolicy({
+      rules: rules.store,
+      ...(store ? { grants: store, sensitiveRoots: () => [storage] } : {}),
+      ...(options.logger ? { logger: options.logger } : {}),
+    });
+    const ask = makeContext({
+      folderPath: folder,
+      answer: options.answer,
+      settings: options.settings,
+      mode: 'agent',
+      ...(options.auto !== undefined ? { auto: options.auto } : {}),
+    });
+    const decide = (toolName: string, input: unknown) =>
+      policy.decide(request(toolName, input), ask.context);
+    return { policy, rules, ask, decide, prompts: ask.prompts };
+  }
+
+  describe('reads', () => {
+    it('the switch allows an outside read as the user, a saved directory allows below it', async () => {
+      const { decide, prompts } = setup({ answer: DENY });
+      expect(
+        (await decide('Read', { file_path: join(outside, 'secret.txt') })).response.behavior,
+      ).toBe('deny');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        category: 'read-outside',
+        choices: ONCE_ALWAYS_DENY,
+        alwaysRule: { kind: 'read-directory', rule: outside, runsProjectCode: false },
+      });
+
+      await grants.setSwitch(KEY, 'read-outside', true);
+      expect(await decide('Read', { file_path: join(outside, 'secret.txt') })).toEqual(allowUser);
+      await grants.setSwitch(KEY, 'read-outside', false);
+      expect(
+        (await decide('Read', { file_path: join(outside, 'secret.txt') })).response.behavior,
+      ).toBe('deny');
+
+      await grants.add(KEY, { kind: 'read-directory', path: outside });
+      expect(await decide('Grep', { pattern: 'x', path: outside })).toEqual(allowUser);
+      expect(await decide('Glob', { pattern: `${outside}/*.txt` })).toEqual(allowUser);
+      expect(prompts).toHaveLength(2);
+    });
+
+    it('always saves the directory and the next read passes', async () => {
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      expect(await decide('Read', { file_path: join(outside, 'secret.txt') })).toEqual(allowUser);
+      expect(grants.get(KEY).grants).toEqual([{ kind: 'read-directory', path: outside }]);
+      expect(await decide('Read', { file_path: join(outside, 'secret.txt') })).toEqual(allowUser);
+      expect(prompts).toHaveLength(1);
+    });
+
+    it('a sensitive target asks with once and deny only, although the switch is on', async () => {
+      await grants.setSwitch(KEY, 'read-outside', true);
+      for (const path of [join(home, '.ssh', 'id'), join(storage, 'permissions', 'k.json')]) {
+        const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+        const decision = await decide('Read', { file_path: path });
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+        expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+      }
+    });
+
+    it('edits outside the folder and protected files still ask, with the switch on', async () => {
+      await grants.setSwitch(KEY, 'read-outside', true);
+      await grants.add(KEY, { kind: 'read-directory', path: outside });
+      const { decide, prompts } = setup({ answer: DENY });
+      await decide('Write', { file_path: join(outside, 'x.txt') });
+      await decide('Edit', { file_path: '.env' });
+      expect(prompts.map((p) => (p as { category: string }).category)).toEqual([
+        'outside-workspace',
+        'protected-path',
+      ]);
+      for (const prompt of prompts) expect(prompt).toMatchObject({ choices: ONCE_DENY });
+    });
+  });
+
+  describe('web tools', () => {
+    it('a saved site and the switches allow as the user, and Auto stays auto when nothing is saved', async () => {
+      const fetch = { url: 'https://docs.example.com/a' };
+      const settings = { agentAutoWebTools: true };
+      const unsaved = setup({ answer: DENY, auto: true, settings });
+      expect(await unsaved.decide('WebFetch', fetch)).toEqual({
+        response: { behavior: 'allow' },
+        approval: 'auto',
+      });
+      expect(await unsaved.decide('WebSearch', { query: 'q' })).toMatchObject({ approval: 'auto' });
+
+      await grants.add(KEY, { kind: 'web-site', host: 'docs.example.com' });
+      const saved = setup({ answer: DENY, auto: true, settings });
+      expect(await saved.decide('WebFetch', fetch)).toEqual(allowUser);
+      expect(await saved.decide('WebFetch', { url: 'https://other.example.com/' })).toMatchObject({
+        approval: 'auto',
+      });
+      expect(await saved.decide('WebSearch', { query: 'q' })).toMatchObject({ approval: 'auto' });
+      expect(saved.prompts).toEqual([]);
+
+      await grants.setSwitch(KEY, 'web-search', true);
+      expect(await saved.decide('WebSearch', { query: 'q' })).toEqual(allowUser);
+      await grants.setSwitch(KEY, 'web-fetch', true);
+      expect(await saved.decide('WebFetch', { url: 'https://u:p@x.example/' })).toEqual(allowUser);
+    });
+
+    it('a fetch offers always for its site, saves it on always and then passes', async () => {
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      expect(await decide('WebFetch', { url: 'https://Docs.Example.com:8443/a' })).toEqual(
+        allowUser,
+      );
+      expect(prompts[0]).toMatchObject({
+        category: 'network',
+        choices: ONCE_ALWAYS_DENY,
+        alwaysRule: { kind: 'web-site', rule: 'docs.example.com:8443', runsProjectCode: false },
+      });
+      expect(grants.get(KEY).grants).toEqual([{ kind: 'web-site', host: 'docs.example.com:8443' }]);
+      expect(await decide('WebFetch', { url: 'https://docs.example.com:8443/b' })).toEqual(
+        allowUser,
+      );
+      expect(prompts).toHaveLength(1);
+      // The exact host and port only.
+      await decide('WebFetch', { url: 'https://docs.example.com/b' });
+      expect(prompts).toHaveLength(2);
+    });
+
+    it.each([
+      ['a user name', 'https://u@docs.example.com/'],
+      ['a file address', 'file:///etc/passwd'],
+      ['an unparsable address', 'not a url'],
+    ])('an address with %s asks without always, and a search never offers it', async (_n, url) => {
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      expect((await decide('WebFetch', { url })).response.behavior).toBe('deny');
+      expect(await decide('WebSearch', { query: 'q' })).toMatchObject({
+        response: { behavior: 'deny' },
+      });
+      for (const prompt of prompts) {
+        expect(prompt).toMatchObject({ choices: ONCE_DENY });
+        expect(prompt).not.toHaveProperty('alwaysRule');
+      }
+      expect(grants.get(KEY).grants).toEqual([]);
+    });
+
+    it('a failed save is logged and the fetch still goes ahead', async () => {
+      const { logger, warnings } = recordingLogger();
+      const failing: GrantStore = { ...grants, add: () => Promise.reject(new Error('full')) };
+      const { decide } = setup({ answer: ALLOW_ALWAYS, grants: failing, logger });
+      expect(await decide('WebFetch', { url: 'https://docs.example.com/' })).toEqual(allowUser);
+      expect(warnings).toHaveLength(1);
+    });
+  });
+
+  describe('PowerShell', () => {
+    it('a plain command offers always with its rule, saves it and then passes', async () => {
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      expect(await decide('PowerShell', { command: 'npm test' })).toEqual(allowUser);
+      expect(prompts[0]).toMatchObject({
+        toolName: 'PowerShell',
+        category: 'command',
+        choices: ONCE_ALWAYS_DENY,
+        alwaysRule: { kind: 'command', rule: 'PowerShell(npm test)', runsProjectCode: true },
+      });
+      expect(grants.get(KEY).grants).toEqual([{ kind: 'powershell-command', command: 'npm test' }]);
+
+      expect(await decide('PowerShell', { command: 'npm test' })).toEqual(allowUser);
+      expect(prompts).toHaveLength(1);
+      // Another command, and the same text under Bash, still ask.
+      await decide('PowerShell', { command: 'npm test -- x' });
+      await decide('Bash', { command: 'npm test' });
+      expect(prompts).toHaveLength(3);
+    });
+
+    it('an inert command is labelled so', async () => {
+      const { decide, prompts } = setup({ answer: ALLOW_ONCE });
+      await decide('PowerShell', { command: 'Get-ChildItem -Path src' });
+      expect(prompts[0]).toMatchObject({
+        alwaysRule: { rule: 'PowerShell(Get-ChildItem -Path src)', runsProjectCode: false },
+      });
+    });
+
+    it.each(['echo $x', 'a; b', 'ls | wc', 'echo `n', 'echo "x"', '(Get-Date)', ' ls', 'ls '])(
+      'the command %j offers no always',
+      async (command) => {
+        const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+        const decision = await decide('PowerShell', { command });
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+        expect(decision.response.behavior).toBe('deny');
+        expect(grants.get(KEY).grants).toEqual([]);
+      },
+    );
+
+    it('alwaysAskCommands removes the choice and ignores the saved command', async () => {
+      await grants.add(KEY, { kind: 'powershell-command', command: 'npm test' });
+      const { decide, prompts } = setup({
+        answer: ALLOW_ONCE,
+        settings: { alwaysAskCommands: true },
+      });
+      expect(await decide('PowerShell', { command: 'npm test' })).toEqual(allowUser);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      // With Auto on it asks as well.
+      const auto = setup({ answer: DENY, auto: true, settings: { alwaysAskCommands: true } });
+      await auto.decide('PowerShell', { command: 'npm test' });
+      expect(auto.prompts).toHaveLength(1);
+    });
+
+    it('leaving the sandbox still asks first, once, whatever is saved', async () => {
+      await grants.add(KEY, { kind: 'powershell-command', command: 'npm test' });
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS, auto: true });
+      const decision = await decide('PowerShell', {
+        command: 'npm test',
+        dangerouslyDisableSandbox: true,
+      });
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        title: 'Run a terminal command outside the sandbox',
+        choices: ONCE_DENY,
+      });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      expect(decision.response.behavior).toBe('deny');
+    });
+
+    it('a saved command is approved as the user, before Auto; Auto approves the rest', async () => {
+      await grants.add(KEY, { kind: 'powershell-command', command: 'npm test' });
+      const { decide, prompts } = setup({ answer: DENY, auto: true });
+      expect(await decide('PowerShell', { command: 'npm test' })).toEqual(allowUser);
+      expect(await decide('PowerShell', { command: 'npm run build' })).toMatchObject({
+        approval: 'auto',
+      });
+      expect(prompts).toEqual([]);
+    });
+
+    it('a removed command asks again, and one saved for another folder does not count', async () => {
+      await grants.add(KEY, { kind: 'powershell-command', command: 'npm test' });
+      await grants.add('folder-2' as FolderKey, { kind: 'powershell-command', command: 'ls' });
+      const { decide, prompts } = setup({ answer: DENY });
+      expect(await decide('PowerShell', { command: 'npm test' })).toEqual(allowUser);
+      await decide('PowerShell', { command: 'ls' });
+      expect(prompts).toHaveLength(1);
+      await grants.remove(KEY, { kind: 'powershell-command', command: 'npm test' });
+      await decide('PowerShell', { command: 'npm test' });
+      expect(prompts).toHaveLength(2);
+    });
+
+    it('a failed save is logged and the command still runs once', async () => {
+      const { logger, warnings } = recordingLogger();
+      const failing: GrantStore = { ...grants, add: () => Promise.reject(new Error('full')) };
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS, grants: failing, logger });
+      expect(await decide('PowerShell', { command: 'ls' })).toEqual(allowUser);
+      expect(warnings).toHaveLength(1);
+      await decide('PowerShell', { command: 'ls' });
+      expect(prompts).toHaveLength(2);
+    });
+
+    it('Bash rules keep no kind, and so do MCP rules', async () => {
+      const { decide, prompts } = setup({ answer: ALLOW_ONCE });
+      await decide('Bash', { command: 'npm test' });
+      await decide('mcp__github__create_issue', {});
+      expect(prompts[0]).toMatchObject({ alwaysRule: { rule: 'Bash(npm test)' } });
+      expect(prompts[1]).toMatchObject({ alwaysRule: { rule: 'mcp__github__create_issue' } });
+      for (const prompt of prompts) {
+        expect((prompt as { alwaysRule: object }).alwaysRule).not.toHaveProperty('kind');
+      }
+    });
+  });
+
+  describe('without a grant store', () => {
+    it('everything is as before, whatever is in the store', async () => {
+      await grants.setSwitch(KEY, 'read-outside', true);
+      await grants.setSwitch(KEY, 'web-fetch', true);
+      await grants.add(KEY, { kind: 'powershell-command', command: 'npm test' });
+      await grants.add(KEY, { kind: 'web-site', host: 'docs.example.com' });
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS, grants: null });
+      const results = [
+        await decide('Read', { file_path: join(outside, 'secret.txt') }),
+        await decide('PowerShell', { command: 'npm test' }),
+        await decide('WebFetch', { url: 'https://docs.example.com/' }),
+      ];
+      for (const result of results) expect(result.response.behavior).toBe('deny');
+      expect(prompts).toHaveLength(3);
+      for (const prompt of prompts) {
+        expect(prompt).toMatchObject({ choices: ONCE_DENY });
+        expect(prompt).not.toHaveProperty('alwaysRule');
+      }
     });
   });
 });
