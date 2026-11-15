@@ -1,16 +1,21 @@
 # Saved permissions, per-folder switches and a Permissions view
 
-Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **In progress**: two of six stages are committed.
+Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, approved by the owner on 2026-11-15. **Paused after stage s1**: two of six stages are committed.
 
 ## Progress
 
 Updated at every stage commit. Last update: 2026-11-15, after stage s1.
 
+**Paused by the owner on 2026-11-15**, when asked how to go on given that some checks of the plan fail on this machine without the change (see below). Nothing of s2 to s5 has been started, and the working tree holds no uncommitted Phase 11 work. Before s2 starts, the owner decides which bar the stages are held to:
+
+- compare with the untouched checkout (type check and lint pass, no test fails that does not fail there, the format check passes with line endings ignored), as s1 was; or
+- first make the failing tests and the format check pass on Windows, in commits outside this plan, and then hold the stages to the plan's checks as written.
+
 | Stage | State | Commit |
 | :- | :- | :- |
 | s0. Decisions, roadmap file and CLI facts | Done | `35e7a14` |
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
-| s2. Grant store and policy | Not started. Next | |
+| s2. Grant store and policy | Not started. Next, once the owner says to continue | |
 | s3. Host: wiring, dialogs and view state | Not started. Needs s2 | |
 | s4. Webview: Permissions view and card wording | Not started. Needs s1 only, so it can be built alongside s2 | |
 | s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
@@ -33,7 +38,7 @@ Updated at every stage commit. Last update: 2026-11-15, after stage s1.
   - Two vary from run to run under load: `session/forks.test.ts` ("is rebuilt when the provider cannot cut at a message") and `workspace/tracker/findings.test.ts` ("two hosts taking over the same stale lock").
   - `npm run format:check` fails on every file whose working copy has CRLF line endings (111 files at the time of s1; `core.autocrlf` is `true` and Prettier expects LF). `npx prettier --check --end-of-line auto .` passes for every file.
   - `npm run typecheck` and `npm run lint` pass.
-- **The bar used for s1**, until the owner decides otherwise: type check and lint pass, no test fails that does not fail on the untouched checkout, and the format check passes with line endings ignored. Fixing the Windows failures is not part of this plan.
+- **The bar used for s1**: type check and lint pass, no test fails that does not fail on the untouched checkout, and the format check passes with line endings ignored. Whether s2 to s5 use the same bar is the owner's open decision (above). Fixing the Windows failures is not part of this plan.
 - **The version bump to 0.1.2** in `package.json` and `package-lock.json` was uncommitted before Phase 11 and is not part of it. It stays uncommitted: of `package.json` only the hunk with the new command was staged (`git apply --cached` with that hunk).
 - **CLI facts** (s0, from the documentation, not probed): `WebFetch` reports a redirect to another host instead of following it, so the agent's second call is judged on its own host; the `PowerShell` tool carries its command in `command`. Recorded in `docs/protocol/claude-cli.md`, section 13.
 - **Small differences from the plan in s1**: `settings.open` is already the real handler, since it needs nothing from later stages. The extension id reaches `src/vscode/host/ui.ts` as `UiParts.extensionId`, set from `context.extension.id` in `activate.ts`. The test that a prompt stored without `alwaysRule.kind` still loads is in `src/core/conversations/store.test.ts`, next to the schema test in `src/shared/index.test.ts`.
