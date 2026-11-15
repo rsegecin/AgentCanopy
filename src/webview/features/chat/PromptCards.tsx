@@ -1,6 +1,7 @@
 import { useContext, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
+  AlwaysRuleKind,
   PermissionChoice,
   PermissionPrompt,
   Prompt,
@@ -310,6 +311,18 @@ const ANSWERED_TEXT: Record<PermissionChoice, string> = {
   deny: 'You denied this',
 };
 
+/** What "Always allow" would do, in words, by the kind of rule. A command or tool rule is a rule in the CLI's syntax. */
+function alwaysRuleLead(kind: AlwaysRuleKind | undefined): string {
+  switch (kind) {
+    case 'read-directory':
+      return 'Always allow would allow reads and searches in this folder and below:';
+    case 'web-site':
+      return 'Always allow would allow fetching any address on:';
+    default:
+      return 'Always allow would add the rule:';
+  }
+}
+
 function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
   const post = usePost();
   const feedbackId = useId();
@@ -427,7 +440,7 @@ function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
       {prompt.alwaysRule && (
         <div className="prompt-rule">
           <p>
-            Always allow would add the rule: <code>{prompt.alwaysRule.rule}</code>
+            {alwaysRuleLead(prompt.alwaysRule.kind)} <code>{prompt.alwaysRule.rule}</code>
           </p>
           {prompt.alwaysRule.runsProjectCode && (
             <p className="prompt-warning">

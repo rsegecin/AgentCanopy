@@ -114,7 +114,7 @@ describe('stylesheets', () => {
     for (const selector of removed) {
       if (selector === ':focus') continue;
       expect(selector, selector).toMatch(
-        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
+        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.permissions-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
       );
     }
     expect(removed.length).toBeGreaterThan(3);
@@ -167,6 +167,8 @@ describe('stylesheets', () => {
       '.tab',
       '.history-row--active',
       '.plan-option--chosen',
+      '.permissions-row',
+      '.permissions-switch--on',
     ]) {
       expect(contrast, surface).toContain(surface);
     }
@@ -196,7 +198,7 @@ describe('stylesheets', () => {
     expect(text).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
     // No fixed pixel widths on layout containers that could exceed a 260 px view.
     expect(text).not.toMatch(
-      /\.(?:app|column|composer|plan-card|changes-dock|checkpoints|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
+      /\.(?:app|column|composer|plan-card|changes-dock|checkpoints|permissions|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
     );
   });
 
@@ -219,5 +221,16 @@ describe('stylesheets', () => {
     expect(strip(entries.find((e) => e.name === 'contrast.css')?.css ?? '')).toContain(
       '.auto-switch--on',
     );
+  });
+
+  it('marks a permission switch on by weight and an outline, not by colour, and in high contrast', () => {
+    const text = strip(all);
+    const rule = text.match(/\.permissions-switch--on\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/font-weight:\s*600/);
+    expect(rule?.[1]).toMatch(/outline:\s*1px solid/);
+    expect(rule?.[1]).not.toMatch(/(?:^|[;\s])(?:color|background(?:-color)?)\s*:/);
+    const contrast = strip(entries.find((e) => e.name === 'contrast.css')?.css ?? '');
+    expect(contrast).toContain('.permissions-switch--on');
+    expect(contrast).toContain('.permissions-row');
   });
 });

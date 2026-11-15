@@ -556,6 +556,33 @@ const state = {
     note: '3 files are tracked without their content, so changes a command makes to them can be detected but not undone.',
   },
 
+  // The folder's permissions: one switch on and one saved entry of each kind. The boot script empties
+  // them unless ?tab=permissions or ?permissions=1, so the other screens do not grow a tab.
+  permissions: {
+    folder: 'f1',
+    switches: ['read-outside'],
+    saved: [
+      { id: 'sp-dir', kind: 'read-directory', text: '/opt/shared/docs' },
+      { id: 'sp-site', kind: 'web-site', text: 'docs.example.com' },
+      { id: 'sp-bash', kind: 'command', text: 'npm test', shell: 'bash', runsProjectCode: true },
+      {
+        id: 'sp-ps',
+        kind: 'command',
+        text: 'Get-ChildItem src',
+        shell: 'powershell',
+        runsProjectCode: false,
+      },
+      { id: 'sp-mcp', kind: 'mcp-tool', text: 'mcp__docs__search' },
+    ],
+  },
+  policySettings: {
+    editApproval: 'auto',
+    alwaysAskCommands: false,
+    askWebTools: false,
+    autoOffered: true,
+    autoWebTools: false,
+    sandbox: true,
+  },
   banners: [
     { id: 'b1', level: 'info', text: 'This is a preview with sample data.', dismissible: true },
   ],
@@ -798,6 +825,10 @@ function page(origin, query) {
   const theme = query.get('theme') === 'light' ? 'light' : 'dark';
   const kind = query.get('kind') === 'panel' ? 'panel' : 'sidebar';
   const tab = query.get('tab') ?? 'chat';
+  // ?width=260: lay the page out in a column of that width (headless Chrome will not open a window narrower than about 500px).
+  const width = Number.parseInt(query.get('width') ?? '', 10);
+  const widthCss =
+    width >= 200 && width <= 2000 ? `html,body{width:${width}px;overflow-x:hidden}` : '';
   // Same policy as src/vscode/host/html.ts, with this server's origin in place of the webview source.
   const csp = `default-src 'none'; script-src 'nonce-${nonce}' ${origin}; style-src ${origin} 'unsafe-inline'; font-src ${origin}; img-src ${origin} data:`;
   const boot = `
@@ -975,6 +1006,63 @@ function page(origin, query) {
     if (asideVariant === 'history') {
       state.conversations = [...state.conversations, ...${JSON.stringify(asideSummaries)}];
     }
+    // The Permissions tab and its sample entries show only with ?tab=permissions or ?permissions=1.
+    if (params.get('tab') !== 'permissions' && params.get('permissions') !== '1') {
+      state.permissions = { folder: 'f1', switches: [], saved: [] };
+    }
+    // ?permcards=1: two cards that offer "Always allow" with the new wording (a read outside the folder,
+    // a web fetch) replace the sample's read of /etc/hosts at the end of the running turn.
+    if (params.get('permcards') === '1' && state.active) {
+      const a = state.active;
+      a.prompts = a.prompts.filter((p) => p.id !== 'pr2');
+      const last = a.messages.length - 1;
+      const parts = a.messages[last].parts.filter((part) => !(part.kind === 'prompt' && part.promptId === 'pr2') && !(part.kind === 'tool' && part.call.id === 'toolu_4'));
+      const waiting = (id, name, input) => ({
+        kind: 'tool',
+        call: { id, name, input, inputTruncated: false, status: 'awaiting-approval', parentId: null, startedAt: Date.now() },
+      });
+      a.messages[last] = {
+        ...a.messages[last],
+        parts: [
+          ...parts,
+          waiting('toolu_r1', 'Read', { file_path: '/opt/shared/docs/guide.md' }),
+          { kind: 'prompt', promptId: 'pr3' },
+          waiting('toolu_w1', 'WebFetch', { url: 'https://docs.example.com/api/limits', prompt: 'Summarise' }),
+          { kind: 'prompt', promptId: 'pr4' },
+        ],
+      };
+      const card = (id, toolCallId, over) => ({
+        id,
+        conversationId: a.meta.id,
+        turnId: 't3',
+        toolCallId,
+        createdAt: Date.now(),
+        state: 'pending',
+        displayHash: 'h-' + id,
+        kind: 'permission',
+        choices: ['allow-once', 'allow-always', 'deny'],
+        ...over,
+      });
+      a.prompts = [
+        ...a.prompts,
+        card('pr3', 'toolu_r1', {
+          toolName: 'Read',
+          category: 'read-outside',
+          title: 'Read a file outside the workspace',
+          detail: '/opt/shared/docs/guide.md',
+          inputPreview: '{\\n  "file_path": "/opt/shared/docs/guide.md"\\n}',
+          alwaysRule: { kind: 'read-directory', rule: '/opt/shared/docs', runsProjectCode: false },
+        }),
+        card('pr4', 'toolu_w1', {
+          toolName: 'WebFetch',
+          category: 'network',
+          title: 'Fetch a web address',
+          detail: 'https://docs.example.com/api/limits',
+          inputPreview: '{\\n  "url": "https://docs.example.com/api/limits"\\n}',
+          alwaysRule: { kind: 'web-site', rule: 'docs.example.com', runsProjectCode: false },
+        }),
+      ];
+    }
     const sent = [];
     window.__sent = sent;
     // ?collapsed=1: the user has collapsed the changes card.
@@ -1004,7 +1092,7 @@ function page(origin, query) {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>${themeCss(THEMES[theme])}</style>
+<style>${themeCss(THEMES[theme])}${widthCss}</style>
 <link rel="stylesheet" href="/main.css">
 <title>AgentCanopy preview</title>
 </head>
@@ -1038,7 +1126,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft, ?tab=permissions, ?permissions=1, ?permcards=1, ?width=260)`,
   );
 } else {
   const chrome =
@@ -1101,6 +1189,10 @@ if (!process.argv.includes('--check')) {
       query: '?tab=checkpoints&restore=1&theme=light',
       size: '520,1100',
     },
+    { name: 'permissions-dark', query: '?tab=permissions', size: '520,1400' },
+    { name: 'permissions-light', query: '?tab=permissions&theme=light', size: '520,1400' },
+    { name: 'permissions-narrow-dark', query: '?tab=permissions&width=260', size: '520,2600' },
+    { name: 'chat-permission-cards-dark', query: '?tab=chat&permcards=1', size: '520,1700' },
   ];
   const report = [];
   for (const view of views) {

@@ -17,11 +17,13 @@ import type {
   PlanVersion,
   CheckpointSummary,
   ConfigChange,
+  FolderPermissions,
   RestoreItem,
   RestorePreview,
   ReviewEntry,
   PromptId,
   ProviderStatus,
+  SavedPermission,
   QuestionPrompt,
   ToolCallView,
   Turn,
@@ -468,4 +470,17 @@ export function makeRestorePreview(over: Partial<RestorePreview> = {}): RestoreP
 /** The view state fields for Auto being offered by the settings. Spread into `makeState`. */
 export function autoOffered(commands = true): Pick<ViewState, 'agentAuto'> {
   return { agentAuto: { offered: true, commands } };
+}
+
+/** A saved permission for the Permissions view. A directory unless `over` says otherwise. */
+export function makeSavedPermission(
+  id: string,
+  over: Partial<SavedPermission> = {},
+): SavedPermission {
+  return { id, kind: 'read-directory', text: '/libs/shared', ...over };
+}
+
+/** The permissions of the folder of a view: its folder, the switches that are on, the saved entries. */
+export function makeFolderPermissions(over: Partial<FolderPermissions> = {}): FolderPermissions {
+  return { folder: 'folder-1' as FolderKey, switches: [], saved: [], ...over };
 }

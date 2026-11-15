@@ -1,19 +1,26 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import type { Banner } from '../../shared';
+import type { Banner, HostMessage } from '../../shared';
 import {
   assistantMessage,
   convId,
   makeActive,
+  makeCheckpoint,
+  makeFolderPermissions,
   makePlanDoc,
   makeProvider,
+  makeSavedPermission,
   makeState,
   makeSummary,
   userMessage,
 } from '../test-support/fixtures';
 import { renderWithHost } from '../test-support/harness';
 import { App } from './App';
+
+const showPermissionsTab = (host: { emit: (m: HostMessage) => void }) => {
+  host.emit({ type: 'event', event: { kind: 'show-tab', tab: 'permissions' } });
+};
 
 const busyState = () =>
   makeState({
@@ -141,7 +148,7 @@ describe('App shell', () => {
 });
 
 describe('overflow menu', () => {
-  it('offers the three actions and posts their messages', () => {
+  it('offers its actions and posts their messages', () => {
     const { host } = renderWithHost(<App />, busyState());
     const trigger = screen.getByRole('button', { name: 'More actions' });
     expect(trigger.getAttribute('aria-expanded')).toBe('false');
@@ -150,6 +157,7 @@ describe('overflow menu', () => {
     const items = within(screen.getByRole('menu')).getAllByRole('menuitem');
     expect(items.map((i) => i.textContent)).toEqual([
       'Open in editor area',
+      'Permissions',
       'Show logs',
       'Refresh provider',
     ]);
@@ -167,6 +175,24 @@ describe('overflow menu', () => {
     ]);
     expect(host.postedOf('logs.show')).toHaveLength(1);
     expect(host.postedOf('provider.refresh')).toHaveLength(1);
+  });
+
+  it('selects the Permissions tab, which then stays although nothing is saved', () => {
+    renderWithHost(<App />);
+    expect(screen.queryByRole('tab', { name: 'Permissions' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Permissions' }));
+    expect(screen.queryByRole('menu')).toBeNull();
+    const tab = screen.getByRole('tab', { name: 'Permissions' });
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+    expect(
+      screen.getByRole('heading', { name: 'Allowed without asking in this folder' }),
+    ).toBeTruthy();
+    expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+      'Chat',
+      'History',
+      'Permissions',
+    ]);
   });
 
   it('omits the conversation id when none is open', () => {
@@ -187,8 +213,9 @@ describe('overflow menu', () => {
     expect(document.activeElement).toBe(items[1]);
     fireEvent.keyDown(items[1] as HTMLElement, { key: 'ArrowUp' });
     fireEvent.keyDown(items[0] as HTMLElement, { key: 'ArrowUp' });
-    expect(document.activeElement).toBe(items[2]);
-    fireEvent.keyDown(items[2] as HTMLElement, { key: 'Home' });
+    const last = items[items.length - 1] as HTMLElement;
+    expect(document.activeElement).toBe(last);
+    fireEvent.keyDown(last, { key: 'Home' });
     expect(document.activeElement).toBe(items[0]);
     fireEvent.keyDown(items[0] as HTMLElement, { key: 'Escape' });
     expect(screen.queryByRole('menu')).toBeNull();
@@ -200,6 +227,97 @@ describe('overflow menu', () => {
     fireEvent.click(screen.getByRole('button', { name: 'More actions' }));
     fireEvent.mouseDown(document.body);
     expect(screen.queryByRole('menu')).toBeNull();
+  });
+});
+
+describe('Permissions tab', () => {
+  const names = () => screen.getAllByRole('tab').map((t) => t.textContent);
+
+  it('is absent with nothing saved and no switch on', () => {
+    renderWithHost(<App />, makeState({ permissions: makeFolderPermissions() }));
+    expect(names()).toEqual(['Chat', 'History']);
+  });
+
+  it('is present, last, with a saved permission', () => {
+    renderWithHost(
+      <App />,
+      makeState({ permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }) }),
+    );
+    expect(names()).toEqual(['Chat', 'History', 'Permissions']);
+    expect(screen.getByRole('tab', { name: 'Permissions' }).getAttribute('aria-selected')).toBe(
+      'false',
+    );
+  });
+
+  it('is present with a switch on, after Checkpoints and History', () => {
+    renderWithHost(
+      <App />,
+      makeState({
+        checkpoints: [makeCheckpoint('op1')],
+        permissions: makeFolderPermissions({ switches: ['web-search'] }),
+      }),
+    );
+    expect(names()).toEqual(['Chat', 'Checkpoints', 'History', 'Permissions']);
+  });
+
+  it('switches with show-tab and shows the view in a labelled panel', () => {
+    const { host } = renderWithHost(
+      <App />,
+      makeState({ permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }) }),
+    );
+    host.emit({ type: 'event', event: { kind: 'show-tab', tab: 'permissions' } });
+    const tab = screen.getByRole('tab', { name: 'Permissions' });
+    expect(tab.getAttribute('aria-selected')).toBe('true');
+    const panel = screen.getByRole('tabpanel');
+    expect(panel.getAttribute('aria-labelledby')).toBe(tab.id);
+    expect(tab.getAttribute('aria-controls')).toBe(panel.id);
+    expect(within(panel).getByRole('heading', { name: 'Saved permissions' })).toBeTruthy();
+  });
+
+  it('is shown by show-tab even when nothing is saved, and stays when the last entry is removed', () => {
+    const { host, init } = renderWithHost(
+      <App />,
+      makeState({ permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }) }),
+    );
+    host.emit({ type: 'event', event: { kind: 'show-tab', tab: 'permissions' } });
+    init(makeState({ permissions: makeFolderPermissions() }), 1);
+    expect(screen.getByRole('tab', { name: 'Permissions' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
+    expect(screen.getByText('Nothing is saved for this folder yet.')).toBeTruthy();
+  });
+
+  it('goes away on its own when it is not selected and nothing is left', () => {
+    const { init } = renderWithHost(
+      <App />,
+      makeState({ permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }) }),
+    );
+    init(makeState({ permissions: makeFolderPermissions() }), 1);
+    expect(names()).toEqual(['Chat', 'History']);
+  });
+
+  it('is reached with the arrow keys', () => {
+    renderWithHost(
+      <App />,
+      makeState({ permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }) }),
+    );
+    const chat = screen.getByRole('tab', { name: 'Chat' });
+    chat.focus();
+    fireEvent.keyDown(chat, { key: 'End' });
+    expect(document.activeElement).toBe(screen.getByRole('tab', { name: 'Permissions' }));
+    expect(screen.getByRole('heading', { name: 'Saved permissions' })).toBeTruthy();
+  });
+
+  it('is restored after a reload', () => {
+    const first = renderWithHost(<App />);
+    showPermissionsTab(first.host);
+    first.services.ui.flush();
+    const saved = first.host.saved;
+    first.unmount();
+    renderWithHost(<App />, makeState(), saved);
+    expect(screen.getByRole('tab', { name: 'Permissions' }).getAttribute('aria-selected')).toBe(
+      'true',
+    );
   });
 });
 

@@ -8,6 +8,7 @@ import { QueuedMessage } from '../features/chat/QueuedMessage';
 import { MessageList } from '../features/chat/MessageList';
 import { PromptPart } from '../features/chat/PromptCards';
 import { registerPartRenderer } from '../features/chat/registry';
+import { PermissionsView } from '../features/permissions/PermissionsView';
 import { PlanUpdateCard } from '../features/plan/PlanUpdateCard';
 import { HistoryList } from '../features/history/HistoryList';
 import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDock';
@@ -18,6 +19,7 @@ import {
   makeAside,
   makeCheckpoint,
   makeConfigChange,
+  makeFolderPermissions,
   makePermissionPrompt,
   makePlanContent,
   makePlanDoc,
@@ -27,6 +29,7 @@ import {
   makeRestoreItem,
   makeRestorePreview,
   makeReviewEntry,
+  makeSavedPermission,
   makeState,
   makeSummary,
   makeToolCall,
@@ -719,9 +722,10 @@ describe('keyboard, names, roles and states', () => {
         }),
         review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
+        permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }),
       }),
     );
-    for (const tab of ['Checkpoints', 'History', 'Chat']) {
+    for (const tab of ['Checkpoints', 'History', 'Permissions', 'Chat']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll('[tabindex]')) {
         expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(
@@ -945,10 +949,14 @@ describe('keyboard, names, roles and states', () => {
         },
         checkpoints: [makeCheckpoint('op1')],
         conversations: [makeSummary('c1')],
+        permissions: makeFolderPermissions({
+          switches: ['read-outside'],
+          saved: [makeSavedPermission('d1')],
+        }),
         banners: [{ id: 'b', level: 'info', text: 'FYI', dismissible: true }],
       }),
     );
-    for (const tab of ['Chat', 'Checkpoints', 'History']) {
+    for (const tab of ['Chat', 'Checkpoints', 'History', 'Permissions']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll<HTMLElement>('button, input, select, textarea')) {
         const byIds = (el.getAttribute('aria-labelledby') ?? '')
@@ -1039,6 +1047,110 @@ describe('the Auto switch', () => {
     expect(flag.textContent).toContain('Auto');
     expect(flag.querySelector('.visually-hidden')?.textContent).toContain('Auto is on');
     expect(flag.querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('the Permissions view', () => {
+  const full = makeFolderPermissions({
+    switches: ['read-outside'],
+    saved: [
+      makeSavedPermission('d1', { kind: 'read-directory', text: '/libs/shared' }),
+      makeSavedPermission('w1', { kind: 'web-site', text: 'docs.example.com' }),
+      makeSavedPermission('c1', {
+        kind: 'command',
+        text: 'npm test',
+        shell: 'bash',
+        runsProjectCode: true,
+      }),
+      makeSavedPermission('t1', { kind: 'mcp-tool', text: 'mcp__docs__search' }),
+    ],
+  });
+  const view = (over: Partial<ViewState> = {}) =>
+    renderWithHost(<PermissionsView />, makeState({ permissions: full, ...over }));
+
+  it('has headings in order, without skipped levels', () => {
+    view();
+    const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)));
+    expect(levels[0]).toBe(2);
+    expect(levels.every((level) => level === 2 || level === 3)).toBe(true);
+    levels.forEach((level, i) => {
+      if (i > 0) expect(level - (levels[i - 1] ?? 0)).toBeLessThanOrEqual(1);
+    });
+    expect(levels.filter((l) => l === 2)).toHaveLength(4);
+  });
+
+  it('gives every control a name, and puts every list in a real list', () => {
+    view();
+    const controls = document.querySelectorAll<HTMLElement>('button, input, select, textarea');
+    expect(controls.length).toBeGreaterThan(8);
+    for (const el of controls) {
+      const byIds = (el.getAttribute('aria-labelledby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent ?? '')
+        .join('');
+      const name = el.getAttribute('aria-label') ?? (byIds !== '' ? byIds : (el.textContent ?? ''));
+      expect(name.trim(), el.outerHTML.slice(0, 100)).not.toBe('');
+    }
+    expect(screen.getAllByRole('list').length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('gives every switch a role, a checked state and a name', () => {
+    view();
+    const switches = screen.getAllByRole('switch');
+    expect(switches).toHaveLength(3);
+    expect(switches.map((s) => s.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    for (const s of switches) {
+      expect(s.tagName).toBe('BUTTON');
+      expect(s.getAttribute('aria-pressed')).toBeNull();
+      expect(
+        document.getElementById(s.getAttribute('aria-labelledby') ?? '')?.textContent,
+      ).toBeTruthy();
+    }
+  });
+
+  it('uses no positive tabindex, and has one scroll container that script can focus', () => {
+    view();
+    for (const el of document.querySelectorAll('[tabindex]')) {
+      expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(0);
+    }
+    expect(document.querySelector('.permissions-scroll')?.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('points every disabled control at its reason, which is on the page', () => {
+    view({ trusted: false });
+    const disabled = Array.from(document.querySelectorAll<HTMLButtonElement>('button:disabled'));
+    expect(disabled).toHaveLength(8);
+    for (const el of disabled) {
+      const reason = (el.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(' ');
+      expect(reason, el.outerHTML.slice(0, 100)).toContain('not trusted');
+    }
+  });
+
+  it('names the warning for a command in words, with the icon hidden', () => {
+    view();
+    const row = screen.getByText('npm test').closest('li') as HTMLElement;
+    expect(row.querySelector('.visually-hidden')?.textContent).toBe('Warning: ');
+    expect(row.querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('keeps focus on the page when the pressed entry goes away', () => {
+    const { init } = view();
+    const remove = screen.getByRole('button', { name: 'Remove docs.example.com' });
+    remove.focus();
+    fireEvent.click(remove);
+    init(
+      makeState({
+        permissions: { ...full, saved: full.saved.filter((e) => e.id !== 'w1') },
+      }),
+      1,
+    );
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.querySelector('.permissions-scroll')?.contains(document.activeElement)).toBe(
+      true,
+    );
   });
 });
 

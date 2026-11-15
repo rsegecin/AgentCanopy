@@ -461,6 +461,49 @@ describe('permission card', () => {
     expect(screen.queryByText(/runs code from the project/)).toBeNull();
   });
 
+  it.each([
+    [
+      'read-directory',
+      '/opt/shared/docs',
+      'Always allow would allow reads and searches in this folder and below: /opt/shared/docs',
+    ],
+    [
+      'web-site',
+      'docs.example.com',
+      'Always allow would allow fetching any address on: docs.example.com',
+    ],
+    ['command', 'Bash(npm test)', 'Always allow would add the rule: Bash(npm test)'],
+    ['tool', 'mcp__docs__search', 'Always allow would add the rule: mcp__docs__search'],
+  ] as const)('words the rule line for a %s rule', (kind, rule, line) => {
+    renderWithHost(
+      <MessageList />,
+      stateWith([
+        makePermissionPrompt('p1', { alwaysRule: { kind, rule, runsProjectCode: false } }),
+      ]),
+    );
+    const text = within(card()).getByText(/^Always allow would/);
+    expect(text.textContent).toBe(line);
+    expect(text.querySelector('code')?.textContent).toBe(rule);
+    expect(screen.queryByText(/runs code from the project/)).toBeNull();
+  });
+
+  it('keeps the warning with a command rule that runs project code, whatever the wording', () => {
+    renderWithHost(
+      <MessageList />,
+      stateWith([
+        makePermissionPrompt('p1', {
+          alwaysRule: { kind: 'command', rule: 'PowerShell(npm test)', runsProjectCode: true },
+        }),
+      ]),
+    );
+    expect(screen.getByText(/^Always allow would add the rule:/)).toBeTruthy();
+    expect(
+      screen.getByText(
+        'This command runs code from the project, which can do anything you can do.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('shows neither without a rule', () => {
     renderWithHost(<MessageList />, stateWith([makePermissionPrompt('p1')]));
     expect(screen.queryByText(/Always allow would add the rule/)).toBeNull();

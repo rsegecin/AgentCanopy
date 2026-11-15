@@ -5,7 +5,7 @@ import type { Mode } from '../../shared';
 import type { Host } from './host';
 import { useApp } from './context';
 
-export type Tab = 'chat' | 'history' | 'checkpoints';
+export type Tab = 'chat' | 'history' | 'checkpoints' | 'permissions';
 
 /** Draft key used while no conversation is open. */
 export const NEW_CONVERSATION_KEY = '__new__';
@@ -28,7 +28,7 @@ export interface QuestionDraft {
 
 const PersistedSchema = z.object({
   // A tab that no longer exists ('plan', 'review') falls back to the chat.
-  tab: z.enum(['chat', 'history', 'checkpoints']).catch('chat'),
+  tab: z.enum(['chat', 'history', 'checkpoints', 'permissions']).catch('chat'),
   drafts: z.record(z.string(), z.string()).catch({}),
   expanded: z.record(z.string(), z.boolean()).catch({}),
   scroll: z.record(z.string(), z.object({ top: z.number(), atBottom: z.boolean() })).catch({}),

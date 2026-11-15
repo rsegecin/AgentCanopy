@@ -4,7 +4,7 @@ Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, a
 
 ## Progress
 
-Updated at every stage commit. Last update: 2026-11-15, with the path fix that precedes s2.
+Updated at every stage commit. Last update: 2026-11-15, with stage s4.
 
 **Resumed by the owner on 2026-11-15**, with two decisions:
 
@@ -15,10 +15,10 @@ Updated at every stage commit. Last update: 2026-11-15, with the path fix that p
 | :- | :- | :- |
 | s0. Decisions, roadmap file and CLI facts | Done | `35e7a14` |
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
-| The path fix (outside the stages, before s2) | Done | The commit that carries this update |
-| s2. Grant store and policy | Next | |
+| The path fix (outside the stages, before s2) | Done | `1207288` |
+| s2. Grant store and policy | Being built | |
 | s3. Host: wiring, dialogs and view state | Not started. Needs s2 | |
-| s4. Webview: Permissions view and card wording | Being built | |
+| s4. Webview: Permissions view and card wording | Done | The commit that carries this update |
 | s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
 
 ### The path fix
@@ -42,8 +42,24 @@ Not changed, and still as the comment in `targets.ts` says: a `..` segment after
 - Placeholders that later stages replace:
   - `permissions.remove`, `permissions.setSwitch` and `permissions.addDirectory` answer "This is not available yet." in `Controller.handle` (`src/core/session/controller.ts`). Stage s3 replaces them.
   - `ViewState.permissions` is always `{ folder: null, switches: [], saved: [] }`. Stage s3 fills it.
-  - `src/webview/app/App.tsx` ignores a `show-tab` event for `permissions`, because the tab does not exist yet. Stage s4 replaces that line with the tab.
+  - `src/webview/app/App.tsx` ignored a `show-tab` event for `permissions`, because the tab did not exist yet. Stage s4 replaced that line with the tab.
 - No policy decision has changed. Every permission request is decided exactly as before Phase 11.
+
+### What exists after s4
+
+- The Permissions tab (`src/webview/features/permissions/PermissionsView.tsx`) with its four sections, reachable from the overflow menu, from `show-tab: permissions` and so from the command. The permission card words its rule line by `alwaysRule.kind`.
+- Until s3 the host still sends empty permissions and answers the three messages with "This is not available yet.", so the view shows nothing saved, and a control that was clicked stays locked until the view is loaded again: the host does not send the permissions again yet. s3 ends both.
+- Verified for s4: the webview type check, lint, the format check with line endings ignored, 1050 tests in `src/webview` and `test/unit` with none failing, and the preview under the CSP (`report.json` without diagnostics). Four new screenshots were read: the view at 520 px dark and light, at 260 px, and the two new cards. Not verified: a high-contrast theme (the preview has none), a screen reader, the view in VS Code.
+
+Differences from the plan in s4:
+
+- **The tab rule.** Checkpoints falls back to Chat when its condition goes false. Permissions does not: its button shows while something is saved, a switch is on, or the tab is selected.
+- **The overflow menu.** "Permissions" is its second item and the first that selects a tab. Two existing expectations in `app.test.tsx` changed for it: the list of items, and the item ArrowUp wraps to.
+- **Switches** are `role="switch"` buttons with `aria-checked`; `ACCESSIBILITY.md` now says so next to "Toggles: `aria-pressed`". The state is the word Allow or Ask, the icon, the weight and the outline.
+- **"Open Settings" is never disabled**, also in an untrusted workspace: it only opens the editor's settings.
+- **The lock** is released by a new `permissions` object from the host, also one with equal content. When it lifts, focus goes back to the control that was pressed, or to the one now in its place.
+- **Tests the plan did not name**: the `outline: none` allowlist and the no-fixed-width list in `styles.test.ts` gained the view's containers.
+- **The preview** has three new query parameters (`?permissions=1`, `?permcards=1`, `?width=N`); its existing screens are unchanged because the sample permissions show only with `?tab=permissions` or `?permissions=1`. `--check` needs `CHROME_PATH` on Windows (`C:/Program Files/Google/Chrome/Application/chrome.exe` here).
 
 ### Decided or found while building
 

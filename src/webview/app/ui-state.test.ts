@@ -61,6 +61,15 @@ describe('UiState removed tabs and plan sections', () => {
     expect(new UiState(new FakeHost({ tab: 'history' })).getSnapshot().tab).toBe('history');
   });
 
+  it('keeps the permissions tab across a reload', () => {
+    const host = new FakeHost();
+    const ui = new UiState(host);
+    ui.setTab('permissions');
+    ui.flush();
+    expect(host.saved).toMatchObject({ tab: 'permissions' });
+    expect(new UiState(new FakeHost(host.saved)).getSnapshot().tab).toBe('permissions');
+  });
+
   it('loads data that still has the removed planClosed key, and does not write it back', () => {
     const host = new FakeHost({ tab: 'chat', planClosed: { plan1: { analysis: true } } });
     const ui = new UiState(host);

@@ -3,6 +3,7 @@ import type { KeyboardEvent } from 'react';
 import { Banners } from '../features/banners/Banners';
 import { Composer, MessageList, QueuedMessage } from '../features/chat';
 import { HistoryList } from '../features/history/HistoryList';
+import { PermissionsView } from '../features/permissions/PermissionsView';
 import '../features/plan';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
 import { ChangesDock } from '../features/review/ChangesDock';
@@ -19,20 +20,34 @@ const ALL_TABS: { id: Tab; label: string }[] = [
   { id: 'chat', label: 'Chat' },
   { id: 'checkpoints', label: 'Checkpoints' },
   { id: 'history', label: 'History' },
+  { id: 'permissions', label: 'Permissions' },
 ];
 
-/** Whether the optional tab exists, and the tab in use: a tab that has gone away falls back to Chat. */
-function useCurrentTab(): { tab: Tab; hasCheckpoints: boolean } {
+/**
+ * Whether each optional tab exists, and the tab in use. The Checkpoints tab that has gone away falls
+ * back to Chat. The Permissions tab exists while something is saved or a switch is on, and while it
+ * is the selected tab, so it never disappears under the user.
+ */
+function useCurrentTab(): { tab: Tab; hasCheckpoints: boolean; hasPermissions: boolean } {
   const stored = useUi((s) => s.tab);
   const hasCheckpoints = useViewState((s) => s.checkpoints.length > 0 || s.restorePreview !== null);
+  const hasSomethingAllowed = useViewState(
+    (s) => s.permissions.saved.length > 0 || s.permissions.switches.length > 0,
+  );
   const gone = stored === 'checkpoints' && !hasCheckpoints;
-  return { tab: gone ? 'chat' : stored, hasCheckpoints };
+  return {
+    tab: gone ? 'chat' : stored,
+    hasCheckpoints,
+    hasPermissions: hasSomethingAllowed || stored === 'permissions',
+  };
 }
 
 function Tabs({ idPrefix }: { idPrefix: string }) {
   const { ui } = useApp();
-  const { tab, hasCheckpoints } = useCurrentTab();
-  const tabs = ALL_TABS.filter((t) => t.id !== 'checkpoints' || hasCheckpoints);
+  const { tab, hasCheckpoints, hasPermissions } = useCurrentTab();
+  const tabs = ALL_TABS.filter(
+    (t) => (t.id !== 'checkpoints' || hasCheckpoints) && (t.id !== 'permissions' || hasPermissions),
+  );
 
   const select = (next: Tab, focus: boolean) => {
     ui.setTab(next);
@@ -79,13 +94,13 @@ export function App() {
   const { store, ui } = useApp();
   const post = usePost();
   const ready = useStoreReady();
-  const { tab, hasCheckpoints } = useCurrentTab();
+  const { tab, hasCheckpoints, hasPermissions } = useCurrentTab();
   const idPrefix = useId();
 
   useEffect(() => {
     return store.onEvent((event) => {
       if (event.kind === 'show-tab') {
-        if (event.tab !== 'permissions') ui.setTab(event.tab);
+        ui.setTab(event.tab);
       } else if (event.kind === 'focus-composer' || event.kind === 'prefill-composer') {
         ui.setTab('chat');
         if (event.kind === 'prefill-composer') {
@@ -202,6 +217,18 @@ export function App() {
             />
           )}
         </div>
+        {hasPermissions && (
+          <div
+            id={`${idPrefix}-panel-permissions`}
+            className="tabpanel"
+            role="tabpanel"
+            tabIndex={-1}
+            aria-labelledby={`${idPrefix}-tab-permissions`}
+            hidden={tab !== 'permissions'}
+          >
+            {tab === 'permissions' && <PermissionsView />}
+          </div>
+        )}
       </main>
     </div>
   );
