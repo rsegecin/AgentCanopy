@@ -143,6 +143,13 @@ Checked on 2026-11-14 against the Claude Code documentation for 2.1.322, for the
 - **Plan mode tools.** `EnterPlanMode` switches the session to plan mode without asking. Approving `ExitPlanMode` can switch the session's permission mode for later calls. The policy's `inspect` checks the mode at session start only.
 - **Hooks.** "PreToolUse hook decisions don't bypass permission rules": a matching ask rule still prompts when a hook returned allow.
 
+Added on 2026-11-15 for the saved permissions of Phase 11, from the tools reference and the permissions page as published that day. Nothing here was observed in a run either.
+
+- **WebFetch and redirects.** "When a URL redirects to a different host, WebFetch returns a text result that names the original URL and the redirect target instead of following it. Claude then fetches the new URL with a second WebFetch call." That second call is a new tool call, so it reaches the host under the ask rule and is judged on its own address. Redirects that WebFetch does follow exist ("including any redirects WebFetch follows"); the documentation does not say which, beyond "a different host" not being among them, nor whether `www.example.com` and `example.com` count as different hosts. A site saved in AgentCanopy therefore covers what that host serves, including a redirect within it.
+- **WebFetch, other behaviour.** "HTTP URLs are automatically upgraded to HTTPS." It refuses `localhost` and any hostname without a dot before making a request. The CLI's own domain rules (`WebFetch(domain:example.com)`) match the hostname without regard to case, support `*` and strip a trailing dot; AgentCanopy does not use them: its site match is done in the host, on the exact `host` of the address (lower case, with a port that is not the default one).
+- **PowerShell input.** The permissions page names `command` as the primary content field "for Bash and PowerShell", and the tools reference says hooks "receive the tool's command string in `tool_input.command`, with the same fields as the Bash tool". The tool's own input schema is not printed. The policy reads `command` for both tools.
+- **PowerShell rules.** "PowerShell permission rules use the same shape as Bash rules"; "Common aliases are canonicalized before matching" and "Matching is case-insensitive". AgentCanopy does not pass PowerShell rules to the CLI: a saved PowerShell command is matched in the host by exact text, so `ls` and `Get-ChildItem` are two commands there. On Windows the PowerShell tool is not sandboxed ("On Windows, sandboxing is not supported").
+
 ## 14. Not covered
 
 - Windows and Linux.
