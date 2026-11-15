@@ -67,6 +67,37 @@ describe('create, list and load', () => {
     expect(store.list().map((m) => m.id)).toEqual([meta.id]);
   });
 
+  it('loads a prompt whose always rule was stored without a kind, and one with a kind', async () => {
+    const { store } = await open();
+    const { id } = await store.create(base);
+    const choices: ('allow-once' | 'allow-always' | 'deny')[] = [
+      'allow-once',
+      'allow-always',
+      'deny',
+    ];
+    // As conversations stored before the kind existed hold it: a command rule, nothing more.
+    const stored = {
+      ...permissionPrompt('p1', id, 't1'),
+      choices,
+      alwaysRule: { rule: 'Bash(ls)', runsProjectCode: false },
+    };
+    const directory = {
+      ...permissionPrompt('p2', id, 't1'),
+      toolName: 'Read',
+      category: 'read-outside' as const,
+      choices,
+      alwaysRule: { kind: 'read-directory' as const, rule: '/libs/shared', runsProjectCode: false },
+    };
+    await store.putPrompt(id, stored);
+    await store.putPrompt(id, directory);
+    await store.flush();
+
+    const { store: again } = await open();
+    const data = await again.load(id);
+    expect(data?.prompts).toEqual([stored, directory]);
+    expect(data?.prompts[0]).not.toHaveProperty('alwaysRule.kind');
+  });
+
   it('uses the default title and lists newest updatedAt first', async () => {
     const { store, clock } = await open();
     const first = await store.create(base);

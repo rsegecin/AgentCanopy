@@ -85,7 +85,7 @@ export function App() {
   useEffect(() => {
     return store.onEvent((event) => {
       if (event.kind === 'show-tab') {
-        ui.setTab(event.tab);
+        if (event.tab !== 'permissions') ui.setTab(event.tab);
       } else if (event.kind === 'focus-composer' || event.kind === 'prefill-composer') {
         ui.setTab('chat');
         if (event.kind === 'prefill-composer') {

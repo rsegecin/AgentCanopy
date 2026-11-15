@@ -408,6 +408,14 @@ class Controller implements AppController {
       folders: env.folders().map((folder) => ({ key: folder.key, name: folder.name })),
       defaults: { mode: settings.defaultMode, model: settings.defaultModel },
       agentAuto: { offered: settings.agentAuto, commands: !settings.alwaysAskCommands },
+      policySettings: {
+        editApproval: settings.editApproval,
+        alwaysAskCommands: settings.alwaysAskCommands,
+        askWebTools: settings.askWebTools,
+        autoOffered: settings.agentAuto,
+        autoWebTools: settings.agentAutoWebTools,
+        sandbox: settings.sandbox,
+      },
       models: provider ? provider.listModels(settings.customModels) : [],
       banners: this.banners(status),
     });
@@ -943,6 +951,12 @@ class Controller implements AppController {
     view.event({ kind: 'focus-composer' });
   }
 
+  showPermissions(): void {
+    const view = this.recentView();
+    if (!view) return;
+    view.event({ kind: 'show-tab', tab: 'permissions' });
+  }
+
   review(): ReviewEngine | undefined {
     return this.engine;
   }
@@ -1117,6 +1131,14 @@ class Controller implements AppController {
         return;
       case 'logs.show':
         this.deps.ui.showLogs();
+        return;
+      case 'settings.open':
+        this.deps.ui.openSettings();
+        return;
+      case 'permissions.remove':
+      case 'permissions.setSwitch':
+      case 'permissions.addDirectory':
+        this.state.toast(view, 'info', TEXT.notAvailableYet);
         return;
 
       case 'plan.setLocked':

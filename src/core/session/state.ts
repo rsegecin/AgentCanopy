@@ -27,6 +27,7 @@ export type GlobalFields = Pick<
   | 'models'
   | 'defaults'
   | 'agentAuto'
+  | 'policySettings'
   | 'conversations'
   | 'banners'
 >;
@@ -81,6 +82,7 @@ export class SessionState {
       models: EMPTY_VIEW_STATE.models,
       defaults: EMPTY_VIEW_STATE.defaults,
       agentAuto: EMPTY_VIEW_STATE.agentAuto,
+      policySettings: EMPTY_VIEW_STATE.policySettings,
       conversations: EMPTY_VIEW_STATE.conversations,
       banners: EMPTY_VIEW_STATE.banners,
     };

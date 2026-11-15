@@ -10,6 +10,7 @@ import {
   RelPathSchema,
 } from './ids';
 import { ModeSchema } from './modes';
+import { PermissionSwitchSchema } from './permissions';
 import { PromptAnswerSchema } from './prompts';
 import { ViewStateSchema } from './view-state';
 
@@ -35,7 +36,7 @@ export const ViewEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('prefill-composer'), text: z.string() }),
   z.object({
     kind: z.literal('show-tab'),
-    tab: z.enum(['chat', 'history', 'checkpoints']),
+    tab: z.enum(['chat', 'history', 'checkpoints', 'permissions']),
   }),
   z.object({
     kind: z.literal('toast'),
@@ -166,6 +167,23 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     displayHash: z.string().min(1).max(200),
     answer: PromptAnswerSchema,
   }),
+
+  // Permissions of the folder the view shows. No message names a folder: the host uses the view's.
+  /** Removes one saved permission, by the id the view state gave it. Needs no dialog. */
+  z.object({ type: z.literal('permissions.remove'), id: z.string().min(1).max(64) }),
+  /**
+   * Turns one of the folder's switches on or off. Turning it on opens a native dialog on the host;
+   * turning it off needs none and also applies to a turn that is running.
+   */
+  z.object({
+    type: z.literal('permissions.setSwitch'),
+    name: PermissionSwitchSchema,
+    on: z.boolean(),
+  }),
+  /** Asks the host for its native folder picker, to allow reads and searches in a folder. */
+  z.object({ type: z.literal('permissions.addDirectory') }),
+  /** Opens the editor's settings on AgentCanopy's own. */
+  z.object({ type: z.literal('settings.open') }),
 
   // Plans
   z.object({ type: z.literal('plan.setLocked'), conversationId, locked: z.boolean() }),

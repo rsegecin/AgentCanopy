@@ -11,7 +11,10 @@ interface Property {
 }
 
 const manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
-  contributes: { configuration: { properties: Record<string, Property> } };
+  contributes: {
+    commands: { command: string; title: string; category?: string }[];
+    configuration: { properties: Record<string, Property> };
+  };
 };
 const properties = manifest.contributes.configuration.properties;
 
@@ -23,6 +26,18 @@ const NOT_MACHINE_SCOPED: Record<string, string> = {
   // Only controls whether a warning about unsaved files is shown; it grants the agent nothing.
   'agentCanopy.unsavedFiles': 'window',
 };
+
+describe('package.json commands', () => {
+  it('contributes the Show Permissions command', () => {
+    expect(
+      manifest.contributes.commands.find((c) => c.command === 'agentcanopy.showPermissions'),
+    ).toEqual({
+      command: 'agentcanopy.showPermissions',
+      title: 'Show Permissions',
+      category: 'AgentCanopy',
+    });
+  });
+});
 
 describe('package.json configuration', () => {
   it('has only agentCanopy.* properties', () => {

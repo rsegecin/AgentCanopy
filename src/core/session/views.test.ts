@@ -361,6 +361,63 @@ describe('banners', () => {
     expect(h.ui.callsOf('copyToClipboard')).toEqual([['copied text']]);
     expect(h.ui.callsOf('openEditorPanel')).toEqual([[undefined]]);
   });
+
+  it('maps settings.open to the UI', async () => {
+    const h = await harness();
+    const view = h.attach();
+    view.send({ type: 'settings.open' });
+    await until('the call', () => h.ui.callsOf('openSettings').length === 1);
+    expect(h.ui.callsOf('openSettings')).toHaveLength(1);
+  });
+
+  it.each([
+    ['permissions.remove', { type: 'permissions.remove', id: 'a' }],
+    ['permissions.setSwitch', { type: 'permissions.setSwitch', name: 'web-fetch', on: true }],
+    ['permissions.addDirectory', { type: 'permissions.addDirectory' }],
+  ] as const)('answers %s with "not available yet" and changes nothing', async (_name, message) => {
+    const h = await harness();
+    const view = h.attach();
+    view.send(message);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'info', text: 'This is not available yet.' });
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(h.ui.callsOf('pickDirectory')).toEqual([]);
+    expect(view.current().permissions).toEqual({ folder: null, switches: [], saved: [] });
+    view.expectMirror();
+  });
+
+  it('shows the policy settings and follows a settings change', async () => {
+    const h = await harness();
+    const view = h.attach();
+    expect(view.current().policySettings).toEqual({
+      editApproval: 'auto',
+      alwaysAskCommands: false,
+      askWebTools: false,
+      autoOffered: true,
+      autoWebTools: false,
+      sandbox: false,
+    });
+
+    h.env.settingsValue = {
+      ...h.env.settingsValue,
+      editApproval: 'ask',
+      alwaysAskCommands: true,
+      askWebTools: true,
+      agentAuto: false,
+      agentAutoWebTools: true,
+      sandbox: true,
+    };
+    h.controller.environmentChanged();
+    expect(view.current().policySettings).toEqual({
+      editApproval: 'ask',
+      alwaysAskCommands: true,
+      askWebTools: true,
+      autoOffered: false,
+      autoWebTools: true,
+      sandbox: true,
+    });
+    view.expectMirror();
+  });
 });
 
 describe('start-up', () => {
@@ -675,6 +732,10 @@ describe('context for the next message', () => {
     expect(b.current().active).toBeNull();
     expect(b.events.at(-1)).toEqual({ kind: 'focus-composer' });
     expect(a.current().active?.meta.id).toBe(one);
+
+    h.controller.showPermissions();
+    expect(b.events.at(-1)).toEqual({ kind: 'show-tab', tab: 'permissions' });
+    expect(a.events).not.toContainEqual({ kind: 'show-tab', tab: 'permissions' });
 
     a.send({ type: 'resync' });
     h.controller.addAttachment({ kind: 'file', path: 'for-a.ts' });

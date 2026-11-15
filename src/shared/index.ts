@@ -3,6 +3,7 @@ export * from './events';
 export * from './ids';
 export * from './modes';
 export * from './patch';
+export * from './permissions';
 export * from './plan';
 export * from './prompts';
 export * from './protocol';

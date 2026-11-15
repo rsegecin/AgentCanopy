@@ -11,6 +11,7 @@ import {
 } from './conversation';
 import { ConversationIdSchema, FolderKeySchema, RelPathSchema, TimestampSchema } from './ids';
 import { ModeSchema } from './modes';
+import { FolderPermissionsSchema, PolicySettingsSchema } from './permissions';
 import { PlanDocSchema } from './plan';
 import { PromptSchema } from './prompts';
 import { ModelInfoSchema, ProviderStatusSchema } from './provider-status';
@@ -102,6 +103,8 @@ export const ViewStateSchema = z.object({
     /** Auto covers terminal commands. False while `agentCanopy.agent.alwaysAskCommands` is on. */
     commands: z.boolean(),
   }),
+  /** The machine-wide settings that shape what asks, for the Permissions view. The same in every view. */
+  policySettings: PolicySettingsSchema,
   conversations: z.array(ConversationSummarySchema),
   active: ActiveConversationSchema.nullable(),
   /** Attachments queued for this view's next message, whether or not a conversation exists yet. */
@@ -138,6 +141,8 @@ export const ViewStateSchema = z.object({
   checkpoints: z.array(CheckpointSummarySchema),
   restorePreview: RestorePreviewSchema.nullable(),
   baseline: BaselineStatusSchema,
+  /** The switches and saved permissions of the folder this view shows. */
+  permissions: FolderPermissionsSchema,
   banners: z.array(BannerSchema),
 });
 export type ViewState = z.infer<typeof ViewStateSchema>;
@@ -149,6 +154,14 @@ export const EMPTY_VIEW_STATE: ViewState = {
   models: [],
   defaults: { mode: 'ask', model: 'default' },
   agentAuto: { offered: false, commands: false },
+  policySettings: {
+    editApproval: 'auto',
+    alwaysAskCommands: false,
+    askWebTools: false,
+    autoOffered: false,
+    autoWebTools: false,
+    sandbox: false,
+  },
   conversations: [],
   active: null,
   draftAttachments: [],
@@ -159,5 +172,6 @@ export const EMPTY_VIEW_STATE: ViewState = {
   checkpoints: [],
   restorePreview: null,
   baseline: { state: 'idle', filesDone: 0, filesTotal: 0 },
+  permissions: { folder: null, switches: [], saved: [] },
   banners: [],
 };

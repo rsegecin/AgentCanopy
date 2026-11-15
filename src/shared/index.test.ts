@@ -7,9 +7,13 @@ import {
   MAX_IMAGE_BASE64_LENGTH,
   MAX_IMAGE_BYTES,
   EMPTY_VIEW_STATE,
+  FolderPermissionsSchema,
   HostMessageSchema,
+  PERMISSION_SWITCHES,
+  PermissionPromptSchema,
   PlanContentSchema,
   RelPathSchema,
+  SavedPermissionSchema,
   SettingsSchema,
   UserMessageSchema,
   ViewStateSchema,
@@ -77,6 +81,109 @@ describe('shared contracts', () => {
       }).success,
     ).toBe(true);
     expect(WebviewMessageSchema.safeParse({ type: 'conversation.setAuto' }).success).toBe(false);
+  });
+
+  it('starts with no permissions and parses the permissions state', () => {
+    expect(EMPTY_VIEW_STATE.permissions).toEqual({ folder: null, switches: [], saved: [] });
+    expect(EMPTY_VIEW_STATE.policySettings).toEqual({
+      editApproval: 'auto',
+      alwaysAskCommands: false,
+      askWebTools: false,
+      autoOffered: false,
+      autoWebTools: false,
+      sandbox: false,
+    });
+    expect(PERMISSION_SWITCHES).toEqual(['read-outside', 'web-fetch', 'web-search']);
+    const permissions = {
+      folder: 'f1',
+      switches: ['read-outside'],
+      saved: [
+        { id: 'a1', kind: 'read-directory', text: 'D:\\libs\\shared' },
+        { id: 'a2', kind: 'web-site', text: 'docs.example.com' },
+        { id: 'a3', kind: 'command', text: 'npm test', shell: 'powershell', runsProjectCode: true },
+        { id: 'a4', kind: 'mcp-tool', text: 'mcp__docs__search' },
+      ],
+    };
+    expect(FolderPermissionsSchema.safeParse(permissions).success).toBe(true);
+    expect(
+      FolderPermissionsSchema.safeParse({ ...permissions, switches: ['commands'] }).success,
+    ).toBe(false);
+    expect(SavedPermissionSchema.safeParse({ id: 'a1', kind: 'edit', text: 'x' }).success).toBe(
+      false,
+    );
+    expect(
+      SavedPermissionSchema.safeParse({ id: 'a'.repeat(65), kind: 'web-site', text: 'x' }).success,
+    ).toBe(false);
+  });
+
+  it('parses a permission prompt with and without the kind of its always rule', () => {
+    const prompt = {
+      id: 'p1',
+      conversationId: 'c1',
+      turnId: 't1',
+      toolCallId: 'toolu_1',
+      createdAt: 1,
+      state: 'pending',
+      displayHash: 'h',
+      kind: 'permission',
+      toolName: 'Bash',
+      category: 'command',
+      title: 'Run a terminal command',
+      detail: 'npm test',
+      inputPreview: '{}',
+      choices: ['allow-once', 'allow-always', 'deny'],
+    };
+    // As stored before the kind existed.
+    const stored = PermissionPromptSchema.parse({
+      ...prompt,
+      alwaysRule: { rule: 'Bash(npm test)', runsProjectCode: true },
+    });
+    expect(stored.alwaysRule).toEqual({ rule: 'Bash(npm test)', runsProjectCode: true });
+    for (const kind of ['command', 'tool', 'read-directory', 'web-site']) {
+      const parsed = PermissionPromptSchema.parse({
+        ...prompt,
+        alwaysRule: { kind, rule: 'x', runsProjectCode: false },
+      });
+      expect(parsed.alwaysRule?.kind).toBe(kind);
+    }
+    expect(
+      PermissionPromptSchema.safeParse({
+        ...prompt,
+        alwaysRule: { kind: 'edit-directory', rule: 'x', runsProjectCode: false },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('parses the permissions webview messages', () => {
+    expect(WebviewMessageSchema.safeParse({ type: 'permissions.remove', id: 'a1' }).success).toBe(
+      true,
+    );
+    for (const bad of [
+      { type: 'permissions.remove' },
+      { type: 'permissions.remove', id: '' },
+      { type: 'permissions.remove', id: 'a'.repeat(65) },
+      { type: 'permissions.setSwitch', name: 'read-outside' },
+      { type: 'permissions.setSwitch', name: 'commands', on: true },
+      { type: 'permissions.setSwitch', name: 'web-fetch', on: 'yes' },
+    ]) {
+      expect(WebviewMessageSchema.safeParse(bad).success, JSON.stringify(bad)).toBe(false);
+    }
+    for (const name of PERMISSION_SWITCHES) {
+      expect(
+        WebviewMessageSchema.safeParse({ type: 'permissions.setSwitch', name, on: true }).success,
+      ).toBe(true);
+    }
+    expect(WebviewMessageSchema.safeParse({ type: 'permissions.addDirectory' }).success).toBe(true);
+    expect(WebviewMessageSchema.safeParse({ type: 'settings.open' }).success).toBe(true);
+    // No message carries a folder or a path: the host uses the folder the view shows.
+    const added = WebviewMessageSchema.parse({ type: 'permissions.addDirectory', path: 'C:\\' });
+    expect(added).toEqual({ type: 'permissions.addDirectory' });
+    expect(
+      HostMessageSchema.safeParse({
+        type: 'event',
+        event: { kind: 'show-tab', tab: 'permissions' },
+      }).success,
+    ).toBe(true);
   });
 
   it('rejects paths that leave the folder', () => {

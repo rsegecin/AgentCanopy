@@ -14,6 +14,8 @@ const EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 export interface UiParts {
   openPanel(conversationId?: ConversationId): void;
   showLogs(): void;
+  /** The id of this extension (`publisher.name`), which the publisher override at packaging changes. */
+  extensionId: string;
   /** The review service, once it is ready. */
   review(): ReviewService | undefined;
 }
@@ -238,6 +240,26 @@ export function createUiPort(parts: UiParts): UiPort {
     },
     showLogs: () => {
       parts.showLogs();
+    },
+
+    async pickDirectory({ title, openLabel, defaultPath }) {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        title,
+        openLabel,
+        ...(defaultPath === undefined ? {} : { defaultUri: vscode.Uri.file(defaultPath) }),
+      });
+      const first = picked?.[0];
+      return first?.scheme === 'file' ? first.fsPath : undefined;
+    },
+
+    openSettings: () => {
+      void vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        `@ext:${parts.extensionId}`,
+      );
     },
   };
 }

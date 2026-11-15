@@ -428,6 +428,19 @@ export class FakeUi implements UiPort {
   showLogs(): void {
     this.record('showLogs');
   }
+  /** What `pickDirectory` answers. `undefined` means "dismissed". */
+  directoryAnswer: string | undefined;
+  pickDirectory(input: {
+    title: string;
+    openLabel: string;
+    defaultPath?: string;
+  }): Promise<string | undefined> {
+    this.record('pickDirectory', input);
+    return Promise.resolve(this.directoryAnswer);
+  }
+  openSettings(): void {
+    this.record('openSettings');
+  }
 }
 
 // ---- the harness ------------------------------------------------------------------------------------------

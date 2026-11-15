@@ -146,6 +146,11 @@
         "command": "agentcanopy.resetProjectConfigDecision",
         "title": "Ask Again About This Folder's Claude Code Project Settings",
         "category": "AgentCanopy"
+      },
+      {
+        "command": "agentcanopy.showPermissions",
+        "title": "Show Permissions",
+        "category": "AgentCanopy"
       }
     ],
     "menus": {
