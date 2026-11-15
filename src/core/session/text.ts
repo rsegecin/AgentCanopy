@@ -1,3 +1,4 @@
+import { homedir } from 'node:os';
 import type { ErrorCategory, ResultEvent } from '../../shared';
 import { escapeForDisplay, escapeOneLine } from '../policy/readonly';
 
@@ -89,6 +90,23 @@ export const TEXT = {
     'Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later.',
   autoResetNotSaved:
     'Auto is off in this window, but that could not be saved for other workspaces on this machine. AgentCanopy will try again.',
+  permissionNotSaved:
+    'It was allowed this once, but the permission to always allow it could not be saved.',
+  permissionNotRemoved: 'The permission could not be removed.',
+  switchNotChanged: 'The switch could not be changed.',
+  permissionDialogOpen: 'A permissions dialog is already open.',
+  permissionChangedDuringDialog:
+    'The folder or the trust of the workspace changed while the dialog was open, so nothing was changed.',
+  /** Why a folder picked in the Permissions view cannot be saved, by the policy's reason. */
+  directoryRefusal: {
+    'not-a-directory': 'That folder could not be read.',
+    'inside-folder': 'That folder is inside the workspace folder, where reads never ask.',
+    sensitive:
+      "That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask.",
+    'too-broad':
+      'That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location.',
+    covered: 'That folder is already inside a saved folder.',
+  },
 } as const;
 
 export function claudeNotInstalled(displayName: string): string {
@@ -176,6 +194,15 @@ export function formatCheckpointTime(atMs: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+/** The user's home directory, or '' when it cannot be told. */
+export function homeDirectory(): string {
+  try {
+    return homedir();
+  } catch {
+    return '';
+  }
 }
 
 /** How many code points of a folder's path the dialog that turns Auto on shows at most. */

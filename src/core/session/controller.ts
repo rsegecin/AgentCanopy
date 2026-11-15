@@ -1,5 +1,4 @@
 import { promises as fs } from 'node:fs';
-import { homedir } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import {
   AttachmentSchema,
@@ -19,11 +18,14 @@ import type {
   ConversationId,
   ConversationMeta,
   FolderKey,
+  FolderPermissions,
   ImageMediaType,
   MessageId,
+  PermissionSwitch,
   Mode,
   PlanDoc,
   PlanId,
+  Prompt,
   PromptAnswer,
   OperationId,
   PatchOp,
@@ -60,11 +62,16 @@ import {
 } from '../plans';
 import type { PlanStore } from '../plans';
 import {
+  checkDirectoryToGrant,
   createAgentPolicy,
+  createGrantStore,
   createModePolicy,
   createReadOnlyPolicy,
   createReadOnlyTripwire,
   createRuleStore,
+  createSavedPermissions,
+  type GrantStore,
+  type SavedPermissions,
 } from '../policy';
 import type { RuleStore } from '../policy/agent';
 import { createProjectConfigDecisions, inspectProjectConfig } from '../policy/project-config';
@@ -100,7 +107,13 @@ import type { AutoReset } from './auto-reset';
 import { REFRESH_ACTION, SIGN_IN_ACTION, bannerKey, computeBanners } from './banners';
 import { decodeBase64, matchesImageSignature } from './images';
 import { isInside, resolveInsideWorkspace } from './paths';
-import { alwaysAllowDetail, answerProblem, canonicalJson } from './prompts';
+import {
+  alwaysAllowDetail,
+  answerProblem,
+  canonicalJson,
+  directoryDialog,
+  switchDialog,
+} from './prompts';
 import type { PendingPrompt } from './prompts';
 import { SessionState, previewOf } from './state';
 import type { ConvRuntime } from './state';
@@ -110,12 +123,13 @@ import {
   claudeSignedOut,
   claudeTooOld,
   formatCheckpointTime,
+  homeDirectory,
   oneLineText,
   safeText,
   shownPath,
 } from './text';
 import { TurnRun } from './turn';
-import type { TurnServices } from './turn';
+import type { AlwaysRule, TurnServices } from './turn';
 import { ViewRecord } from './view';
 
 const MAX_ATTACHMENTS = 50;
@@ -175,15 +189,6 @@ function titleOf(text: string): string | undefined {
   return line.length > 0 ? line : undefined;
 }
 
-/** The user's home directory, or '' when it cannot be told. */
-function homeDirectory(): string {
-  try {
-    return homedir();
-  } catch {
-    return '';
-  }
-}
-
 function assertNever(value: never): never {
   throw new Error(`unhandled message ${typeOf(value)}`);
 }
@@ -202,6 +207,12 @@ class Controller implements AppController {
   private readonly projectConfigAnnounced = new Set<string>();
   private checkpoints: CheckpointEngine | undefined;
   private rules: RuleStore | undefined;
+  /** The switches and saved folders, sites and PowerShell commands. With `saved`: only in the default policy. */
+  private grants: GrantStore | undefined;
+  /** Both stores as the Permissions view lists them. */
+  private saved: SavedPermissions | undefined;
+  /** Views with a permissions dialog open (a switch or a folder), so a view asks for one at a time. */
+  private readonly permissionDialogs = new Set<string>();
   private readonly unsubscribe: (() => void)[] = [];
   /** Folders the tracker has been asked to pre-warm. */
   private readonly prewarmed = new Set<FolderKey>();
@@ -570,6 +581,8 @@ class Controller implements AppController {
     this.storageDir = dir;
     this.store = store;
     this.plans = plans;
+    // The stores exist now: views that attached before show what is saved.
+    for (const view of this.state.views.values()) this.syncPermissions(view);
     // Conversations stored while the setting was on keep their Auto only while it is on, and only
     // when it was turned on after the last reset on this machine.
     if (!this.deps.env.settings().agentAuto) this.settleAuto(false);
@@ -622,11 +635,16 @@ class Controller implements AppController {
       const rules = createRuleStore({ dir: join(dir, 'rules'), logger });
       await rules.init();
       this.rules = rules;
-      const readOnly = createReadOnlyPolicy({ logger });
+      const grants = createGrantStore({ dir: join(dir, 'permissions'), logger });
+      await grants.init();
+      this.grants = grants;
+      this.saved = createSavedPermissions({ rules, grants });
+      const sensitiveRoots = (): string[] => this.sensitiveRoots();
+      const readOnly = createReadOnlyPolicy({ logger, grants, sensitiveRoots });
       this.policy = createModePolicy({
         ask: readOnly,
         plan: readOnly,
-        agent: createAgentPolicy({ rules, logger }),
+        agent: createAgentPolicy({ rules, logger, grants, sensitiveRoots }),
       });
     }
     if (!this.deps.observers) {
@@ -698,6 +716,14 @@ class Controller implements AppController {
 
   get rulesInUse(): RuleStore | undefined {
     return this.rules;
+  }
+
+  get grantsInUse(): GrantStore | undefined {
+    return this.grants;
+  }
+
+  get savedInUse(): SavedPermissions | undefined {
+    return this.saved;
   }
 
   private async startTracker(): Promise<void> {
@@ -1020,7 +1046,13 @@ class Controller implements AppController {
    *   dialog (it only takes approvals away), and ask for the dialog that turns it on again and again;
    *   send turns and queue messages in a conversation where the user turned Auto on, which then run
    *   commands and edits inside the folder without a prompt. It cannot turn Auto on: only the native
-   *   dialog does, between turns.
+   *   dialog does, between turns;
+   * - remove any saved permission of the folder its view shows, and turn any of that folder's switches
+   *   off, at any time and without a dialog (that only takes approvals away), and ask for the dialogs
+   *   that add a permission again and again. It cannot add a permission or turn a switch on: only a
+   *   confirmed native dialog does. No message names a folder or a path: the folder is always the one
+   *   the view shows, checked again after the dialog, and a directory comes from the native folder
+   *   picker, never from the message.
    */
   private async handle(view: ViewRecord, message: WebviewMessage): Promise<void> {
     switch (message.type) {
@@ -1136,9 +1168,13 @@ class Controller implements AppController {
         this.deps.ui.openSettings();
         return;
       case 'permissions.remove':
+        await this.removePermission(view, message.id);
+        return;
       case 'permissions.setSwitch':
+        await this.setPermissionSwitch(view, message.name, message.on);
+        return;
       case 'permissions.addDirectory':
-        this.state.toast(view, 'info', TEXT.notAvailableYet);
+        await this.addPermissionDirectory(view);
         return;
 
       case 'plan.setLocked':
@@ -2648,6 +2684,199 @@ class Controller implements AppController {
     }
   }
 
+  // ---- saved permissions ----------------------------------------------------------------------------
+
+  /**
+   * Removes a saved permission of the folder the view shows. Always works: no dialog, no trust check,
+   * also under a running turn (the policy reads the stores at every request). Every outcome ends with
+   * the permissions sent to the asking view again, because the view locks its controls until then.
+   */
+  private async removePermission(view: ViewRecord, id: string): Promise<void> {
+    const { saved } = this;
+    if (!saved) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      const folder = this.viewFolder(view);
+      if (!folder) return;
+      try {
+        await saved.remove(folder.key, id);
+      } catch (error) {
+        this.logger.warn('a saved permission could not be removed', {
+          error: redact(String(error)),
+        });
+        this.state.toast(view, 'warning', TEXT.permissionNotRemoved);
+      }
+      this.refreshPermissionsOf(folder.key);
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  /**
+   * Turns a switch of the folder the view shows off or on. Off always works, at once and without a
+   * dialog. On only through the native dialog, and what was checked before it is checked again after.
+   */
+  private async setPermissionSwitch(
+    view: ViewRecord,
+    name: PermissionSwitch,
+    on: boolean,
+  ): Promise<void> {
+    const { grants } = this;
+    if (!grants) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      if (!on) {
+        const folder = this.viewFolder(view);
+        if (folder) await this.saveSwitch(view, grants, folder.key, name, false);
+        return;
+      }
+      const folder = this.permissionTarget(view);
+      if (!folder || grants.get(folder.key).switches.includes(name)) return;
+      this.permissionDialogs.add(view.id);
+      let confirmed = false;
+      try {
+        confirmed = await this.confirmPermission(switchDialog(name, folder.path));
+      } finally {
+        this.permissionDialogs.delete(view.id);
+      }
+      if (!confirmed) return;
+      if (!this.sameAfterDialog(view, folder.key)) {
+        this.state.toast(view, 'warning', TEXT.permissionChangedDuringDialog);
+        return;
+      }
+      await this.saveSwitch(view, grants, folder.key, name, true);
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  private async saveSwitch(
+    view: ViewRecord,
+    grants: GrantStore,
+    folderKey: FolderKey,
+    name: PermissionSwitch,
+    on: boolean,
+  ): Promise<void> {
+    try {
+      await grants.setSwitch(folderKey, name, on);
+    } catch (error) {
+      this.logger.warn('a switch could not be changed', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.switchNotChanged);
+    }
+    this.refreshPermissionsOf(folderKey);
+  }
+
+  /**
+   * Lets the user pick a directory in the native folder picker, and saves it as readable for the
+   * folder the view shows after the policy's checks and a native confirmation that names it. The
+   * path never comes from the webview.
+   */
+  private async addPermissionDirectory(view: ViewRecord): Promise<void> {
+    const { grants } = this;
+    if (!grants) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      const folder = this.permissionTarget(view);
+      if (!folder) return;
+      // Held from the picker to the end, so the view asks for one dialog at a time.
+      this.permissionDialogs.add(view.id);
+      try {
+        await this.pickAndSaveDirectory(view, grants, folder);
+      } finally {
+        this.permissionDialogs.delete(view.id);
+      }
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  private async pickAndSaveDirectory(
+    view: ViewRecord,
+    grants: GrantStore,
+    folder: FolderInfo,
+  ): Promise<void> {
+    let picked: string | undefined;
+    try {
+      picked = await this.deps.ui.pickDirectory({
+        title: 'Allow reads in a folder',
+        openLabel: 'Choose Folder',
+      });
+    } catch (error) {
+      this.logger.warn('the folder picker could not be shown', { error: redact(String(error)) });
+    }
+    if (picked === undefined || this.disposed || view.disposed) return;
+    const result = await checkDirectoryToGrant({
+      path: picked,
+      folderPath: folder.path,
+      granted: grants.get(folder.key),
+      sensitiveRoots: () => this.sensitiveRoots(),
+    });
+    if ('refused' in result) {
+      this.state.toast(view, 'warning', TEXT.directoryRefusal[result.refused]);
+      return;
+    }
+    if (!(await this.confirmPermission(directoryDialog(result.dir, folder.path)))) return;
+    if (!this.sameAfterDialog(view, folder.key)) {
+      this.state.toast(view, 'warning', TEXT.permissionChangedDuringDialog);
+      return;
+    }
+    try {
+      await grants.add(folder.key, { kind: 'read-directory', path: result.dir });
+    } catch (error) {
+      this.logger.warn('a folder could not be saved as allowed', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.permissionNotSaved);
+    }
+    this.refreshPermissionsOf(folder.key);
+  }
+
+  /**
+   * The folder a message that adds a permission is about (the one the view shows), or undefined after
+   * saying why it cannot be done now. The webview cannot name another folder.
+   */
+  private permissionTarget(view: ViewRecord): FolderInfo | undefined {
+    if (!this.deps.env.trusted()) {
+      this.state.toast(view, 'warning', TEXT.untrustedRefusal);
+      return undefined;
+    }
+    if (this.permissionDialogs.has(view.id)) {
+      this.state.toast(view, 'warning', TEXT.permissionDialogOpen);
+      return undefined;
+    }
+    const folder = this.viewFolder(view);
+    if (!folder) this.state.toast(view, 'warning', TEXT.noFolder);
+    return folder;
+  }
+
+  /** The native dialog. A dialog that cannot be shown counts as declined. */
+  private async confirmPermission(dialog: {
+    title: string;
+    detail: string;
+    confirmLabel: string;
+  }): Promise<boolean> {
+    try {
+      return await this.deps.ui.confirm(dialog);
+    } catch (error) {
+      this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+      return false;
+    }
+  }
+
+  /** After a dialog that adds a permission: nothing that allowed it has changed. */
+  private sameAfterDialog(view: ViewRecord, folderKey: FolderKey): boolean {
+    return (
+      !this.disposed &&
+      !view.disposed &&
+      this.deps.env.trusted() &&
+      this.viewFolder(view)?.key === folderKey
+    );
+  }
+
   // ---- baseline and configuration changes ----------------------------------------------------------
 
   /** The folder whose baseline and configuration changes a view shows. */
@@ -2662,6 +2891,43 @@ class Controller implements AppController {
     this.syncReviewBusy(view);
     this.syncReviewEntries(view);
     this.syncCheckpoints(view);
+    this.syncPermissions(view);
+  }
+
+  /**
+   * What a view shows of its folder's switches and saved permissions. With `force` it is sent again
+   * although nothing changed: the webview locks a control after a click and releases it only when it
+   * receives the permissions.
+   */
+  private syncPermissions(view: ViewRecord, force = false): void {
+    if (view.disposed) return;
+    const { grants, saved } = this;
+    const folder = this.viewFolder(view);
+    const next: FolderPermissions =
+      folder && grants && saved
+        ? {
+            folder: folder.key,
+            switches: grants.get(folder.key).switches,
+            saved: saved.list(folder.key),
+          }
+        : { folder: null, switches: [], saved: [] };
+    if (!force && canonicalJson(next) === canonicalJson(view.state.permissions)) return;
+    view.apply([{ op: 'set', path: ['permissions'], value: next }]);
+  }
+
+  /** AgentCanopy's own storage directories: they always ask, whatever is saved. Read at every decision. */
+  private sensitiveRoots(): string[] {
+    const { env } = this.deps;
+    return [env.storageDir(), env.globalStorageDir()].filter(
+      (root): root is string => root !== undefined,
+    );
+  }
+
+  /** Every view that shows this folder looks at its permissions again. */
+  private refreshPermissionsOf(folderKey: FolderKey): void {
+    for (const view of this.state.views.values()) {
+      if (this.viewFolder(view)?.key === folderKey) this.syncPermissions(view);
+    }
   }
 
   /** The baseline status of the view's folder. Frequent changes are held back to a few patches a second. */
@@ -3041,17 +3307,26 @@ class Controller implements AppController {
   }
 
   /**
-   * The user chose "always allow" for a command. The policy stores the rule, but it only logs when it
-   * cannot: so the application checks the rule store itself and tells the user.
+   * The user chose "always allow" for a command, a tool, a directory or a site. The policy stores it,
+   * but it only logs when it cannot: so the application checks the stores itself and tells the user.
+   * Every view of the folder then looks at what is saved.
    */
   private checkAlwaysRule(
     conversationId: ConversationId,
     folderKey: FolderKey,
-    rule: string,
+    rule: AlwaysRule,
   ): void {
-    const { rules } = this;
-    if (!rules || rules.list(folderKey).includes(rule)) return;
-    this.state.toastConversation(conversationId, 'warning', TEXT.ruleNotSaved);
+    const { saved } = this;
+    if (!saved) return;
+    if (!saved.has(folderKey, rule)) {
+      const outside = rule.kind === 'read-directory' || rule.kind === 'web-site';
+      this.state.toastConversation(
+        conversationId,
+        'warning',
+        outside ? TEXT.permissionNotSaved : TEXT.ruleNotSaved,
+      );
+    }
+    this.refreshPermissionsOf(folderKey);
   }
 
   /** Deletes what the review and the checkpoints keep for a folder, after the user has confirmed. */
@@ -3737,21 +4012,42 @@ class Controller implements AppController {
     }
     let effective = answer;
     if (answer.kind === 'permission' && answer.choice === 'allow-always') {
-      entry.answering = true;
-      let confirmed = false;
-      try {
-        confirmed = await this.deps.ui.confirm({
-          title: 'Always allow this?',
-          detail: alwaysAllowDetail(entry.prompt),
-          confirmLabel: 'Always allow',
-        });
-      } catch (error) {
-        this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+      const { prompt } = entry;
+      const offered = prompt.kind === 'permission' ? prompt.alwaysRule?.kind : undefined;
+      // A directory or a site is saved for a workspace folder, which the dialog must name.
+      const needsFolder = offered === 'read-directory' || offered === 'web-site';
+      const folder = needsFolder ? this.promptFolder(prompt) : undefined;
+      if (needsFolder && !folder) {
+        this.logger.info('an always answer was taken as allow once: its folder is not open');
+        effective = { ...answer, choice: 'allow-once' };
+      } else {
+        entry.answering = true;
+        let confirmed = false;
+        try {
+          confirmed = await this.deps.ui.confirm({
+            title: 'Always allow this?',
+            detail: alwaysAllowDetail(prompt, folder?.path),
+            confirmLabel: 'Always allow',
+          });
+        } catch (error) {
+          this.logger.warn('the confirmation could not be shown', {
+            error: redact(String(error)),
+          });
+        }
+        if (!confirmed) effective = { ...answer, choice: 'allow-once' };
       }
-      if (!confirmed) effective = { ...answer, choice: 'allow-once' };
     }
     if (entry.settled) return;
     entry.settle('answered', effective);
+  }
+
+  /** The open workspace folder of the conversation a prompt belongs to, if it is open. */
+  private promptFolder(prompt: Prompt): FolderInfo | undefined {
+    const { conversationId } = prompt;
+    const key =
+      this.state.runtimes.get(conversationId)?.data.meta.folder ??
+      this.store?.list().find((meta) => meta.id === conversationId)?.folder;
+    return this.deps.env.folders().find((folder) => folder.key === key);
   }
 
   // ---- composer context -----------------------------------------------------------------------------------
@@ -4045,6 +4341,10 @@ export interface ControllerInternals {
   tracker(): WorkspaceTracker | undefined;
   /** The rule store of the default policy, when the application created one. */
   rules(): RuleStore | undefined;
+  /** The grant store (switches, folders, sites, PowerShell commands) of the default policy. */
+  grants(): GrantStore | undefined;
+  /** Both stores as the Permissions view lists them. */
+  saved(): SavedPermissions | undefined;
   /** The review engine, with the extras the application uses itself. */
   reviewEngine(): ReviewEngine | undefined;
   /** Asks for the clean-up of stored file contents; resolves when it has run or been skipped. */
@@ -4066,6 +4366,8 @@ export function createAppControllerWithInternals(
     internals: {
       tracker: () => controller.trackerInUse,
       rules: () => controller.rulesInUse,
+      grants: () => controller.grantsInUse,
+      saved: () => controller.savedInUse,
       reviewEngine: () => controller.review(),
       collectGarbage: (folderKey) => controller.collectGarbageNow(folderKey),
       checkpointService: () => controller.checkpointsInUse,

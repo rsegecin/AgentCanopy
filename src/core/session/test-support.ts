@@ -47,6 +47,7 @@ import { sha256Hex } from '../util';
 import { createClaudeProvider, isAlive } from '../provider/claude';
 import { createAppControllerWithInternals } from './controller';
 import type { RuleStore } from '../policy/agent';
+import type { GrantStore, SavedPermissions } from '../policy';
 import type { CheckpointServiceWithChanges } from '../workspace/checkpoints';
 import type { ReviewEngine } from '../workspace/review';
 import type { WorkspaceTracker } from '../workspace/tracker';
@@ -500,6 +501,10 @@ export interface Harness {
   tracker(): WorkspaceTracker | undefined;
   /** The rule store of the application's own default policy, once started. */
   rules(): RuleStore | undefined;
+  /** The grant store of the application's own default policy, once started. */
+  grants(): GrantStore | undefined;
+  /** Both stores as the Permissions view lists them, once started. */
+  saved(): SavedPermissions | undefined;
   /** The review engine of the application's own defaults, once started. */
   engine(): ReviewEngine | undefined;
   /** Asks the application to clean up stored file contents of a folder; resolves when done or skipped. */
@@ -642,6 +647,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     controller,
     tracker: () => internals.tracker(),
     rules: () => internals.rules(),
+    grants: () => internals.grants(),
+    saved: () => internals.saved(),
     engine: () => internals.reviewEngine(),
     checkpoints: () => internals.checkpointService(),
     collectGarbage: (folderKey) => internals.collectGarbage(folderKey),

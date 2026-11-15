@@ -4,7 +4,7 @@ Phase 11 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, a
 
 ## Progress
 
-Updated at every stage commit. Last update: 2026-11-15, with stage s2.
+Updated at every stage commit. Last update: 2026-11-15, with stage s3.
 
 **Resumed by the owner on 2026-11-15**, with two decisions:
 
@@ -16,8 +16,8 @@ Updated at every stage commit. Last update: 2026-11-15, with stage s2.
 | s0. Decisions, roadmap file and CLI facts | Done | `35e7a14` |
 | s1. Contracts, manifest and the editor port | Done | `3162ef6` |
 | The path fix (outside the stages, before s2) | Done | `1207288` |
-| s2. Grant store and policy | Done | The commit that carries this update |
-| s3. Host: wiring, dialogs and view state | Next | |
+| s2. Grant store and policy | Done | `709e607` |
+| s3. Host: wiring, dialogs and view state | Done | The commit that carries this update |
 | s4. Webview: Permissions view and card wording | Done | `15fbce7` |
 | s5. Documentation, full verification and status | Not started. Needs s3 and s4 | |
 
@@ -65,6 +65,22 @@ Other differences from the plan in s2:
 - Bash and MCP prompts keep `alwaysRule` without `kind`, so their tests are unedited. A PowerShell prompt has `kind: 'command'` and the rule text `PowerShell(<command>)`; `saved.has` tells the stores apart by `kind` and that prefix.
 - The read tests set `HOME` and `USERPROFILE` to a temporary directory (`useHome` in `readonly/test-support.ts`): the temporary directories lie under the real home, on Windows under `AppData`, which is sensitive. For the guides: with the reads switch on, a read in the temp folder still asks on Windows.
 - `decideRead` collects every outside target (the path and the pattern); before, it kept the last one. The prompt's `detail` is unchanged.
+
+### What exists after s3
+
+- The feature works end to end: `createDefaults` opens the grant store in `<storage>/permissions`, both policies get `grants` and `sensitiveRoots` (the workspace and global storage directories), `ViewState.permissions` follows the folder a view shows, and the three messages are handled (`removePermission`, `setPermissionSwitch`, `addPermissionDirectory` in `src/core/session/controller.ts`). The placeholders of s1 are gone, except with an injected policy, where the handlers still answer "This is not available yet.".
+- Checked by reading every call site: a grant is added in the host only in `pickAndSaveDirectory`, after the native picker, `checkDirectoryToGrant`, a confirmed dialog and `sameAfterDialog`; a switch is turned on only in `setPermissionSwitch`, after a confirmed dialog and `sameAfterDialog`; the policy's `saveGrant` runs only for an `allow-always` answer, and `answerPrompt`, the one place that settles an answer, turns every unconfirmed one into `allow-once`.
+- Verified for s3: type check, lint, the format check with line endings ignored, the build, and all unit tests (3676; the 17 baseline failures and no other, in the second of two runs). In the first run one more test failed, "6. orphans, when the start time cannot be read, the pid is written alone" in `workspace/tracker/findings.test.ts`; it passed in three runs of that file alone and in the second full run, and s3 does not touch the tracker. No existing test expectation was edited.
+
+Differences from the plan in s3:
+
+- **Two "could not be saved" texts.** `TEXT.ruleNotSaved` names a command, so it stays for commands (Bash and PowerShell) and tools; a directory or a site gets `TEXT.permissionNotSaved`.
+- **Folder paths in the dialogs** are shown as the Auto dialog shows them: `FolderInfo.path` through `shownPath` (home as `~`, cut in the middle), not a real path. The directory or host being saved is shown in full.
+- **The card's dialog for a directory or a site names the workspace folder**; when the folder of the prompt's conversation is not open, no dialog is shown and the answer counts as allow once. The dialog for a command or tool is unchanged.
+- **Every handler sends the permissions to the asking view again**, also when nothing changed, because the view locks its controls until then. The view's dialogs use a per-view set (`permissionDialogs`); the card's dialog keeps its per-prompt guard.
+- **Removing and turning off work in an untrusted workspace too** on the host; the view disables its controls there.
+- `homeDirectory()` moved from `controller.ts` to `text.ts`, so `prompts.ts` can use it.
+- One test depends on time: the read that must ask after a switch is turned off during a turn waits 1000 ms in the fake CLI.
 
 ### What exists after s4
 

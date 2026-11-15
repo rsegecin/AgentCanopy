@@ -15,6 +15,7 @@ import type {
   MessagePart,
   Mode,
   PatchOp,
+  PermissionPrompt,
   PlanDoc,
   Prompt,
   PromptAnswer,
@@ -77,6 +78,9 @@ const MAX_UNSAVED_LISTED = 5;
 
 type MetaPatch = Parameters<ConversationStore['updateMeta']>[1];
 
+/** What a permission prompt offered to save with "always allow". */
+export type AlwaysRule = NonNullable<PermissionPrompt['alwaysRule']>;
+
 const set = (path: StatePath, value: unknown): PatchOp => ({ op: 'set', path, value });
 const push = (path: StatePath, value: unknown): PatchOp => ({ op: 'push', path, value });
 
@@ -112,8 +116,12 @@ export interface TurnServices {
     folder: FolderInfo,
     mode: Mode,
   ): Promise<{ choice: ProjectConfigChoice; notice?: string } | undefined>;
-  /** The user chose "always allow" and the policy has decided: the rule should be stored by now. */
-  onAlwaysAllowChosen?(conversationId: ConversationId, folderKey: FolderKey, rule: string): void;
+  /** The user chose "always allow" and the policy has decided: what it offered should be stored by now. */
+  onAlwaysAllowChosen?(
+    conversationId: ConversationId,
+    folderKey: FolderKey,
+    rule: AlwaysRule,
+  ): void;
   /**
    * What a branch needs to know about the conversation it was cut from. Undefined when it is gone.
    * When no turn runs in the parent, no turn can start in it until `release` is called.
@@ -238,8 +246,8 @@ export class TurnRun {
   private projectConfig: ProjectConfigChoice | undefined;
   /** The profile the provider runs with: the policy's, plus the project configuration decision. */
   private profile: ExecutionProfile;
-  /** The rule the user asked to always allow, by tool call, until the policy has decided. */
-  private readonly alwaysRules = new Map<string, string>();
+  /** What the user asked to always allow, by tool call, until the policy has decided. */
+  private readonly alwaysRules = new Map<string, AlwaysRule>();
   /** Lets the parent of a branch take turns again; set while an exact copy of its session is unconfirmed. */
   private parentRelease: (() => void) | undefined;
   private final: FinalState | undefined;
@@ -1457,7 +1465,7 @@ export class TurnRun {
         updated = { ...current, state: next, answered: answer.choice };
         // The user asked for a rule: whether the policy managed to keep it is checked once it has decided.
         if (answer.choice === 'allow-always' && current.alwaysRule !== undefined) {
-          this.alwaysRules.set(current.toolCallId, current.alwaysRule.rule);
+          this.alwaysRules.set(current.toolCallId, current.alwaysRule);
         }
       } else if (current.kind === 'question' && answer.kind === 'question') {
         updated = {
