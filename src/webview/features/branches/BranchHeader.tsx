@@ -7,6 +7,7 @@ import { FORK_ICON, forkStatusText } from './branch-model';
 export function BranchHeader() {
   const post = usePost();
   const fork = useViewState((s) => s.active?.meta.fork);
+  const aside = useViewState((s) => s.active?.meta.aside !== undefined);
   const parentTitle = useViewState((s) => {
     const parent = s.active?.meta.fork?.parentId;
     return parent === undefined ? undefined : s.conversations.find((c) => c.id === parent)?.title;
@@ -33,6 +34,12 @@ export function BranchHeader() {
           <span>a conversation that was deleted</span>
         )}
       </p>
+      {aside && (
+        <p className="branch-status">
+          <Icon name="comment" />
+          <span>This is a side question of its parent conversation.</span>
+        </p>
+      )}
       <p className={`branch-status branch-status--${fork.exactness}`}>
         <Icon name={FORK_ICON[fork.exactness]} />
         <span>{forkStatusText(fork)}</span>

@@ -197,3 +197,46 @@ describe('Agent mode against the real CLI', () => {
     expect(text).toContain('notes.txt');
   });
 });
+
+describe('Agent mode with Auto against the real CLI', () => {
+  it('runs a harmless command without asking, and still asks before a protected file', async () => {
+    // A new conversation with Auto turned on for its draft; the native dialog is stubbed to accept.
+    view.send({ type: 'conversation.new' });
+    await until('the draft', () => view.state?.active === null);
+    harness.ui.confirmAnswer = true;
+    view.send({ type: 'conversation.setAuto', on: true });
+    await until('the draft to have Auto', () => view.state?.draftAgentAuto === true);
+
+    const before = send(
+      'First run exactly this shell command: echo auto > auto.txt. Then use the Write tool to write exactly {} to the file .vscode/settings.json. Do nothing else.',
+    );
+    await until(
+      'the prompt for the protected file',
+      () => view.state?.active?.prompts.some((p) => p.state === 'pending') === true,
+      120_000,
+    );
+    const prompt = view.active().prompts.find((p) => p.state === 'pending');
+    if (prompt?.kind !== 'permission') throw new Error('expected a permission prompt');
+    expect(prompt.category).toBe('protected-path');
+    expect(prompt.toolName).toBe('Write');
+    view.send({
+      type: 'prompt.answer',
+      promptId: prompt.id,
+      displayHash: prompt.displayHash,
+      answer: { kind: 'permission', choice: 'deny', feedback: 'Do not change that file. Stop.' },
+    });
+    await waitForTurnEnd(before);
+
+    expect(view.active().meta.agentAuto).toBe(true);
+    // The only prompt of the turn was the protected file's.
+    expect(
+      view.active().prompts.map((p) => (p.kind === 'permission' ? p.category : p.kind)),
+    ).toEqual(['protected-path']);
+    expect(await fs.readFile(join(harness.workspace, 'auto.txt'), 'utf8')).toMatch(/auto/);
+    await expect(fs.access(join(harness.workspace, '.vscode', 'settings.json'))).rejects.toThrow();
+    const { parts } = lastTurnParts();
+    const bash = parts.find((p) => p.kind === 'tool' && p.call.name === 'Bash');
+    expect(bash?.kind === 'tool' && bash.call.approval).toBe('auto');
+    expect(view.problems).toEqual([]);
+  });
+});

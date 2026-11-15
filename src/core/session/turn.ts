@@ -15,6 +15,8 @@ import type {
   MessagePart,
   Mode,
   PatchOp,
+  PermissionPrompt,
+  PlanDoc,
   Prompt,
   PromptAnswer,
   PromptId,
@@ -48,6 +50,7 @@ import type {
   TurnContext,
   ToolHookEvent,
   TurnHandle,
+  TurnImage,
   TurnObserver,
   TurnPolicy,
   TurnRegistration,
@@ -75,6 +78,9 @@ const MAX_UNSAVED_LISTED = 5;
 
 type MetaPatch = Parameters<ConversationStore['updateMeta']>[1];
 
+/** What a permission prompt offered to save with "always allow". */
+export type AlwaysRule = NonNullable<PermissionPrompt['alwaysRule']>;
+
 const set = (path: StatePath, value: unknown): PatchOp => ({ op: 'set', path, value });
 const push = (path: StatePath, value: unknown): PatchOp => ({ op: 'push', path, value });
 
@@ -92,6 +98,12 @@ export interface TurnServices {
   /** Prompts waiting for an answer, by id, across all turns. */
   prompts: Map<PromptId, PendingPrompt>;
   refreshProvider(): Promise<void>;
+  /**
+   * Writes a change of the conversation's meta and resolves to the meta the host shows for it. The
+   * host keeps an Auto that was turned off but could not be saved off here, so the turn never puts
+   * the store's `agentAuto` back into memory.
+   */
+  updateMeta(id: ConversationId, patch: MetaPatch): Promise<ConversationMeta>;
   /** A turn was refused before it started (for example because the folder is busy). */
   onRefused?(folder: FolderInfo, mode: Mode): void;
   /** Paths AgentCanopy reverted since the last agent turn in a folder, to tell the agent about. */
@@ -104,8 +116,12 @@ export interface TurnServices {
     folder: FolderInfo,
     mode: Mode,
   ): Promise<{ choice: ProjectConfigChoice; notice?: string } | undefined>;
-  /** The user chose "always allow" and the policy has decided: the rule should be stored by now. */
-  onAlwaysAllowChosen?(conversationId: ConversationId, folderKey: FolderKey, rule: string): void;
+  /** The user chose "always allow" and the policy has decided: what it offered should be stored by now. */
+  onAlwaysAllowChosen?(
+    conversationId: ConversationId,
+    folderKey: FolderKey,
+    rule: AlwaysRule,
+  ): void;
   /**
    * What a branch needs to know about the conversation it was cut from. Undefined when it is gone.
    * When no turn runs in the parent, no turn can start in it until `release` is called.
@@ -139,6 +155,14 @@ export interface TurnStart {
   mode: Mode;
   model: string;
   attachments: Attachment[];
+  /** Bytes of the images in this message, in order. Only for a turn that sends images. */
+  images?: TurnImage[];
+  /**
+   * Agent mode's Auto applies to this turn: an Agent turn, the setting on and the conversation's Auto
+   * on when its profile was built and still when the turn started. Decided once; it can only be taken
+   * away during the turn.
+   */
+  auto: boolean;
 }
 
 interface SessionPlan {
@@ -182,6 +206,15 @@ export class TurnRun {
   private readonly runDir: string;
 
   private cancelRequested = false;
+  /** Auto was turned off during this turn: it no longer applies, whatever the meta says later. */
+  private autoRevoked = false;
+  /**
+   * The settings that narrow Auto, latched for this turn: once commands were seen to ask
+   * (`alwaysAskCommands` on) or web tools to ask (`agentAutoWebTools` off), they keep asking until the
+   * turn ends, whatever the settings do later. Set in `observeSettings`.
+   */
+  private commandsAsk = false;
+  private webAsks = false;
   /** Set when the run is wrapping up; late callbacks then leave the conversation alone. */
   private closed = false;
   private handle: TurnHandle | undefined;
@@ -203,6 +236,8 @@ export class TurnRun {
   private readonly findingNotices = new Set<string>();
   /** Plan changes of this turn run one after the other, so each sees the result of the one before. */
   private planWork: Promise<unknown> = Promise.resolve();
+  /** Answers to questions asked in this Plan turn before the plan existed, in the order answered. */
+  private readonly earlyAnswers: { targetId: string; values: string[] }[] = [];
   /** The model called the plan tool in this turn, whatever came of it. */
   private planToolCalled = false;
   /** The session id of an exact fork that has been started and not yet shown to work. */
@@ -211,8 +246,8 @@ export class TurnRun {
   private projectConfig: ProjectConfigChoice | undefined;
   /** The profile the provider runs with: the policy's, plus the project configuration decision. */
   private profile: ExecutionProfile;
-  /** The rule the user asked to always allow, by tool call, until the policy has decided. */
-  private readonly alwaysRules = new Map<string, string>();
+  /** What the user asked to always allow, by tool call, until the policy has decided. */
+  private readonly alwaysRules = new Map<string, AlwaysRule>();
   /** Lets the parent of a branch take turns again; set while an exact copy of its session is unconfirmed. */
   private parentRelease: (() => void) | undefined;
   private final: FinalState | undefined;
@@ -243,6 +278,9 @@ export class TurnRun {
     this.folderKey = input.folder.key;
     this.mode = input.mode;
     this.profile = input.profile;
+    // The turn starts from its own snapshot of the settings, narrowed by what they are now.
+    this.observeSettings(input.settings);
+    this.observeSettings(services.deps.env.settings());
     this.logger = services.deps.logger;
     this.clock = services.deps.clock ?? { now: () => Date.now() };
     this.runDir = join(services.storageDir, 'run', `turn-${this.turnId}`);
@@ -264,6 +302,38 @@ export class TurnRun {
       this.abort.abort();
     }
     return this.handle ? this.handle.cancel() : Promise.resolve();
+  }
+
+  /**
+   * Auto no longer applies to this turn, from the next permission request on. Synchronous, so a
+   * request decided after this call is already asked. There is no way back during the turn.
+   */
+  revokeAuto(): void {
+    this.autoRevoked = true;
+  }
+
+  /**
+   * Takes in settings seen now (the controller calls it on every change of the environment, and the
+   * policy context on every read): a setting that narrows Auto narrows it for the rest of the turn.
+   * One-way: nothing seen here can loosen the turn again.
+   */
+  observeSettings(settings: Settings): void {
+    if (settings.alwaysAskCommands) this.commandsAsk = true;
+    if (!settings.agentAutoWebTools) this.webAsks = true;
+  }
+
+  /**
+   * Whether Auto applies to a decision made now. It started with the turn and only gets narrower:
+   * revoked, turned off in the conversation, or the setting turned off. The setting is read live, and
+   * only to take Auto away; the other settings that narrow it are narrowed live in `policyContext`.
+   */
+  private autoApplies(): boolean {
+    return (
+      this.input.auto &&
+      !this.autoRevoked &&
+      this.runtime.data.meta.agentAuto === true &&
+      this.services.deps.env.settings().agentAuto
+    );
   }
 
   // ---- the run -----------------------------------------------------------------------------------
@@ -328,6 +398,7 @@ export class TurnRun {
       text,
       mode,
       attachments,
+      ...(this.input.auto ? { auto: true } : {}),
     };
     const turn: Turn = { id: this.turnId, mode, model, startedAt: now, status: 'preparing' };
     this.userIndex = this.runtime.data.messages.length;
@@ -357,6 +428,10 @@ export class TurnRun {
       text: this.input.promptText ?? text,
       attachments,
       planLocked: meta.planLocked,
+      // Only when Auto covers commands: with alwaysAskCommands on, commands still ask.
+      ...(this.autoApplies() && !this.input.settings.alwaysAskCommands
+        ? { agentAuto: true, agentAutoWebTools: this.input.settings.agentAutoWebTools }
+        : {}),
       ...(revertedPaths.length > 0 ? { revertedPaths } : {}),
       // The execution prompt of an approved plan carries that version itself.
       ...(plan && plan.versions.length > 0 && this.input.promptText === undefined
@@ -416,6 +491,9 @@ export class TurnRun {
       await this.patchMeta({ sessionId, fork: { ...fork, exactness: 'exact', lost: [] } });
       return { ref: { kind: 'new', sessionId }, prefix: '' };
     }
+    // A side question never copies its parent's session and never holds the parent, whose turn may
+    // have ended meanwhile: it always starts afresh with the finished turns rebuilt.
+    if (this.runtime.data.meta.aside !== undefined) return this.freshSession();
 
     let parent: Awaited<ReturnType<NonNullable<TurnServices['forkParent']>>>;
     try {
@@ -500,6 +578,17 @@ export class TurnRun {
     }
     await this.patchMeta(patch);
     if (notice !== undefined) this.addNotice('info', notice);
+    // A branch reports lost images in its own list of what was lost.
+    if (
+      meta.fork === undefined &&
+      earlier.some(
+        (message) =>
+          message.role === 'user' &&
+          message.attachments.some((attachment) => attachment.kind === 'image'),
+      )
+    ) {
+      this.addNotice('info', TEXT.earlierImagesLost);
+    }
     return { ref: { kind: 'new', sessionId }, prefix };
   }
 
@@ -534,6 +623,7 @@ export class TurnRun {
     const request: TurnRequest = {
       cwd: this.input.folder.path,
       prompt: plan.prefix.length > 0 ? `${plan.prefix}\n\n${this.prompt}` : this.prompt,
+      ...(this.input.images ? { images: this.input.images } : {}),
       mode: this.input.mode,
       model: this.input.model,
       session: plan.ref,
@@ -680,7 +770,8 @@ export class TurnRun {
       });
       if (!result.ok) return { text: result.message, isError: true };
       if (meta.planId !== result.plan.id) await this.patchMeta({ planId: result.plan.id });
-      state.mutate(this.runtime, [set(['plan'], result.plan)]);
+      const plan = await this.recordBufferedAnswers(result.plan);
+      state.mutate(this.runtime, [set(['plan'], plan)]);
       if (result.unchanged) {
         return {
           text: `The plan is identical to version ${result.version}, so nothing was saved.`,
@@ -691,20 +782,52 @@ export class TurnRun {
       this.persistMessage();
       return {
         text:
-          `Plan saved as version ${result.version}. The user reviews it in the plan view. ` +
+          `Plan saved as version ${result.version}. The user reviews it in the plan card in the chat. ` +
           'Do not repeat the plan in chat: say in two or three sentences what it covers, or what changed.',
         isError: false,
       };
     });
   }
 
-  /** An answered interactive question is a decision of the conversation's plan, when it has one. */
+  /**
+   * Records the answers buffered before the plan existed, in the order they were answered, and
+   * returns the plan as it is after the last one. A decision that fails is logged and skipped.
+   */
+  private async recordBufferedAnswers(plan: PlanDoc): Promise<PlanDoc> {
+    const buffered = this.earlyAnswers.splice(0);
+    let current = plan;
+    for (const { targetId, values } of buffered) {
+      try {
+        current = await this.services.plans.decide(plan.id, {
+          kind: 'interactive-question',
+          targetId,
+          values,
+        });
+      } catch (error) {
+        this.logger.warn('an answer could not be recorded as a plan decision', {
+          error: redact(String(error)),
+        });
+      }
+    }
+    return current;
+  }
+
+  /**
+   * An answered interactive question is a decision of the conversation's plan, when it has one. In a
+   * Plan turn without a plan yet it waits in a buffer until the plan is saved.
+   */
   private recordQuestionDecisions(prompt: Prompt, answer: PromptAnswer): void {
     if (prompt.kind !== 'question' || answer.kind !== 'question') return;
     this.track(
       this.inPlanQueue(async () => {
         const planId = this.runtime.data.meta.planId;
-        if (planId === undefined) return;
+        if (planId === undefined) {
+          if (this.mode !== 'plan') return;
+          for (const [targetId, values] of Object.entries(answer.answers)) {
+            if (values.length > 0) this.earlyAnswers.push({ targetId, values });
+          }
+          return;
+        }
         const { plans, state } = this.services;
         for (const [targetId, values] of Object.entries(answer.answers)) {
           if (values.length === 0) continue;
@@ -1250,12 +1373,34 @@ export class TurnRun {
   }
 
   private policyContext(signal: AbortSignal | undefined): PolicyContext {
+    const { meta } = this.runtime.data;
+    // Live: read when the policy approves, so an Auto turned off while it awaited something counts.
+    const autoApplies = (): boolean => this.autoApplies();
+    const latched = (): Settings => {
+      this.observeSettings(this.services.deps.env.settings());
+      return {
+        ...this.input.settings,
+        alwaysAskCommands: this.commandsAsk,
+        agentAutoWebTools: !this.webAsks,
+      };
+    };
     return {
       ...(this.projectConfig ? { projectConfig: this.projectConfig } : {}),
-      conversation: this.runtime.data.meta,
+      // A turn without Auto (an Ask or Plan turn, among others) never shows the policy a conversation
+      // with Auto on.
+      conversation:
+        this.input.auto || meta.agentAuto !== true ? meta : { ...meta, agentAuto: false },
       mode: this.input.mode,
       folder: this.input.folder,
-      settings: this.input.settings,
+      // The turn's settings, narrowed at the moment of deciding by every setting that narrows Auto
+      // seen during the turn: one turned to ask more takes effect at once and stays so for the turn;
+      // one loosened waits for the next turn.
+      get settings(): Settings {
+        return latched();
+      },
+      get auto() {
+        return autoApplies();
+      },
       askUser: (prompt) => this.askUser(prompt, signal),
     };
   }
@@ -1320,7 +1465,7 @@ export class TurnRun {
         updated = { ...current, state: next, answered: answer.choice };
         // The user asked for a rule: whether the policy managed to keep it is checked once it has decided.
         if (answer.choice === 'allow-always' && current.alwaysRule !== undefined) {
-          this.alwaysRules.set(current.toolCallId, current.alwaysRule.rule);
+          this.alwaysRules.set(current.toolCallId, current.alwaysRule);
         }
       } else if (current.kind === 'question' && answer.kind === 'question') {
         updated = {
@@ -1362,7 +1507,7 @@ export class TurnRun {
   }
 
   private async patchMeta(patch: MetaPatch): Promise<void> {
-    const next = await this.services.store.updateMeta(this.conversationId, patch);
+    const next = await this.services.updateMeta(this.conversationId, patch);
     this.services.state.mutate(this.runtime, [set(['meta'], next)]);
     this.services.state.refreshSummaries();
   }

@@ -22,6 +22,13 @@ export type PermissionCategory = z.infer<typeof PermissionCategorySchema>;
 export const PermissionChoiceSchema = z.enum(['allow-once', 'allow-always', 'deny']);
 export type PermissionChoice = z.infer<typeof PermissionChoiceSchema>;
 
+/**
+ * What an "allow always" answer saves: the rule for one command or one tool of another tool server,
+ * a directory outside the folder to read and search in, or a web site to fetch from.
+ */
+export const AlwaysRuleKindSchema = z.enum(['command', 'tool', 'read-directory', 'web-site']);
+export type AlwaysRuleKind = z.infer<typeof AlwaysRuleKindSchema>;
+
 export const PromptStateSchema = z.enum(['pending', 'answered', 'expired', 'cancelled']);
 export type PromptState = z.infer<typeof PromptStateSchema>;
 
@@ -48,8 +55,18 @@ export const PermissionPromptSchema = z.object({
   /** Pretty-printed tool input for the collapsible details. May be truncated. */
   inputPreview: z.string(),
   choices: z.array(PermissionChoiceSchema).min(1),
-  /** The rule "allow always" would create, when that choice is offered. */
-  alwaysRule: z.object({ rule: z.string(), runsProjectCode: z.boolean() }).optional(),
+  /**
+   * What "allow always" would save, when that choice is offered. `rule` is the command or tool rule,
+   * the directory, or the site, by `kind`; a prompt without `kind` (stored before it existed) holds a
+   * command or tool rule.
+   */
+  alwaysRule: z
+    .object({
+      kind: AlwaysRuleKindSchema.optional(),
+      rule: z.string(),
+      runsProjectCode: z.boolean(),
+    })
+    .optional(),
   /** The user's choice, once answered. */
   answered: PermissionChoiceSchema.optional(),
 });

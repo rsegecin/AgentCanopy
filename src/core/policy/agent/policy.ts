@@ -11,11 +11,26 @@ import {
   type PolicyDecision,
   type TurnPolicy,
 } from '../../contracts';
-import { decideQuestion, decideRead, deny, isRecord, previewOf } from '../readonly/decide';
+import type { GrantStore, PolicyAccess } from '../grants';
+import { isValidGrant } from '../grants/store';
+import { fetchSite, webCovered } from '../grants/web';
+import {
+  decideQuestion,
+  decideRead,
+  deny,
+  isRecord,
+  previewOf,
+  saveGrant,
+} from '../readonly/decide';
 import { escapeForDisplay } from '../readonly/escape';
 import { sameFolder } from '../readonly/guard';
 import { realFolderPath, checkPath } from '../readonly/targets';
-import { exactCommandRule, runsProjectCode } from './commands';
+import {
+  exactCommandRule,
+  exactPowerShellCommand,
+  runsProjectCode,
+  runsProjectCodePowerShell,
+} from './commands';
 import { isProtectedPath } from './protected';
 import { isValidRule, type RuleStore } from './rules';
 
@@ -28,6 +43,11 @@ const ASK_ALLOW: Choice[] = ['allow-once', 'deny'];
 
 function allow(): Decision {
   return { response: { behavior: 'allow' }, approval: 'user' };
+}
+
+/** Approved by Agent mode's Auto, which the user turned on for the conversation in a native dialog. */
+function allowAuto(): Decision {
+  return { response: { behavior: 'allow' }, approval: 'auto' };
 }
 
 /** What the user answered, and whether they asked for an "always" rule. */
@@ -76,11 +96,30 @@ async function exists(path: string): Promise<boolean> {
 /**
  * The policy of Agent mode. Edits inside the folder go through (and are reviewed afterwards) except
  * protected files; everything with side effects outside the folder, commands, network and external
- * tools ask the user. Nothing is approved silently except what the user chose "always" for.
+ * tools ask the user. Nothing is approved silently except what the user chose "always" for, and,
+ * while Auto applies (`context.auto`, which the user turned on in a native dialog), commands, edits
+ * inside the folder and, by setting, web tools. Auto never covers protected files, anything outside
+ * the folder, MCP tools or any other tool. `context.auto` is live: every Auto approval reads it right
+ * before it returns, never from a value kept across an await.
+ *
+ * With `grants`, the folder's switches and saved permissions (directories, sites, PowerShell
+ * commands) also approve, and `sensitiveRoots` (AgentCanopy's storage directories) always ask. The
+ * grant store is live in the same way: every approval from it reads it right before it returns, after
+ * the last await, never from a value kept across one, so a removal or a switch turned off during a
+ * turn applies to the next request. Without `grants` every decision is the plain one.
  */
-export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }): TurnPolicy {
+export function createAgentPolicy(options: {
+  rules: RuleStore;
+  logger?: Logger;
+  grants?: GrantStore;
+  sensitiveRoots?: () => string[];
+}): TurnPolicy {
   const { rules } = options;
   const logger = options.logger ?? silentLogger;
+  const access: PolicyAccess | undefined =
+    options.grants === undefined
+      ? undefined
+      : { grants: options.grants, sensitiveRoots: options.sensitiveRoots ?? (() => []), logger };
 
   /**
    * True when the rule is in the store for this folder right now. The provider only learns a new
@@ -146,6 +185,8 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
     if (context.settings.editApproval === 'auto') {
       return { response: { behavior: 'allow' }, approval: 'policy' };
     }
+    // Read here, after the path checks were awaited: Auto may have been turned off meanwhile.
+    if (context.auto) return allowAuto();
     const verb = toolName === 'Write' ? ((await exists(target.real)) ? 'Write' : 'Create') : 'Edit';
     const prompt = permissionPrompt(request, {
       category: 'edit',
@@ -162,15 +203,40 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
   ): Promise<Decision> {
     const command = stringInput(request.input, 'command');
     if (command === undefined) return deny(NOT_CHECKED);
+    // A command that asks to leave the sandbox always asks, once: neither a stored rule nor Auto
+    // approves it, and no rule is offered for it.
+    if (request.input['dangerouslyDisableSandbox'] === true) {
+      const prompt = permissionPrompt(request, {
+        category: 'command',
+        title: 'Run a terminal command outside the sandbox',
+        detail: escapeForDisplay(command),
+        choices: ASK_ALLOW,
+      });
+      return (await ask(context, prompt, ASK_ALLOW)).decision;
+    }
     const folder = context.conversation.folder;
     const alwaysAsk = context.settings.alwaysAskCommands;
-    // Only a Bash rule can be built; a PowerShell command always asks.
+    // A Bash rule is the CLI's own; a PowerShell command is saved in the grant store, and only when
+    // there is one. Without it a PowerShell command always asks.
     const rule = request.toolName === 'Bash' && !alwaysAsk ? exactCommandRule(command) : undefined;
+    const exact =
+      access !== undefined && request.toolName === 'PowerShell' && !alwaysAsk
+        ? exactPowerShellCommand(command)
+        : undefined;
 
     if (rule !== undefined && isStored(folder, rule)) return allow();
+    // Read here, with nothing awaited since: a command removed during the turn must ask again.
+    if (exact !== undefined && isPowerShellStored(folder, exact)) return allow();
+    if (context.auto && !alwaysAsk) return allowAuto();
 
+    const powerShell =
+      exact !== undefined && isValidGrant({ kind: 'powershell-command', command: exact })
+        ? exact
+        : undefined;
     const choices: Choice[] =
-      rule !== undefined && isValidRule(rule) ? ['allow-once', 'allow-always', 'deny'] : ASK_ALLOW;
+      (rule !== undefined && isValidRule(rule)) || powerShell !== undefined
+        ? ['allow-once', 'allow-always', 'deny']
+        : ASK_ALLOW;
     const prompt = permissionPrompt(request, {
       category: 'command',
       title: 'Run a terminal command',
@@ -179,10 +245,32 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
       ...(rule !== undefined && choices.includes('allow-always')
         ? { alwaysRule: { rule, runsProjectCode: runsProjectCode(command) } }
         : {}),
+      ...(powerShell !== undefined
+        ? {
+            alwaysRule: {
+              kind: 'command',
+              rule: `PowerShell(${powerShell})`,
+              runsProjectCode: runsProjectCodePowerShell(powerShell),
+            },
+          }
+        : {}),
     });
     const { decision, always } = await ask(context, prompt, choices);
     if (always && rule !== undefined) await saveRule(folder, rule);
+    if (always && powerShell !== undefined && access !== undefined) {
+      await saveGrant(access, folder, { kind: 'powershell-command', command: powerShell });
+    }
     return decision;
+  }
+
+  /** True when the PowerShell command is saved for this folder right now. */
+  function isPowerShellStored(folder: FolderKey, command: string): boolean {
+    return (
+      access?.grants
+        .get(folder)
+        .grants.some((grant) => grant.kind === 'powershell-command' && grant.command === command) ??
+      false
+    );
   }
 
   /** Saves a rule the user chose. A failure is logged; the call they approved still goes ahead. */
@@ -200,13 +288,30 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
     const fetchTool = request.toolName === 'WebFetch';
     const value = stringInput(request.input, fetchTool ? 'url' : 'query');
     if (value === undefined) return deny(NOT_CHECKED);
+    const folder = context.conversation.folder;
+    const site = access !== undefined && fetchTool ? fetchSite(value) : undefined;
+    // Read here, with nothing awaited since: a switch turned off or a site removed during the turn
+    // must ask again. Saved permissions come before Auto, so they are labelled as the user's.
+    if (access !== undefined && webCovered(access.grants.get(folder), fetchTool, site)) {
+      return allow();
+    }
+    if (context.auto && context.settings.agentAutoWebTools) return allowAuto();
+    const choices: Choice[] =
+      site === undefined ? ASK_ALLOW : ['allow-once', 'allow-always', 'deny'];
     const prompt = permissionPrompt(request, {
       category: 'network',
       title: fetchTool ? 'Fetch a web page' : 'Search the web',
       detail: escapeForDisplay(value),
-      choices: ASK_ALLOW,
+      choices,
+      ...(site !== undefined
+        ? { alwaysRule: { kind: 'web-site', rule: site, runsProjectCode: false } }
+        : {}),
     });
-    return (await ask(context, prompt, ASK_ALLOW)).decision;
+    const { decision, always } = await ask(context, prompt, choices);
+    if (always && site !== undefined && access !== undefined) {
+      await saveGrant(access, folder, { kind: 'web-site', host: site });
+    }
+    return decision;
   }
 
   async function decideMcp(request: PermissionRequest, context: PolicyContext): Promise<Decision> {
@@ -255,6 +360,9 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
         allowRules: settings.alwaysAskCommands ? [] : rules.list(conversation.folder),
         alwaysAskCommands: settings.alwaysAskCommands,
         sandbox: settings.sandbox,
+        // A turn that starts with Auto may not leave the sandbox, so a command approved without a
+        // prompt always ran inside it.
+        sandboxLocked: settings.sandbox && settings.agentAuto && conversation.agentAuto === true,
       };
     },
 
@@ -281,7 +389,7 @@ export function createAgentPolicy(options: { rules: RuleStore; logger?: Logger }
           case 'Read':
           case 'Grep':
           case 'Glob':
-            return await decideRead(request, context);
+            return await decideRead(request, context, access);
           case 'WebFetch':
           case 'WebSearch':
             return await decideWeb(request, context);

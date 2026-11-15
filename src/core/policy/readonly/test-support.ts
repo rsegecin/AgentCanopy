@@ -11,9 +11,48 @@ import type {
   Settings,
 } from '../../../shared';
 import { DEFAULT_SETTINGS } from '../../../shared';
-import type { NewPrompt, PolicyContext } from '../../contracts';
+import type { Logger, NewPrompt, PolicyContext } from '../../contracts';
+import { createGrantStore, type GrantStore } from '../grants';
 
 /** Test support for this package. Not exported from the package. */
+
+/** A grant store on a directory that is created now (the caller removes it). */
+export async function openGrantStore(dir: string, logger?: Logger): Promise<GrantStore> {
+  const store = createGrantStore(logger ? { dir, logger } : { dir });
+  await store.init();
+  return store;
+}
+
+/** A logger that keeps its warnings. */
+export function recordingLogger(): { logger: Logger; warnings: string[] } {
+  const warnings: string[] = [];
+  return {
+    warnings,
+    logger: {
+      debug: () => undefined,
+      info: () => undefined,
+      warn: (message) => void warnings.push(message),
+      error: () => undefined,
+    },
+  };
+}
+
+/**
+ * Makes `os.homedir()` answer with this directory until the returned function is called. The
+ * temporary directories of the tests lie under the real home directory (and, on Windows, under
+ * `AppData`, which is sensitive), so a test of what is sensitive needs a home of its own.
+ */
+export function useHome(home: string): () => void {
+  const saved = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] };
+  process.env['HOME'] = home;
+  process.env['USERPROFILE'] = home;
+  return () => {
+    for (const [name, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  };
+}
 
 export async function makeTempDir(prefix: string): Promise<string> {
   // realpath, so that /var -> /private/var on macOS does not confuse comparisons.
@@ -75,13 +114,21 @@ export function makeContext(options: {
   conversationId?: string;
   mode?: Mode;
   planLocked?: boolean;
+  /** Agent mode's Auto applies to the decision. Default false. */
+  auto?: boolean;
+  /** Fields of the conversation meta to override. */
+  conversation?: Partial<ConversationMeta>;
 }): FakeAsk {
   const prompts: NewPrompt[] = [];
   const context: PolicyContext = {
-    conversation: meta(options.conversationId, options.mode, options.planLocked),
+    conversation: {
+      ...meta(options.conversationId, options.mode, options.planLocked),
+      ...options.conversation,
+    },
     mode: options.mode ?? 'ask',
     folder: { key: 'folder-1' as FolderKey, name: 'folder', path: options.folderPath },
     settings: { ...DEFAULT_SETTINGS, ...options.settings },
+    auto: options.auto ?? false,
     askUser(prompt) {
       prompts.push(prompt);
       return Promise.resolve(options.answer);

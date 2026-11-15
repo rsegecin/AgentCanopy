@@ -1,14 +1,17 @@
-import { useEffect, useId, useLayoutEffect, useRef } from 'react';
-import type { KeyboardEvent } from 'react';
-import { MODES } from '../../../shared';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
+import type { ClipboardEvent, KeyboardEvent } from 'react';
+import { ImageMediaTypeSchema, MAX_IMAGE_BYTES, MODES } from '../../../shared';
 import type { Mode, ProviderStatus } from '../../../shared';
 import { Icon, IconButton } from '../../app/components';
 import { useApp, usePost } from '../../app/context';
 import { useFocusRecovery } from '../../app/focus';
 import { useViewState } from '../../app/store';
+import { isTurnRunning } from '../../app/turns';
 import { NEW_CONVERSATION_KEY, useUi } from '../../app/ui-state';
 import { LOCK_HINT } from '../plan/lock-hint';
+import { chooseConversationMode } from './mode-choice';
 import { AttachmentChip } from './AttachmentChip';
+import { pastedImage, toBase64 } from './paste-image';
 import { ReferencePicker, useReferencePicker } from './reference-picker';
 
 const MODE_INFO: Record<Mode, { label: string; description: string }> = {
@@ -18,6 +21,15 @@ const MODE_INFO: Record<Mode, { label: string; description: string }> = {
 };
 
 const MAX_DRAFT = 200_000;
+
+const CONFIG_BLOCK_HINT =
+  'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
+const QUEUED_HINT = 'A message is already queued. Edit or remove it first.';
+const ASIDE_RUNNING_HINT = 'A side question is already running. Wait for it or stop it.';
+const ASIDE_OF_ASIDE_HINT = 'Wait for the answer or stop it.';
+const LOCK_RUNNING_HINT = 'The lock can be changed when the turn ends.';
+const AUTO_RUNNING_HINT = 'Auto can be turned on when the turn ends.';
+const ASIDE_NOTE = 'Asked as a side question: the agent keeps working and does not see it.';
 
 interface Blocker {
   message: string;
@@ -79,33 +91,90 @@ export function Composer() {
   const attachments = useViewState((s) => s.draftAttachments);
   const hasPlan = useViewState((s) => s.active?.plan != null);
   const hasPendingPrompt = useViewState(
-    (s) => s.active?.prompts.some((p) => p.state === 'pending') ?? false,
+    (s) =>
+      s.active !== null &&
+      (s.active.prompts.some((p) => p.state === 'pending') ||
+        s.active.asides.some((a) => a.prompts.some((p) => p.state === 'pending'))),
   );
   const turns = useViewState((s) => s.active?.turns);
+  const configPending = useViewState((s) => s.review.configChanges.length > 0);
+  const hasQueued = useViewState((s) => s.active?.queued != null);
+  const autoOffered = useViewState((s) => s.agentAuto.offered);
+  const autoCommands = useViewState((s) => s.agentAuto.commands);
+  const draftAuto = useViewState((s) => s.draftAgentAuto);
+  const asideRunning = useViewState(
+    (s) =>
+      s.active?.asides.some((a) => a.status === 'running' || a.status === 'preparing') ?? false,
+  );
 
   const conversationId = meta?.id;
   const draftKey = conversationId ?? NEW_CONVERSATION_KEY;
   const draft = useUi((s) => s.drafts[draftKey] ?? '');
   const newMode = useUi((s) => s.newMode);
   const newModel = useUi((s) => s.newModel);
+  const modeOverride = useUi((s) =>
+    conversationId !== undefined ? s.sendMode[conversationId] : undefined,
+  );
 
-  const lastTurn = turns?.[turns.length - 1];
-  const running = lastTurn?.status === 'running' || lastTurn?.status === 'preparing';
+  const running = isTurnRunning(turns);
   const blocker = findBlocker(trusted, folderCount, provider);
 
-  const mode: Mode = meta?.mode ?? newMode ?? defaults.mode;
+  // The one mode the composer shows and sends in. In an open conversation it is the user's choice made
+  // while a turn ran (the host refuses to change the conversation's mode then), else the conversation's.
+  const mode: Mode = meta !== undefined ? (modeOverride ?? meta.mode) : (newMode ?? defaults.mode);
+  const storedMode = meta?.mode;
+  // The host sets the conversation's mode when a turn of that mode starts: the choice has arrived.
+  useEffect(() => {
+    if (conversationId !== undefined && modeOverride !== undefined && modeOverride === storedMode) {
+      ui.clearSendMode(conversationId);
+    }
+  }, [ui, conversationId, modeOverride, storedMode]);
   const model = meta?.model ?? newModel ?? defaults.model;
   const modelOptions = models.some((m) => m.id === model)
     ? models
     : [...models, { id: model, label: model, custom: true }];
 
+  // Only sending in Agent mode waits for the decision: typing, attaching and switching mode do not.
+  const configBlocked = configPending && mode === 'agent';
+  // Never post a send the host will refuse for a reason the view state shows: the draft would be
+  // cleared for a message that does not go. The host queues one Agent or Plan message per
+  // conversation, answers an Ask send while a turn runs as a side question (one at a time, and not
+  // from a side question), and accepts an ordinary send when no turn runs (a message held after Stop
+  // stays queued behind that new turn).
+  const queuedBlocked = hasQueued && running && mode !== 'ask';
+  const askWhileRunning = running && mode === 'ask';
+  const asideOfAside = askWhileRunning && meta?.aside !== undefined;
+  const asideBlocked = askWhileRunning && asideRunning;
+  // One hint at a time, the most basic reason first.
+  const hint: 'config' | 'queued' | 'aside-of-aside' | 'aside-running' | null =
+    blocker !== null
+      ? null
+      : configBlocked
+        ? 'config'
+        : queuedBlocked
+          ? 'queued'
+          : asideOfAside
+            ? 'aside-of-aside'
+            : asideBlocked
+              ? 'aside-running'
+              : null;
+  // Sending in Ask mode while a turn runs is allowed: say what will happen to the question.
+  const asideNote = blocker === null && hint === null && askWhileRunning;
+  const sendBlocked = blocker !== null || hint !== null;
   const textarea = useRef<HTMLTextAreaElement>(null);
   const form = useRef<HTMLFormElement>(null);
-  // Send turns into Stop (and back) while the focused button is replaced: keep focus in the composer.
+  // Stop appears next to Send while a turn runs and goes away when it ends, and Send is disabled once
+  // its draft is sent: keep focus in the composer when the focused button goes.
   useFocusRecovery(form, { fallback: 'textarea' });
   const stopButton = useRef<HTMLButtonElement>(null);
   const radioName = useId();
   const noticeId = useId();
+  const configHintId = useId();
+  const queuedHintId = useId();
+  const asideHintId = useId();
+  const asideNoteId = useId();
+  const lockReasonId = useId();
+  const autoReasonId = useId();
 
   const picker = useReferencePicker({
     draft,
@@ -128,15 +197,43 @@ export function Composer() {
     return store.onEvent((event) => {
       if (event.kind === 'focus-composer') textarea.current?.focus();
       else if (event.kind === 'prefill-composer') {
-        ui.setDraft(draftKey, event.text);
+        // The App writes the draft, from the conversation that is current when the event arrives.
         textarea.current?.focus();
       }
     });
-  }, [store, ui, draftKey]);
+  }, [store]);
+
+  // Images being read from a paste. Send waits for them, so the message does not leave without its image.
+  const [pendingPastes, setPendingPastes] = useState(0);
+  const [pasteProblem, setPasteProblem] = useState<string | null>(null);
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const file = pastedImage(event.clipboardData);
+    const mediaType = ImageMediaTypeSchema.safeParse(file?.type);
+    if (!file || !mediaType.success) return;
+    event.preventDefault();
+    if (file.size > MAX_IMAGE_BYTES) {
+      setPasteProblem('The image is larger than 5 MB.');
+      return;
+    }
+    setPendingPastes((n) => n + 1);
+    void (async () => {
+      try {
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        post({ type: 'context.pasteImage', mediaType: mediaType.data, data: toBase64(bytes) });
+        setPasteProblem(null);
+      } catch {
+        setPasteProblem('The image could not be read.');
+      } finally {
+        setPendingPastes((n) => n - 1);
+      }
+    })();
+  };
 
   const send = () => {
     const text = draft.trim();
-    if (blocker !== null || running || text === '') return;
+    if (sendBlocked || text === '' || pendingPastes > 0) return;
+    setPasteProblem(null);
     post({
       type: 'turn.send',
       ...(conversationId !== undefined ? { conversationId } : {}),
@@ -159,9 +256,11 @@ export function Composer() {
   };
 
   const changeMode = (next: Mode) => {
-    if (conversationId !== undefined) {
-      post({ type: 'conversation.setMode', conversationId, mode: next });
-    } else ui.setNewMode(next);
+    if (conversationId === undefined) {
+      ui.setNewMode(next);
+    } else if (meta !== undefined) {
+      chooseConversationMode(ui, post, meta.id, meta.mode, running, next);
+    }
   };
 
   const changeModel = (next: string) => {
@@ -180,8 +279,52 @@ export function Composer() {
         ? 'The plan is attached read-only.'
         : null;
 
+  // Auto: the open conversation's flag (on only when exactly true), or this view's draft flag when no
+  // conversation is open. The switch moves only when the host's state does: the host opens a native
+  // dialog for ON and the user may decline. Turning it on while a turn runs is impossible on the host.
+  const autoOn = meta !== undefined ? meta.agentAuto === true : draftAuto;
+  const showAuto = autoOffered && (mode === 'agent' || autoOn);
+  // Only ON is blocked; OFF is always possible, also while a turn runs.
+  const autoDisabled = !autoOn && (running || blocker !== null);
+  const autoDescribedBy = autoDisabled
+    ? [running ? autoReasonId : null, blocker !== null ? noticeId : null]
+        .filter((id) => id !== null)
+        .join(' ')
+    : undefined;
+  const autoHint = !autoOn
+    ? null
+    : mode !== 'agent'
+      ? "Auto is on for this conversation's Agent turns."
+      : autoCommands
+        ? 'Auto is on: commands and edits in this folder run without asking.'
+        : 'Auto is on: edits in this folder run without asking. Commands still ask.';
+  // With Auto on, the Agent description must not say "with your approval": it would contradict the hint.
+  const modeDescription = (value: Mode): string =>
+    value === 'agent' && autoOn
+      ? autoCommands
+        ? 'Can edit files and run commands. Protected files and anything outside the folder still ask.'
+        : 'Can edit files. Commands, protected files and anything outside the folder still ask.'
+      : MODE_INFO[value].description;
+
+  const textareaDescription =
+    blocker !== null
+      ? noticeId
+      : hint === 'config'
+        ? configHintId
+        : hint === 'queued'
+          ? queuedHintId
+          : hint === 'aside-of-aside' || hint === 'aside-running'
+            ? asideHintId
+            : asideNote
+              ? asideNoteId
+              : undefined;
   const contextTarget = conversationId !== undefined ? { conversationId } : {};
   const contextDisabled = blocker !== null;
+
+  const imageWithoutText =
+    draft.trim() === '' && attachments.some((attachment) => attachment.kind === 'image');
+  const attachmentStatus =
+    pasteProblem ?? (imageWithoutText ? 'Add a message to send with the image.' : null);
 
   return (
     <form
@@ -222,6 +365,40 @@ export function Composer() {
           </div>
         )}
 
+        {hint === 'config' && (
+          <p className="composer-note composer-note--warning">
+            <Icon name="warning" />
+            <span id={configHintId} role="status">
+              {CONFIG_BLOCK_HINT}
+            </span>
+          </p>
+        )}
+
+        {hint === 'queued' && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span id={queuedHintId} role="status">
+              {QUEUED_HINT}
+            </span>
+          </p>
+        )}
+
+        {(hint === 'aside-of-aside' || hint === 'aside-running') && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span id={asideHintId} role="status">
+              {hint === 'aside-of-aside' ? ASIDE_OF_ASIDE_HINT : ASIDE_RUNNING_HINT}
+            </span>
+          </p>
+        )}
+
+        {asideNote && (
+          <p className="composer-note">
+            <Icon name="comment" />
+            <span id={asideNoteId}>{ASIDE_NOTE}</span>
+          </p>
+        )}
+
         {hasPendingPrompt && (
           <p className="composer-note">
             <Icon name="comment-discussion" />
@@ -229,11 +406,22 @@ export function Composer() {
           </p>
         )}
 
+        {attachmentStatus !== null && (
+          <p className="composer-note">
+            <Icon name="info" />
+            <span role="status">{attachmentStatus}</span>
+          </p>
+        )}
+
         {attachments.length > 0 && (
           <ul className="chips" aria-label="Attached context">
             {attachments.map((attachment, index) => (
               <AttachmentChip
-                key={`${attachment.kind}:${attachment.path}:${String(index)}`}
+                key={
+                  attachment.kind === 'image'
+                    ? `image:${attachment.id}:${String(index)}`
+                    : `${attachment.kind}:${attachment.path}:${String(index)}`
+                }
                 attachment={attachment}
                 onRemove={() => {
                   post({ type: 'context.remove', ...contextTarget, attachment });
@@ -250,7 +438,7 @@ export function Composer() {
             className="composer-input"
             rows={2}
             aria-label="Message"
-            aria-describedby={blocker !== null ? noticeId : undefined}
+            aria-describedby={textareaDescription}
             {...picker.inputProps}
             placeholder={running ? 'The agent is working. Type your next message…' : 'Message'}
             maxLength={MAX_DRAFT}
@@ -261,6 +449,7 @@ export function Composer() {
               picker.onTextChange(event.target.value, event.target.selectionStart);
             }}
             onKeyDown={onKeyDown}
+            onPaste={onPaste}
             onKeyUp={(event) => {
               picker.onCaretMove(event.currentTarget.selectionStart);
             }}
@@ -298,12 +487,35 @@ export function Composer() {
               className={`button button--secondary plan-lock${planLocked ? ' plan-lock--on' : ''}`}
               aria-pressed={planLocked}
               title={LOCK_HINT}
+              disabled={running}
+              aria-describedby={running ? lockReasonId : undefined}
               onClick={() => {
+                if (running) return;
                 post({ type: 'plan.setLocked', conversationId, locked: !planLocked });
               }}
             >
               <Icon name={planLocked ? 'lock' : 'unlock'} />
               <span>Lock plan</span>
+            </button>
+          )}
+          {showAuto && (
+            <button
+              type="button"
+              className={`button button--secondary auto-switch${autoOn ? ' auto-switch--on' : ''}`}
+              aria-pressed={autoOn}
+              disabled={autoDisabled}
+              aria-describedby={autoDescribedBy}
+              onClick={() => {
+                if (autoDisabled) return;
+                post({
+                  type: 'conversation.setAuto',
+                  ...(conversationId !== undefined ? { conversationId } : {}),
+                  on: !autoOn,
+                });
+              }}
+            >
+              <Icon name={autoOn ? 'pass-filled' : 'circle-large-outline'} />
+              <span>Auto</span>
             </button>
           )}
           {MODES.map((value) => (
@@ -313,12 +525,24 @@ export function Composer() {
               className="mode-description"
               hidden={mode !== value}
             >
-              {MODE_INFO[value].description}
+              {modeDescription(value)}
             </span>
           ))}
         </div>
 
         {hasPlan && planHint !== null && <p className="composer-hint muted">{planHint}</p>}
+        {hasPlan && mode === 'plan' && conversationId !== undefined && running && (
+          <p id={lockReasonId} className="composer-hint muted">
+            {LOCK_RUNNING_HINT}
+          </p>
+        )}
+
+        {showAuto && autoHint !== null && <p className="composer-hint muted">{autoHint}</p>}
+        {showAuto && !autoOn && running && (
+          <p id={autoReasonId} className="composer-hint muted">
+            {AUTO_RUNNING_HINT}
+          </p>
+        )}
 
         <div className="composer-bar">
           <label className="select-label">
@@ -376,29 +600,30 @@ export function Composer() {
             />
           </div>
 
-          {running && conversationId !== undefined ? (
-            <button
-              ref={stopButton}
-              type="button"
-              className="button button--stop"
-              onClick={() => {
-                post({ type: 'turn.cancel', conversationId });
-              }}
-            >
-              <Icon name="debug-stop" />
-              <span>Stop</span>
-            </button>
-          ) : (
+          <div className="composer-actions">
+            {running && conversationId !== undefined && (
+              <button
+                ref={stopButton}
+                type="button"
+                className="button button--stop"
+                onClick={() => {
+                  post({ type: 'turn.cancel', conversationId });
+                }}
+              >
+                <Icon name="debug-stop" />
+                <span>Stop</span>
+              </button>
+            )}
             <button
               type="submit"
               className="button"
-              disabled={blocker !== null || draft.trim() === ''}
-              aria-describedby={blocker !== null ? noticeId : undefined}
+              disabled={sendBlocked || draft.trim() === '' || pendingPastes > 0}
+              aria-describedby={textareaDescription}
             >
               <Icon name="send" />
               <span>Send</span>
             </button>
-          )}
+          </div>
         </div>
       </div>
     </form>

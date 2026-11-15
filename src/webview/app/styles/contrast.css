@@ -15,12 +15,15 @@ body.vscode-high-contrast
     .code-block,
     .tool-card,
     .prompt-card,
-    .plan-section,
+    .aside-card,
+    .plan-card,
     .review-entry,
+    .changes-dock,
+    .queued-message,
     .checkpoint-row,
     .restore-item,
+    .permissions-row,
     .plan-option,
-    .plan-update,
     .branch-header,
     .branch-toggle,
     .notice,
@@ -48,12 +51,15 @@ body.vscode-high-contrast-light
     .code-block,
     .tool-card,
     .prompt-card,
-    .plan-section,
+    .aside-card,
+    .plan-card,
     .review-entry,
+    .changes-dock,
+    .queued-message,
     .checkpoint-row,
     .restore-item,
+    .permissions-row,
     .plan-option,
-    .plan-update,
     .branch-header,
     .branch-toggle,
     .notice,
@@ -79,8 +85,9 @@ body.vscode-high-contrast-light
 }
 
 /* Buttons, tabs and toolbar icons: an outline, so a flat button is still a button. */
-body.vscode-high-contrast :is(.button, .icon-button, .tab, .plan-section-toggle),
-body.vscode-high-contrast-light :is(.button, .icon-button, .tab, .plan-section-toggle) {
+body.vscode-high-contrast :is(.button, .icon-button, .tab, .plan-section-toggle, .plan-card-open),
+body.vscode-high-contrast-light
+  :is(.button, .icon-button, .tab, .plan-section-toggle, .plan-card-open) {
   border: 1px solid var(--ac-contrast-border);
 }
 
@@ -91,6 +98,8 @@ body.vscode-high-contrast
     .plan-option--chosen,
     .prompt-card--needs-answer,
     .plan-lock--on,
+    .auto-switch--on,
+    .permissions-switch--on,
     .segmented-option:has(input:checked),
     .reference-option--active,
     .tab[aria-selected='true']
@@ -101,6 +110,8 @@ body.vscode-high-contrast-light
     .plan-option--chosen,
     .prompt-card--needs-answer,
     .plan-lock--on,
+    .auto-switch--on,
+    .permissions-switch--on,
     .segmented-option:has(input:checked),
     .reference-option--active,
     .tab[aria-selected='true']

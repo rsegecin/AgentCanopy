@@ -1,6 +1,7 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useContext, useEffect, useId, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import type {
+  AlwaysRuleKind,
   PermissionChoice,
   PermissionPrompt,
   Prompt,
@@ -16,6 +17,7 @@ import type { QuestionDraft } from '../../app/ui-state';
 import { CommandLinesWarning, CommandText } from './CommandText';
 import { commandLines } from './command-lines';
 import { PromptPlaceholder } from './parts';
+import { PromptScope } from './prompt-scope';
 import type { PartRendererProps } from './registry';
 
 const MAX_ANSWER = 4000;
@@ -25,14 +27,18 @@ const NO_DRAFT: QuestionDraft = { labels: [], other: '', otherOn: false };
 function PromptShell({
   prompt,
   label,
+  plan = false,
   children,
 }: {
   prompt: Prompt;
   label: string;
+  /** The card belongs to a Plan-mode turn and is presented as "Plan options". */
+  plan?: boolean;
   children: ReactNode;
 }) {
+  const scope = useContext(PromptScope);
   const first = useViewState(
-    (s) => s.active?.prompts.find((p) => p.state === 'pending')?.id === prompt.id,
+    (s) => (scope ?? s.active?.prompts)?.find((p) => p.state === 'pending')?.id === prompt.id,
   );
   const needsAnswer = first && prompt.state === 'pending';
   const root = useRef<HTMLDivElement>(null);
@@ -50,13 +56,19 @@ function PromptShell({
       role="group"
       tabIndex={-1}
       aria-label={label}
-      className={`prompt-card prompt-card--${prompt.state}${needsAnswer ? ' prompt-card--needs-answer' : ''}`}
+      className={`prompt-card prompt-card--${prompt.state}${needsAnswer ? ' prompt-card--needs-answer' : ''}${plan ? ' prompt-card--plan' : ''}`}
     >
       {needsAnswer && (
         <div className="prompt-marker">
           <Icon name="bell" />
           <span>Needs your answer</span>
         </div>
+      )}
+      {plan && (
+        <p className="plan-label-line">
+          <Icon name="checklist" />
+          <span>Plan options</span>
+        </p>
       )}
       {children}
     </div>
@@ -178,17 +190,21 @@ function QuestionBlock({
   );
 }
 
-function cardLabel(prompt: QuestionPrompt): string {
+function cardLabel(prompt: QuestionPrompt, plan: boolean): string {
   const first = prompt.questions[0]?.question ?? '';
   const more =
     prompt.questions.length > 1 ? ` (and ${String(prompt.questions.length - 1)} more)` : '';
-  return `Question from the agent: ${first}${more}`;
+  return `${plan ? 'Plan options' : 'Question from the agent'}: ${first}${more}`;
 }
 
 function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
   const { ui } = useApp();
   const post = usePost();
   const drafts = useUi((s) => s.questions[prompt.id]);
+  // The agent asks its choices during a Plan turn: those cards are the "Plan options".
+  const plan = useViewState(
+    (s) => s.active?.turns.find((t) => t.id === prompt.turnId)?.mode === 'plan',
+  );
   const idPrefix = useId();
   const hintId = useId();
   // The form stays locked after posting until the prompt changes in the state.
@@ -216,9 +232,9 @@ function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
 
   if (prompt.state !== 'pending') {
     return (
-      <PromptShell prompt={prompt} label={cardLabel(prompt)}>
+      <PromptShell prompt={prompt} label={cardLabel(prompt, plan)} plan={plan}>
         {prompt.state === 'answered' ? (
-          <dl className="prompt-answers">
+          <dl className={`prompt-answers${plan ? ' plan-decision-record' : ''}`}>
             {prompt.questions.map((q) => (
               <div key={q.question} className="prompt-answer">
                 <dt>{q.question}</dt>
@@ -241,7 +257,7 @@ function QuestionCard({ prompt }: { prompt: QuestionPrompt }) {
   }
 
   return (
-    <PromptShell prompt={prompt} label={cardLabel(prompt)}>
+    <PromptShell prompt={prompt} label={cardLabel(prompt, plan)} plan={plan}>
       <form
         onSubmit={(event) => {
           event.preventDefault();
@@ -294,6 +310,18 @@ const ANSWERED_TEXT: Record<PermissionChoice, string> = {
   'allow-always': 'You always allow this',
   deny: 'You denied this',
 };
+
+/** What "Always allow" would do, in words, by the kind of rule. A command or tool rule is a rule in the CLI's syntax. */
+function alwaysRuleLead(kind: AlwaysRuleKind | undefined): string {
+  switch (kind) {
+    case 'read-directory':
+      return 'Always allow would allow reads and searches in this folder and below:';
+    case 'web-site':
+      return 'Always allow would allow fetching any address on:';
+    default:
+      return 'Always allow would add the rule:';
+  }
+}
 
 function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
   const post = usePost();
@@ -412,7 +440,7 @@ function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
       {prompt.alwaysRule && (
         <div className="prompt-rule">
           <p>
-            Always allow would add the rule: <code>{prompt.alwaysRule.rule}</code>
+            {alwaysRuleLead(prompt.alwaysRule.kind)} <code>{prompt.alwaysRule.rule}</code>
           </p>
           {prompt.alwaysRule.runsProjectCode && (
             <p className="prompt-warning">
@@ -431,7 +459,11 @@ function PermissionCard({ prompt }: { prompt: PermissionPrompt }) {
 
 /** The card for a `prompt` message part: a question form or a permission request. */
 export function PromptPart(props: PartRendererProps<'prompt'>) {
-  const prompt = useViewState((s) => s.active?.prompts.find((p) => p.id === props.part.promptId));
+  const scope = useContext(PromptScope);
+  const fromActive = useViewState((s) =>
+    scope === null ? s.active?.prompts.find((p) => p.id === props.part.promptId) : undefined,
+  );
+  const prompt = scope === null ? fromActive : scope.find((p) => p.id === props.part.promptId);
   if (!prompt) return <PromptPlaceholder {...props} />;
   return prompt.kind === 'question' ? (
     <QuestionCard prompt={prompt} />

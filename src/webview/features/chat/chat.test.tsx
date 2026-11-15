@@ -1,14 +1,17 @@
 // @vitest-environment jsdom
 import { act, fireEvent, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MessagePart, ToolCallView } from '../../../shared';
 import {
   assistantMessage,
   convId,
   makeActive,
+  makePlanDoc,
+  makePlanVersion,
   makeState,
   makeTurn,
   msgId,
+  turnId,
   userMessage,
 } from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
@@ -46,7 +49,7 @@ describe('MessageList', () => {
     expect(screen.getByText(/Ask a question, plan a change/)).toBeTruthy();
   });
 
-  it('renders a user message with line breaks preserved, a mode badge and attachment chips', () => {
+  it('renders a user message with line breaks preserved, a Plan request label and attachment chips', () => {
     renderWithHost(
       <MessageList />,
       makeState({
@@ -59,6 +62,7 @@ describe('MessageList', () => {
                 { kind: 'folder', path: 'src' },
                 { kind: 'selection', path: 'src/b.ts', startLine: 3, endLine: 9, text: 'x' },
                 { kind: 'diagnostics', path: 'src/c.ts', text: 'err' },
+                { kind: 'image', id: 'd'.repeat(64), mediaType: 'image/png', bytes: 123456 },
               ],
             }),
           ],
@@ -68,11 +72,28 @@ describe('MessageList', () => {
     const article = screen.getByRole('article', { name: 'You' });
     const text = article.querySelector('.user-text');
     expect(text?.textContent).toBe('line one\nline two');
-    expect(within(article).getByText('Plan')).toBeTruthy();
+    expect(within(article).getByText('Plan request')).toBeTruthy();
+    expect(within(article).queryByText('Plan')).toBeNull();
     expect(within(article).getByText('a.ts')).toBeTruthy();
     expect(within(article).getByText('src')).toBeTruthy();
     expect(within(article).getByText('b.ts:3-9')).toBeTruthy();
     expect(within(article).getByText('Problems in c.ts')).toBeTruthy();
+    expect(within(article).getByText('Image dddddd · PNG · 121 KB')).toBeTruthy();
+  });
+
+  it('shows the mode as a badge on a user message that is not a plan request', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        active: makeActive('c1', {
+          messages: [userMessage('u1', 'what?'), userMessage('u2', 'do it', { mode: 'agent' })],
+        }),
+      }),
+    );
+    const [ask, agent] = screen.getAllByRole('article', { name: 'You' });
+    expect(within(ask as HTMLElement).getByText('Ask')).toBeTruthy();
+    expect(within(agent as HTMLElement).getByText('Agent')).toBeTruthy();
+    expect(screen.queryByText('Plan request')).toBeNull();
   });
 
   it('renders every part kind', () => {
@@ -290,6 +311,82 @@ describe('MessageList', () => {
       expect(screen.queryByRole('button', { name: /Jump to latest/ })).toBeNull();
     });
 
+    describe('when the log is resized', () => {
+      let observers: { callback: () => void; target: Element | null; disconnected: boolean }[];
+      beforeEach(() => {
+        observers = [];
+        vi.stubGlobal(
+          'ResizeObserver',
+          class {
+            private readonly entry: (typeof observers)[number];
+            constructor(callback: () => void) {
+              this.entry = { callback, target: null, disconnected: false };
+              observers.push(this.entry);
+            }
+            observe(target: Element) {
+              this.entry.target = target;
+            }
+            unobserve() {}
+            disconnect() {
+              this.entry.disconnected = true;
+            }
+          },
+        );
+      });
+      afterEach(() => {
+        vi.unstubAllGlobals();
+      });
+      const resize = (log: HTMLElement) => {
+        act(() => {
+          for (const o of observers) if (o.target === log && !o.disconnected) o.callback();
+        });
+      };
+
+      it('stays at the bottom when the changes card appears, grows or collapses', () => {
+        renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
+        const log = screen.getByRole('log');
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 400 });
+        log.scrollTop = 600;
+        fireEvent.scroll(log);
+        // The card appears: the log gets shorter, the content keeps its height.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 200 });
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+        // The card grows.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 120 });
+        log.scrollTop = 880;
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+        // The card collapses: the log gets taller than before.
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 500 });
+        log.scrollTop = 400;
+        resize(log);
+        expect(log.scrollTop).toBe(1000);
+      });
+
+      it('does not move a log the user scrolled up', () => {
+        renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
+        const log = screen.getByRole('log');
+        setGeometry(log, { scrollHeight: 2000, clientHeight: 400 });
+        log.scrollTop = 100;
+        fireEvent.scroll(log);
+        setGeometry(log, { scrollHeight: 2000, clientHeight: 200 });
+        resize(log);
+        expect(log.scrollTop).toBe(100);
+        expect(screen.getByRole('button', { name: /Jump to latest/ })).toBeTruthy();
+      });
+
+      it('stops observing when the log goes away', () => {
+        const { unmount } = renderWithHost(
+          <MessageList />,
+          stateWith([{ kind: 'text', text: 'a' }]),
+        );
+        expect(observers.some((o) => o.target !== null && !o.disconnected)).toBe(true);
+        unmount();
+        expect(observers.every((o) => o.disconnected)).toBe(true);
+      });
+    });
+
     it('scrolls to a message the user just sent even when they were scrolled up', () => {
       const { host } = renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
       const log = screen.getByRole('log');
@@ -356,6 +453,7 @@ describe('ToolCard', () => {
   it.each([
     ['user', 'Approved by you'],
     ['policy', 'Allowed by AgentCanopy'],
+    ['auto', 'Auto-approved'],
     ['provider', 'Allowed by Claude Code'],
     ['unverified', 'Not verified by AgentCanopy'],
   ] as const)('labels the %s approval source', (approval, label) => {
@@ -405,5 +503,54 @@ describe('summarizeToolInput', () => {
     expect(summarizeToolInput('x'.repeat(500)).length).toBeLessThanOrEqual(120);
     expect(summarizeToolInput(undefined)).toBe('');
     expect(summarizeToolInput({})).toBe('');
+  });
+});
+
+describe('the Auto badge on user messages', () => {
+  const article = () => screen.getByRole('article', { name: 'You' });
+  const stateOf = (message: ReturnType<typeof userMessage>) =>
+    makeState({ active: makeActive('c1', { messages: [message] }) });
+
+  it('says "Agent · Auto" for an Agent message sent with Auto', () => {
+    renderWithHost(
+      <MessageList />,
+      stateOf(userMessage('u1', 'go', { mode: 'agent', auto: true })),
+    );
+    expect(within(article()).getByText('Agent · Auto')).toBeTruthy();
+    expect(within(article()).queryByText('Agent')).toBeNull();
+  });
+
+  it.each([
+    ['without the field', {}],
+    ['with auto false', { auto: false }],
+  ] as const)('says plain "Agent" for an Agent message %s', (_name, over) => {
+    renderWithHost(<MessageList />, stateOf(userMessage('u1', 'go', { mode: 'agent', ...over })));
+    expect(within(article()).getByText('Agent')).toBeTruthy();
+    expect(article().textContent).not.toContain('Auto');
+  });
+
+  it('adds a visible Auto marker to the plan execution message, and none without it', () => {
+    const plan = (): ReturnType<typeof makePlanDoc> =>
+      makePlanDoc({
+        versions: [makePlanVersion(1)],
+        approvals: [
+          { version: 1, contentHash: 'hash-v1', approvedAt: 9, executionTurnId: turnId('t-exec') },
+        ],
+      });
+    const exec = (over: Partial<ReturnType<typeof userMessage>>) =>
+      makeState({
+        active: makeActive('c1', {
+          plan: plan(),
+          messages: [
+            userMessage('u2', 'ignored', { turnId: turnId('t-exec'), mode: 'agent', ...over }),
+          ],
+        }),
+      });
+    const { init } = renderWithHost(<MessageList />, exec({ auto: true }));
+    expect(within(article()).getByText('Plan approved: executing version 1')).toBeTruthy();
+    expect(within(article()).getByText('Auto')).toBeTruthy();
+    init(exec({}), 1);
+    expect(within(article()).getByText('Plan approved: executing version 1')).toBeTruthy();
+    expect(within(article()).queryByText('Auto')).toBeNull();
   });
 });

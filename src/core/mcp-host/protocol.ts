@@ -32,7 +32,7 @@ export const PERMISSION_TOOL_INPUT_SCHEMA = {
 } as const;
 
 export const PLAN_TOOL_DESCRIPTION =
-  'Save the plan for the user to review. Send the complete plan every time; it replaces the previous version. After it succeeds, tell the user in two or three sentences what the plan covers or what changed, and do not repeat the plan in chat.';
+  "Save the plan for the user to review. Send the complete plan every time; it replaces the previous version. Choices that are the user's to make are asked with AskUserQuestion before this call, and the plan follows the answers instead of listing them as decision points or open questions. After it succeeds, tell the user in two or three sentences what the plan covers or what changed, and do not repeat the plan in chat.";
 
 export const permissionArgumentsSchema = z.object({
   tool_name: z.string().min(1),

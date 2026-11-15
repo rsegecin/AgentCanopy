@@ -83,6 +83,7 @@ export async function activateHost(
     showLogs: () => {
       logger.show();
     },
+    extensionId: context.extension.id,
     review: () => holder.controller?.review(),
   });
 
@@ -192,6 +193,10 @@ function registerCommands(
     controller.newConversation();
   });
   register('agentcanopy.focusChat', focusChat);
+  register('agentcanopy.showPermissions', async () => {
+    await focusChat();
+    controller.showPermissions();
+  });
   register('agentcanopy.openInEditor', () => {
     ui.openEditorPanel();
   });

@@ -3,6 +3,7 @@ import type { PlanContent, PlanUserDecision } from '../../../shared';
 import { usePost } from '../../app/context';
 import type { PlanId } from '../../../shared';
 import { formatTime } from './plan-model';
+import type { DecisionSummary } from './plan-model';
 
 type DecisionPoint = PlanContent['decisionPoints'][number];
 type OpenQuestion = PlanContent['openQuestions'][number];
@@ -241,5 +242,25 @@ export function OpenQuestionCard({
       )}
       {recorded && <RecordedLine recorded={recorded} />}
     </div>
+  );
+}
+
+/**
+ * What the user decided: the question and the chosen values. Answers to questions the newest version
+ * no longer asks stay in the list, after the others and marked, so no decision disappears silently.
+ */
+export function DecisionList({ items }: { items: readonly DecisionSummary[] }) {
+  const ordered = [...items.filter((i) => !i.orphan), ...items.filter((i) => i.orphan)];
+  return (
+    <ul className="plan-decisions-list">
+      {ordered.map((item, i) => (
+        <li key={i} className={item.orphan ? 'plan-decision-item--orphan' : undefined}>
+          <span className="plan-question">{item.question}</span>
+          <span className="plan-decision-values">{item.values.join(', ')}</span>
+          {item.orphan && <span className="plan-tag">No longer in the plan</span>}
+          <span className="muted"> {formatTime(item.decision.decidedAt)}</span>
+        </li>
+      ))}
+    </ul>
   );
 }

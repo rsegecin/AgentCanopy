@@ -43,9 +43,11 @@ import type {
   ViewSink,
 } from '../contracts';
 import { createHostToolServer } from '../mcp-host';
+import { sha256Hex } from '../util';
 import { createClaudeProvider, isAlive } from '../provider/claude';
 import { createAppControllerWithInternals } from './controller';
 import type { RuleStore } from '../policy/agent';
+import type { GrantStore, SavedPermissions } from '../policy';
 import type { CheckpointServiceWithChanges } from '../workspace/checkpoints';
 import type { ReviewEngine } from '../workspace/review';
 import type { WorkspaceTracker } from '../workspace/tracker';
@@ -136,7 +138,13 @@ export function createPlanTestPolicy(): TurnPolicy {
         };
       }
       if (input.mode === 'agent') {
-        return { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false };
+        return {
+          kind: 'agent',
+          allowRules: [],
+          alwaysAskCommands: false,
+          sandbox: false,
+          sandboxLocked: false,
+        };
       }
       return base.profile(input);
     },
@@ -391,8 +399,13 @@ export class FakeUi implements UiPort {
     this.record('showDiff', input);
     return Promise.resolve();
   }
-  showDocument(input: { text: string; language: string }): Promise<void> {
-    this.record('showDocument', input);
+  showReadOnlyDocument(input: {
+    key: string;
+    title: string;
+    text: string;
+    beside?: boolean;
+  }): Promise<void> {
+    this.record('showReadOnlyDocument', input);
     return Promise.resolve();
   }
   /** What `choose` answers, one entry per call. An empty list (or `undefined`) means "dismissed". */
@@ -415,6 +428,19 @@ export class FakeUi implements UiPort {
   }
   showLogs(): void {
     this.record('showLogs');
+  }
+  /** What `pickDirectory` answers. `undefined` means "dismissed". */
+  directoryAnswer: string | undefined;
+  pickDirectory(input: {
+    title: string;
+    openLabel: string;
+    defaultPath?: string;
+  }): Promise<string | undefined> {
+    this.record('pickDirectory', input);
+    return Promise.resolve(this.directoryAnswer);
+  }
+  openSettings(): void {
+    this.record('openSettings');
   }
 }
 
@@ -475,6 +501,10 @@ export interface Harness {
   tracker(): WorkspaceTracker | undefined;
   /** The rule store of the application's own default policy, once started. */
   rules(): RuleStore | undefined;
+  /** The grant store of the application's own default policy, once started. */
+  grants(): GrantStore | undefined;
+  /** Both stores as the Permissions view lists them, once started. */
+  saved(): SavedPermissions | undefined;
   /** The review engine of the application's own defaults, once started. */
   engine(): ReviewEngine | undefined;
   /** Asks the application to clean up stored file contents of a folder; resolves when done or skipped. */
@@ -487,7 +517,11 @@ export interface Harness {
   readonly requests: TurnRequest[];
   readonly views: TestView[];
   /** Attaches a view and, by default, sends `ready`. */
-  attach(options?: { ready?: boolean; conversationId?: ConversationId }): TestView;
+  attach(options?: {
+    ready?: boolean;
+    conversationId?: ConversationId;
+    kind?: 'sidebar' | 'panel';
+  }): TestView;
   /** Reads what the fake CLI recorded on its latest run (needs `record`). */
   record(index?: number): Promise<FakeClaudeRecord>;
   /** Waits until no turn runs any more. */
@@ -613,6 +647,8 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     controller,
     tracker: () => internals.tracker(),
     rules: () => internals.rules(),
+    grants: () => internals.grants(),
+    saved: () => internals.saved(),
     engine: () => internals.reviewEngine(),
     checkpoints: () => internals.checkpointService(),
     collectGarbage: (folderKey) => internals.collectGarbage(folderKey),
@@ -623,7 +659,7 @@ export async function createHarness(options: HarnessOptions = {}): Promise<Harne
     attach(attachOptions = {}) {
       const view = new TestView();
       view.handle = controller.attachView(
-        'sidebar',
+        attachOptions.kind ?? 'sidebar',
         view,
         attachOptions.conversationId ? { conversationId: attachOptions.conversationId } : undefined,
       );
@@ -962,4 +998,31 @@ export function stubProvider(status: ProviderStatus): AgentProvider {
       throw new Error('the stub provider cannot run turns');
     },
   };
+}
+
+// ---- images -------------------------------------------------------------------------------------------------
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+/** The bytes of a small image: a real PNG signature, then `seed` as filler so each seed is a different image. */
+export function pngBytes(seed = 'one', size = 0): Buffer {
+  const body = Buffer.from(seed);
+  const filler = Buffer.alloc(Math.max(0, size - PNG_SIGNATURE.length - body.length), 0x2a);
+  return Buffer.concat([Buffer.from(PNG_SIGNATURE), body, filler]);
+}
+
+/** The webview message that pastes an image. */
+export function pasteImageMessage(
+  bytes: Uint8Array,
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' = 'image/png',
+): { type: 'context.pasteImage'; mediaType: string; data: string } {
+  return { type: 'context.pasteImage', mediaType, data: Buffer.from(bytes).toString('base64') };
+}
+
+/** The reference a paste puts in the draft: the id is the sha256 of the bytes. */
+export function imageReference(
+  bytes: Uint8Array,
+  mediaType: 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' = 'image/png',
+): Attachment {
+  return { kind: 'image', id: sha256Hex(bytes), mediaType, bytes: bytes.length };
 }

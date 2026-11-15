@@ -56,6 +56,10 @@ export interface ConversationStore {
     mode: Mode;
     title?: string;
     fork?: ForkInfo;
+    /** Create it with Agent mode's Auto on (the user confirmed it for the draft). */
+    agentAuto?: boolean;
+    /** When that Auto was turned on (`ConversationMeta.agentAutoSince`); kept only with `agentAuto`. */
+    agentAutoSince?: number;
   }): Promise<ConversationMeta>;
   load(id: ConversationId): Promise<ConversationData | undefined>;
   /** Setting a key to `undefined` clears it. `updatedAt` is always set from the clock. */
@@ -571,6 +575,10 @@ class Store implements ConversationStore {
     mode: Mode;
     title?: string;
     fork?: ForkInfo;
+    /** Create it with Agent mode's Auto on (the user confirmed it for the draft). */
+    agentAuto?: boolean;
+    /** When that Auto was turned on (`ConversationMeta.agentAutoSince`); kept only with `agentAuto`. */
+    agentAutoSince?: number;
   }): Promise<ConversationMeta> {
     const now = this.clock.now();
     const meta = ConversationMetaSchema.parse({
@@ -584,6 +592,10 @@ class Store implements ConversationStore {
       mode: input.mode,
       ...(input.fork ? { fork: input.fork } : {}),
       planLocked: false,
+      ...(input.agentAuto === true ? { agentAuto: true } : {}),
+      ...(input.agentAuto === true && input.agentAutoSince !== undefined
+        ? { agentAutoSince: input.agentAutoSince }
+        : {}),
     });
     const line = JSON.stringify({ t: 'meta', meta } satisfies StoredRecord);
     const state = this.stateFor(meta.id, true);

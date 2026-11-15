@@ -6,7 +6,9 @@ import { initEvent } from '../../../test/fake-cli';
 import type { AssistantMessage, ConversationId, PlanDoc, Prompt } from '../../shared';
 import type { TurnPolicy, TurnRequest } from '../contracts';
 import type * as PlansModule from '../plans';
+import { BUSY_MESSAGE } from '../workspace/tracker/tracker';
 import { createConversationStore } from '../conversations/store';
+import type { ConversationStore } from '../conversations/store';
 import {
   createPlanStore,
   renderExecutionPrompt,
@@ -19,6 +21,9 @@ import {
   createHarness,
   createPlanTestPolicy,
   finishedTurn,
+  imageReference,
+  pasteImageMessage,
+  pngBytes,
   resultStep,
   sendAndFinish,
   sleep,
@@ -37,6 +42,10 @@ import {
 const control = vi.hoisted(() => ({
   holdApprove: undefined as Promise<void> | undefined,
   approveCalls: 0,
+  /** Question texts the plan store refuses to record as decisions. */
+  failDecide: [] as string[],
+  /** Every decision the plan store was asked to record, in order. */
+  decideCalls: [] as { targetId: string; values: string[] }[],
 }));
 
 vi.mock('../plans', async (importOriginal) => {
@@ -52,6 +61,14 @@ vi.mock('../plans', async (importOriginal) => {
           if (control.holdApprove) await control.holdApprove;
           return real.approve(...args);
         },
+        decide: (...args: Parameters<typeof real.decide>) => {
+          const [, decision] = args;
+          control.decideCalls.push({ targetId: decision.targetId, values: decision.values });
+          if (control.failDecide.includes(decision.targetId)) {
+            return Promise.reject(new Error('the decision was refused'));
+          }
+          return real.decide(...args);
+        },
       };
     },
   };
@@ -66,6 +83,8 @@ async function harness(...args: Parameters<typeof createHarness>): Promise<Harne
 afterEach(async () => {
   control.holdApprove = undefined;
   control.approveCalls = 0;
+  control.failDecide = [];
+  control.decideCalls = [];
   for (const h of harnesses.splice(0)) await h.dispose();
 });
 
@@ -102,7 +121,7 @@ const SIMPLE = {
 const SECOND = { ...SIMPLE, title: 'Rename things, second try', changeSummary: 'A new title.' };
 
 const SAVED_TEXT =
-  'Plan saved as version 1. The user reviews it in the plan view. Do not repeat the plan in chat: ' +
+  'Plan saved as version 1. The user reviews it in the plan card in the chat. Do not repeat the plan in chat: ' +
   'say in two or three sentences what it covers, or what changed.';
 
 /** A turn in which the model calls submit_plan and notes what the tool answered. */
@@ -311,7 +330,7 @@ describe('the plan in the prompt', () => {
     await nextTurn(h, view, 'why stage 2?');
     const unlocked = (await h.record(1)).stdin;
     expect(unlocked).toContain(renderPlanBlock(plan, { locked: false }));
-    expect(unlocked).toContain('Produce or revise the plan by calling the `submit_plan` tool');
+    expect(unlocked).toContain('Then produce or revise the plan by calling the `submit_plan` tool');
 
     view.send({ type: 'plan.setLocked', conversationId: view.active().meta.id, locked: true });
     await until('the lock', () => view.active().meta.planLocked);
@@ -408,6 +427,231 @@ describe('interactive questions', () => {
     expect(view.active().plan).toBeNull();
     expect(view.active().meta.planId).toBeUndefined();
     expect(await fs.readdir(join(h.storage, 'plans'))).toEqual([]);
+    view.expectMirror();
+  });
+});
+
+const SIZE_QUESTIONS = [
+  {
+    question: 'Which size?',
+    header: 'Size',
+    options: [
+      { label: 'Small', description: 'Few' },
+      { label: 'Large', description: 'Many' },
+    ],
+    multiSelect: false,
+  },
+];
+
+/** The steps of one AskUserQuestion call that the user answers. */
+function askSteps(id: string, questions: object[]): object[] {
+  return [
+    assistantToolUse(id, 'AskUserQuestion', { questions }),
+    {
+      permission: {
+        toolName: 'AskUserQuestion',
+        input: { questions },
+        toolUseId: id,
+        onAllow: [
+          userToolResult(id, 'answered', {
+            decision: { decision: 'accept', source: 'user_temporary' },
+          }),
+        ],
+        onDeny: [],
+      },
+    },
+  ];
+}
+
+const submitStep = (input: object, saveAs: string) => ({
+  callTool: { name: 'submit_plan', arguments: input, saveAs },
+});
+
+/** A turn with the given steps between the start and a closing result. */
+function stepsSpec(steps: object[]): ScenarioSpec {
+  return {
+    record: true,
+    scenario: {
+      steps: [stateEvent('running'), initEvent(), ...steps, ...resultStep('done')],
+    },
+  };
+}
+
+async function answerPending(view: TestView, answers: Record<string, string[]>): Promise<void> {
+  const find = (): Prompt | undefined =>
+    view.state?.active?.prompts.find((prompt) => prompt.state === 'pending');
+  await until('a pending prompt', () => find() !== undefined);
+  const prompt = find();
+  if (!prompt) throw new Error('no prompt');
+  view.send({
+    type: 'prompt.answer',
+    promptId: prompt.id,
+    displayHash: prompt.displayHash,
+    answer: { kind: 'question', answers },
+  });
+  await until('the prompt to settle', () => find()?.id !== prompt.id);
+}
+
+/** Remembers the plan the view showed when the first plan-update part appeared. */
+function watchPlanCard(view: TestView): { planAtCard: () => PlanDoc | null | undefined } {
+  let seen: PlanDoc | null | undefined;
+  let found = false;
+  const post = view.post.bind(view);
+  view.post = (message) => {
+    post(message);
+    if (found) return;
+    const parts = view.state?.active?.messages.flatMap((m) =>
+      m.role === 'assistant' ? m.parts : [],
+    );
+    if (parts?.some((part) => part.kind === 'plan-update')) {
+      found = true;
+      seen = structuredClone(view.state?.active?.plan);
+    }
+  };
+  return { planAtCard: () => seen };
+}
+
+describe('interactive questions answered before the first plan', () => {
+  it('become decisions of the plan once it is saved, already shown with the plan card', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q', QUESTIONS),
+        submitStep(PLAN, 'result'),
+        assistantText('The plan covers it.'),
+      ]),
+    ]);
+    const view = h.attach();
+    const card = watchPlanCard(view);
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red', 'Blue'] });
+    await finishedTurn(h, view);
+
+    const decisions = planOf(view).decisions;
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({
+      kind: 'interactive-question',
+      targetId: 'Which colour?',
+      values: ['Red', 'Blue'],
+      planVersion: 1,
+    });
+    expect((await planStoreOf(h).get(planOf(view).id))?.decisions).toEqual(decisions);
+    expect(card.planAtCard()?.decisions).toEqual(decisions);
+    expect(control.decideCalls).toEqual([{ targetId: 'Which colour?', values: ['Red', 'Blue'] }]);
+    view.expectMirror();
+  });
+
+  it('are all recorded, in the order they were answered', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q1', SIZE_QUESTIONS),
+        ...askSteps('toolu_q2', QUESTIONS),
+        submitStep(PLAN, 'result'),
+      ]),
+    ]);
+    const view = h.attach();
+    const card = watchPlanCard(view);
+    send(view, 'plan it');
+    await answerPending(view, { 'Which size?': ['Large'] });
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+
+    expect(control.decideCalls.map((call) => call.targetId)).toEqual([
+      'Which size?',
+      'Which colour?',
+    ]);
+    expect(planOf(view).decisions.map((d) => [d.targetId, d.values])).toEqual([
+      ['Which size?', ['Large']],
+      ['Which colour?', ['Red']],
+    ]);
+    expect(card.planAtCard()?.decisions).toHaveLength(2);
+    view.expectMirror();
+  });
+
+  it('are not recorded when they were answered in an Ask turn and the plan comes later', async () => {
+    const h = await planHarness([questionSpec(), submitScenario(PLAN)]);
+    const view = h.attach();
+    send(view, 'ask me something', 'ask');
+    await answerQuestion(h, view);
+    await nextTurn(h, view, 'plan it');
+    expect(planOf(view).versions).toHaveLength(1);
+    expect(planOf(view).decisions).toEqual([]);
+    expect(control.decideCalls).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('are recorded once when a failed submit is followed by a good one in the same turn', async () => {
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q', QUESTIONS),
+        submitStep({ title: '' }, 'first'),
+        submitStep(PLAN, 'second'),
+      ]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+    expect(control.decideCalls).toEqual([{ targetId: 'Which colour?', values: ['Red'] }]);
+    expect(planOf(view).decisions.map((d) => d.targetId)).toEqual(['Which colour?']);
+    view.expectMirror();
+  });
+
+  it('are dropped when the turn ends without a saved plan', async () => {
+    const h = await planHarness([
+      stepsSpec([...askSteps('toolu_q', QUESTIONS), submitStep({ title: '' }, 'first')]),
+      submitScenario(PLAN),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    await finishedTurn(h, view);
+    expect(view.active().plan).toBeNull();
+    expect(control.decideCalls).toEqual([]);
+
+    await nextTurn(h, view, 'plan it again');
+    expect(planOf(view).decisions).toEqual([]);
+    expect(control.decideCalls).toEqual([]);
+  });
+
+  it('log a decision that cannot be recorded, keep the others and still save the plan', async () => {
+    control.failDecide = ['Which size?'];
+    const h = await planHarness([
+      stepsSpec([
+        ...askSteps('toolu_q1', SIZE_QUESTIONS),
+        ...askSteps('toolu_q2', QUESTIONS),
+        submitStep(PLAN, 'result'),
+      ]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which size?': ['Large'] });
+    await answerPending(view, { 'Which colour?': ['Red'] });
+    const turn = await finishedTurn(h, view);
+    expect(turn.status).toBe('completed');
+    expect(planOf(view).versions).toHaveLength(1);
+    expect(planOf(view).decisions.map((d) => d.targetId)).toEqual(['Which colour?']);
+    expect(
+      h.logger.entries.some(
+        (entry) =>
+          entry.level === 'warn' &&
+          entry.message === 'an answer could not be recorded as a plan decision',
+      ),
+    ).toBe(true);
+    view.expectMirror();
+  });
+
+  it('are recorded at once when the plan was saved earlier in the same turn', async () => {
+    const h = await planHarness([
+      stepsSpec([submitStep(PLAN, 'result'), ...askSteps('toolu_q', QUESTIONS)]),
+    ]);
+    const view = h.attach();
+    send(view, 'plan it');
+    await answerPending(view, { 'Which colour?': ['Blue'] });
+    await finishedTurn(h, view);
+    expect(planOf(view).decisions.map((d) => [d.targetId, d.values])).toEqual([
+      ['Which colour?', ['Blue']],
+    ]);
+    expect(control.decideCalls).toHaveLength(1);
     view.expectMirror();
   });
 });
@@ -580,25 +824,52 @@ describe('plan messages', () => {
     view.expectMirror();
   });
 
-  it('plan.export opens the Markdown of a version', async () => {
-    const { h, view, plan } = await withPlan();
-    view.send({ type: 'plan.export', planId: plan.id, version: 1 });
-    await until('the document', () => h.ui.callsOf('showDocument').length === 1);
-    expect(h.ui.callsOf('showDocument')[0]?.[0]).toEqual({
-      text: renderPlanMarkdown(plan.versions[0]?.content ?? (undefined as never)),
-      language: 'markdown',
+  it('plan.open opens one version as a read-only document, beside the chat in a panel', async () => {
+    const { h, view, plan } = await withPlan([submitScenario(SECOND, 'second-result.txt')]);
+    await nextTurn(h, view, 'change it');
+    const [first, second] = planOf(view).versions;
+    if (!first || !second) throw new Error('two versions expected');
+    const panel = h.attach({ kind: 'panel' });
+
+    view.send({ type: 'plan.open', planId: plan.id, version: 1 });
+    await until('the document', () => h.ui.callsOf('showReadOnlyDocument').length === 1);
+    const opened = h.ui.callsOf('showReadOnlyDocument')[0]?.[0] as { beside?: boolean };
+    expect(opened).toMatchObject({
+      key: `plan-${plan.id}-v1`,
+      title: 'Plan v1 - Add caching',
+      text: renderPlanMarkdown(first.content),
     });
-    view.send({ type: 'plan.export', planId: plan.id, version: 5 });
-    await until('a toast', () => view.toasts.length === 1);
-    expect(h.ui.callsOf('showDocument')).toHaveLength(1);
+    expect(opened.beside).toBeFalsy();
+
+    panel.send({ type: 'plan.open', planId: plan.id, version: 2 });
+    await until('the second document', () => h.ui.callsOf('showReadOnlyDocument').length === 2);
+    expect(h.ui.callsOf('showReadOnlyDocument')[1]?.[0]).toEqual({
+      key: `plan-${plan.id}-v2`,
+      title: 'Plan v2 - Rename things, second try',
+      text: renderPlanMarkdown(second.content),
+      beside: true,
+    });
+    expect(view.toasts).toEqual([]);
   });
 
-  it('plan.openInEditor opens the conversation in an editor and shows the plan tab', async () => {
+  it('plan.open puts the version first in the title, so a long plan title cannot hide it', async () => {
+    const long = 'L'.repeat(300);
+    const { h, view, plan } = await withPlan([], { input: { ...SIMPLE, title: long } });
+    view.send({ type: 'plan.open', planId: plan.id, version: 1 });
+    await until('the document', () => h.ui.callsOf('showReadOnlyDocument').length === 1);
+    const opened = h.ui.callsOf('showReadOnlyDocument')[0]?.[0] as { title: string };
+    expect(opened.title.startsWith('Plan v1 - ')).toBe(true);
+  });
+
+  it('plan.open with an unknown version or plan gets a toast and opens nothing', async () => {
     const { h, view, plan } = await withPlan();
-    view.send({ type: 'plan.openInEditor', planId: plan.id });
-    await until('the editor', () => h.ui.callsOf('openEditorPanel').length === 1);
-    expect(h.ui.callsOf('openEditorPanel')[0]).toEqual([view.active().meta.id]);
-    expect(view.events.at(-1)).toEqual({ kind: 'show-tab', tab: 'plan' });
+    view.send({ type: 'plan.open', planId: plan.id, version: 7 });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]?.text).toBe('That version of the plan no longer exists.');
+    view.send({ type: 'plan.open', planId: 'plan-that-is-gone', version: 1 });
+    await until('a second toast', () => view.toasts.length === 2);
+    expect(view.toasts[1]?.text).toBe('That plan no longer exists.');
+    expect(h.ui.callsOf('showReadOnlyDocument')).toEqual([]);
   });
 });
 
@@ -710,6 +981,28 @@ describe('approving a plan', () => {
     view.expectMirror();
   });
 
+  it('sends no images and takes none from the draft', async () => {
+    const { h, view, plan } = await withPlan([textSpec('done')]);
+    const image = pngBytes('draft-image');
+    view.send(pasteImageMessage(image));
+    expect(view.current().draftAttachments).toEqual([imageReference(image)]);
+
+    approve(view, plan);
+    await until('the execution turn', () => view.active().turns.length === 2);
+    await finishedTurn(h, view);
+
+    expect(h.requests).toHaveLength(2);
+    expect('images' in (h.requests[1] ?? {})).toBe(false);
+    expect(h.requests[1]?.prompt).not.toContain('Images attached');
+    const user = view.active().messages.filter((m) => m.role === 'user')[1];
+    expect(user?.role === 'user' && user.attachments).toEqual([]);
+    // The image still belongs to the draft, and goes with the next message of the user.
+    expect(view.current().draftAttachments).toEqual([imageReference(image)]);
+    await nextTurn(h, view, 'now with the picture', 'agent');
+    expect(h.requests[2]?.images).toHaveLength(1);
+    expect(Buffer.from(h.requests[2]?.images?.[0]?.data ?? []).equals(image)).toBe(true);
+  });
+
   it('starts nothing until the approval has been recorded', async () => {
     const { h, view, plan } = await withPlan([textSpec('done')]);
     let release: () => void = () => undefined;
@@ -791,6 +1084,29 @@ describe('approving a plan', () => {
     expect(h.ui.callsOf('confirm')).toEqual([]);
     await expectNothingHappened(h, view, plan, 2);
     view.expectMirror();
+  });
+
+  it('refuses without a dialog while an Agent turn of another conversation runs in the folder', async () => {
+    const { h, view, plan } = await withPlan([hanging]);
+    const other = h.attach();
+    send(other, 'other work', 'agent');
+    await until('the other turn to run', () => h.requests.length === 2);
+    await until('the other conversation', () => other.state?.active != null);
+    const otherId = other.active().meta.id;
+
+    approve(view, plan);
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: BUSY_MESSAGE });
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    await sleep(40);
+    expect(approvalsOnDisk(h, plan)).toEqual([]);
+    expect(planOf(view).approvals).toEqual([]);
+    expect(h.requests).toHaveLength(2);
+    expect(view.active().turns).toHaveLength(1);
+    expect(h.controller.runningTurns()).toBe(1);
+
+    other.send({ type: 'turn.cancel', conversationId: otherId });
+    await until('the other turn to end', () => h.controller.runningTurns() === 0);
   });
 
   it('refuses a hash from an older version after a new version was saved', async () => {
@@ -900,6 +1216,29 @@ describe('plans and conversations', () => {
     for (const card of cards) {
       expect(card.kind === 'plan-update' && card.planId).toBe(branch.meta.planId);
     }
+    view.expectMirror();
+  });
+
+  it('removes the copy again when it cannot be recorded on the branch', async () => {
+    const { h, view, plan } = await withPlan();
+    const parentId = view.active().meta.id;
+    const store = Reflect.get(h.controller, 'store') as ConversationStore;
+    const original = store.updateMeta.bind(store);
+    let refused = false;
+    store.updateMeta = (id, patch) => {
+      if (id === parentId || patch.planId === undefined) return original(id, patch);
+      refused = true;
+      return Promise.reject(new Error('no space left'));
+    };
+    const answerId = assistants(view)[0]?.id;
+    view.send({ type: 'conversation.fork', conversationId: parentId, messageId: answerId });
+    await until('the branch', () => view.state?.active?.meta.id !== parentId);
+
+    expect(refused).toBe(true);
+    expect(view.active().meta.planId).toBeUndefined();
+    expect(view.active().plan).toBeNull();
+    expect(await fs.readdir(join(h.storage, 'plans'))).toEqual([`${plan.id}.json`]);
+    expect(await planStoreOf(h).get(plan.id)).toEqual(plan);
     view.expectMirror();
   });
 

@@ -94,7 +94,13 @@ describe('stylesheets', () => {
     const text = strip(all);
     const rule = text.match(/(\.code-block :focus-visible[^{]*)\{([^}]*)\}/);
     expect(rule?.[2]).toMatch(/outline-offset:\s*-\d+px/);
-    for (const selector of ['.diagram-canvas', '.markdown-table', '.tool-card-pre', '.log']) {
+    for (const selector of [
+      '.diagram-canvas',
+      '.markdown-table',
+      '.tool-card-pre',
+      '.log',
+      '.changes-dock-body',
+    ]) {
       expect(rule?.[1], selector).toContain(`${selector}:focus-visible`);
     }
     expect(text).toMatch(/\.code-block\s*\{[^}]*overflow:\s*hidden/);
@@ -108,7 +114,7 @@ describe('stylesheets', () => {
     for (const selector of removed) {
       if (selector === ':focus') continue;
       expect(selector, selector).toMatch(
-        /^(?:\[role='tabpanel'\]|\.review-scroll|\.checkpoints-scroll|\.plan-scroll|\.history|form\.composer):focus-visible$/,
+        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.permissions-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
       );
     }
     expect(removed.length).toBeGreaterThan(3);
@@ -152,7 +158,8 @@ describe('stylesheets', () => {
       '.tool-card',
       '.prompt-card',
       '.review-entry',
-      '.plan-section',
+      '.changes-dock',
+      '.plan-card',
       '.menu',
       '.reference-picker',
       '.composer-input',
@@ -160,6 +167,8 @@ describe('stylesheets', () => {
       '.tab',
       '.history-row--active',
       '.plan-option--chosen',
+      '.permissions-row',
+      '.permissions-switch--on',
     ]) {
       expect(contrast, surface).toContain(surface);
     }
@@ -189,7 +198,39 @@ describe('stylesheets', () => {
     expect(text).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
     // No fixed pixel widths on layout containers that could exceed a 260 px view.
     expect(text).not.toMatch(
-      /\.(?:app|column|composer|plan-view|review-view|checkpoints|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
+      /\.(?:app|column|composer|plan-card|changes-dock|checkpoints|permissions|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
     );
+  });
+
+  it('bounds the changes card, which scrolls inside itself, and drops the removed tab styles', () => {
+    const text = strip(all);
+    const body = text.match(/\.changes-dock-body\s*\{([^}]*)\}/);
+    expect(body?.[1]).toMatch(/max-height:\s*min\(40vh,\s*320px\)/);
+    expect(body?.[1]).toMatch(/overflow-y:\s*auto/);
+    expect(text).not.toContain('.tab-badge');
+    expect(text).not.toContain('.header-warning');
+    expect(text).not.toContain('.review-scroll');
+  });
+
+  it('marks the Auto switch on by weight and an outline, not by colour, and in high contrast', () => {
+    const text = strip(all);
+    const rule = text.match(/\.auto-switch--on\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/font-weight:\s*600/);
+    expect(rule?.[1]).toMatch(/outline:\s*1px solid/);
+    expect(rule?.[1]).not.toMatch(/(?:^|[;\s])(?:color|background(?:-color)?)\s*:/);
+    expect(strip(entries.find((e) => e.name === 'contrast.css')?.css ?? '')).toContain(
+      '.auto-switch--on',
+    );
+  });
+
+  it('marks a permission switch on by weight and an outline, not by colour, and in high contrast', () => {
+    const text = strip(all);
+    const rule = text.match(/\.permissions-switch--on\s*\{([^}]*)\}/);
+    expect(rule?.[1]).toMatch(/font-weight:\s*600/);
+    expect(rule?.[1]).toMatch(/outline:\s*1px solid/);
+    expect(rule?.[1]).not.toMatch(/(?:^|[;\s])(?:color|background(?:-color)?)\s*:/);
+    const contrast = strip(entries.find((e) => e.name === 'contrast.css')?.css ?? '');
+    expect(contrast).toContain('.permissions-switch--on');
+    expect(contrast).toContain('.permissions-row');
   });
 });

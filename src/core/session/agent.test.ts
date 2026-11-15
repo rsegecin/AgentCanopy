@@ -4,13 +4,21 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
 import { DEFAULT_SETTINGS } from '../../shared';
-import type { AssistantMessage, PermissionPrompt, PlanDoc, ToolCallView } from '../../shared';
+import type {
+  AssistantMessage,
+  FolderKey,
+  PermissionPrompt,
+  PlanDoc,
+  ToolCallView,
+} from '../../shared';
 import type { OperationRecord } from '../contracts';
+import { BUSY_MESSAGE, CONFIG_PENDING_MESSAGE } from '../workspace/tracker/tracker';
 import {
   FOLDER_KEY,
   assistantText,
   assistantToolUse,
   createHarness,
+  createPlanTestPolicy,
   finishedTurn,
   resultStep,
   sleep,
@@ -39,6 +47,7 @@ afterEach(async () => {
   for (const h of harnesses.splice(0)) await h.dispose();
 });
 
+const SECOND_FOLDER = 'folder-2' as FolderKey;
 const allowed = { decision: 'accept', source: 'user_temporary' } as const;
 const rejected = { decision: 'reject', source: 'user_reject' } as const;
 
@@ -174,6 +183,69 @@ const hanging: ScenarioSpec = {
   scenario: { steps: [...streamedText(['working']), { hang: true }] },
 };
 
+/** A Plan mode turn that saves a small plan with the plan tool. */
+function submitPlanScenario(): ScenarioSpec {
+  return {
+    scenario: {
+      steps: [
+        stateEvent('running'),
+        initEvent(),
+        {
+          callTool: {
+            name: 'submit_plan',
+            arguments: {
+              title: 'Add caching',
+              objective: 'Cache the results of slow lookups.',
+              stages: [{ id: 's1', title: 'Write the cache', description: 'Implement it.' }],
+            },
+            saveAs: 'result',
+          },
+        },
+        assistantText('The plan covers it.'),
+        ...resultStep('The plan covers it.'),
+      ],
+    },
+  };
+}
+
+const APPROVAL_TITLE = 'Approve and execute this plan?';
+
+/** The approval dialogs asked so far; other confirmations (reverting a change) do not count. */
+function approvalDialogs(h: Harness): unknown[][] {
+  return h.ui
+    .callsOf('confirm')
+    .filter((call) => (call[0] as { title?: string }).title === APPROVAL_TITLE);
+}
+
+/** Holds the approval dialog open until `release` is called. */
+function holdApprovalDialog(h: Harness): () => void {
+  let release: () => void = () => undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.ui.onConfirm = (input) => (input.title === APPROVAL_TITLE ? held : undefined);
+  return release;
+}
+
+/** A Plan mode turn in a new conversation, which leaves a plan; returns that plan. */
+async function planned(h: Harness, view: TestView): Promise<PlanDoc> {
+  view.send({ type: 'turn.send', text: 'plan it', mode: 'plan', model: 'default' });
+  await until('the plan', () => view.state?.active?.plan?.versions.length === 1);
+  await finishedTurn(h, view);
+  const plan = view.active().plan;
+  if (!plan) throw new Error('the conversation has no plan');
+  return plan;
+}
+
+function approveMessage(plan: PlanDoc) {
+  return {
+    type: 'plan.approve',
+    planId: plan.id,
+    version: 1,
+    contentHash: plan.versions[0]?.contentHash ?? 'missing',
+  };
+}
+
 function autoEdits(h: Harness): void {
   h.env.settingsValue = { ...DEFAULT_SETTINGS, editApproval: 'auto' };
 }
@@ -308,14 +380,15 @@ describe('Agent mode with the default policy and tracker', () => {
     expect(change).toMatchObject({ displayPath: '.vscode/tasks.json', changeType: 'created' });
     expect(change?.revertible).toBe(true);
 
-    // The next Agent turn is refused until the change is dealt with.
+    // The next Agent turn is refused up front, with a toast, until the change is dealt with.
     const turnsBefore = view.active().turns.length;
+    const messagesBefore = view.active().messages.length;
     sendAgent(view, 'again');
-    await until('the refused turn', () => {
-      const turns = view.active().turns;
-      return turns.length === turnsBefore + 1 && turns[turnsBefore]?.status === 'error';
-    });
-    expect(view.active().turns[turnsBefore]?.error?.length).toBeGreaterThan(0);
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    await sleep(40);
+    expect(view.active().turns).toHaveLength(turnsBefore);
+    expect(view.active().messages).toHaveLength(messagesBefore);
     expect(h.requests).toHaveLength(1);
 
     view.send({ type: 'config.openDiff', changeId: change?.id });
@@ -348,6 +421,84 @@ describe('Agent mode with the default policy and tracker', () => {
     const next = await agentTurn(h, view, 'now it works');
     expect(next.status).toBe('completed');
     view.expectMirror();
+  });
+
+  it('keeps a message queued behind a turn that left configuration changes pending, until they are dealt with', async () => {
+    const h = await harness({
+      sequence: [writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'), textScenarioSpec()],
+    });
+    const view = h.attach();
+    sendAgent(view);
+    // The turn waits for the answer: send the next message meanwhile.
+    await until('the prompt', () => pendingPrompt(view) !== undefined);
+    sendAgent(view, 'queued');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+    const [change] = view.current().review.configChanges;
+
+    // The turn completed, but an Agent message does not start while the change is pending.
+    await sleep(150);
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(1);
+    expect(view.toasts).toEqual([]);
+
+    view.send({ type: 'queue.sendNow', conversationId: view.active().meta.id });
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(1);
+
+    view.send({ type: 'config.keep', changeId: change?.id });
+    await until('the change to go', () => view.current().review.configChanges.length === 0);
+    view.send({ type: 'queue.sendNow', conversationId: view.active().meta.id });
+    await until('the second turn', () => view.active().turns.length === 2);
+    const next = await finishedTurn(h, view);
+    expect(next.status).toBe('completed');
+    expect(view.active().queued).toBeNull();
+    expect(h.requests).toHaveLength(2);
+    view.expectMirror();
+  });
+
+  it('"Send now" does not stop a Plan turn when pending configuration changes block the queued Agent message', async () => {
+    const h = await harness({
+      policy: createPlanTestPolicy(),
+      sequence: [
+        writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'),
+        { scenario: { steps: [...streamedText(['working']), { hang: true }] } },
+      ],
+    });
+    const view = h.attach();
+    sendAgent(view);
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+
+    const id = view.active().meta.id;
+    view.send({
+      type: 'turn.send',
+      conversationId: id,
+      text: 'plan',
+      mode: 'plan',
+      model: 'default',
+    });
+    await until('the Plan turn to run', () => h.requests.length === 2);
+    sendAgent(view, 'queued');
+    await until('the message to be queued', () => view.state?.active?.queued != null);
+
+    view.send({ type: 'queue.sendNow', conversationId: id });
+    await until('the toast', () => view.toasts.length === 1);
+    await sleep(100);
+    expect(view.toasts).toEqual([{ level: 'warning', text: CONFIG_PENDING_MESSAGE }]);
+    // The Plan turn was not interrupted and the message is still queued.
+    expect(view.active().turns.at(-1)?.status).toBe('running');
+    expect(h.controller.runningTurns()).toBe(1);
+    expect(view.active().queued?.text).toBe('queued');
+    expect(h.requests).toHaveLength(2);
+
+    view.send({ type: 'turn.cancel', conversationId: id });
+    await until('the turn to end', () => h.controller.runningTurns() === 0);
   });
 
   it('lets the user keep a configuration change, which unblocks the next turn', async () => {
@@ -389,6 +540,251 @@ describe('Agent mode with the default policy and tracker', () => {
     await until('a toast', () => view.toasts.length === 1);
     expect(view.toasts[0]?.text).toBe('That configuration change was already resolved.');
     view.expectMirror();
+  });
+
+  it('refuses an Agent turn before storing anything while a configuration change waits, and lets Ask run', async () => {
+    const h = await harness({
+      sequence: [
+        writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'),
+        textScenarioSpec(),
+        textScenarioSpec(),
+        textScenarioSpec(),
+      ],
+    });
+    const view = h.attach();
+    sendAgent(view);
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+    const [change] = view.current().review.configChanges;
+    const conversationId = view.active().meta.id;
+    const turns = view.active().turns.length;
+    const messages = view.active().messages.length;
+
+    sendAgent(view, 'again');
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    expect(CONFIG_PENDING_MESSAGE).toBe(
+      'The last turn changed tool or editor configuration. Keep or revert those changes in the changes card below the chat before starting another Agent turn.',
+    );
+    await sleep(40);
+    expect(view.active().turns).toHaveLength(turns);
+    expect(view.active().messages).toHaveLength(messages);
+    expect(h.requests).toHaveLength(1);
+    expect(h.controller.runningTurns()).toBe(0);
+
+    // A new conversation is not created either.
+    const known = view.current().conversations.length;
+    view.send({ type: 'conversation.new', folder: FOLDER_KEY });
+    sendAgent(view, 'a new one');
+    await until('the second toast', () => view.toasts.length === 2);
+    await sleep(40);
+    expect(view.current().conversations).toHaveLength(known);
+    expect(h.requests).toHaveLength(1);
+    view.send({ type: 'conversation.open', conversationId });
+    await until('the conversation', () => view.state?.active?.meta.id === conversationId);
+
+    // Ask is not blocked.
+    view.send({ type: 'turn.send', conversationId, text: 'why?', mode: 'ask', model: 'default' });
+    await until('the Ask turn to start', () => h.requests.length === 2);
+    await finishedTurn(h, view);
+    expect(view.active().turns.at(-1)?.mode).toBe('ask');
+    expect(view.active().turns.at(-1)?.status).toBe('completed');
+    expect(view.toasts).toHaveLength(2);
+
+    // Plan is not blocked either, and says nothing.
+    view.send({
+      type: 'turn.send',
+      conversationId,
+      text: 'outline',
+      mode: 'plan',
+      model: 'default',
+    });
+    await until('the Plan turn to start', () => h.requests.length === 3);
+    await finishedTurn(h, view);
+    expect(view.active().turns.at(-1)?.mode).toBe('plan');
+    expect(view.toasts).toHaveLength(2);
+
+    // Once the change is decided the Agent turn runs.
+    h.ui.confirmAnswer = true;
+    view.send({ type: 'config.keep', changeId: change?.id });
+    await until('the change to go', () => view.current().review.configChanges.length === 0);
+    const next = await agentTurn(h, view, 'now');
+    expect(next.status).toBe('completed');
+    expect(h.requests).toHaveLength(4);
+    view.expectMirror();
+  });
+
+  it('refuses Approve and Execute before the approval is recorded while a configuration change waits', async () => {
+    const h = await harness({
+      sequence: [
+        submitPlanScenario(),
+        writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}'),
+        textScenarioSpec(),
+      ],
+    });
+    const view = h.attach();
+    view.send({
+      type: 'turn.send',
+      text: 'plan it',
+      mode: 'plan',
+      model: 'default',
+    });
+    await until('the plan', () => view.state?.active?.plan?.versions.length === 1);
+    await finishedTurn(h, view);
+    sendAgent(view, 'change config');
+    await answer(view, 'allow-once');
+    await finishedTurn(h, view);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+    const [change] = view.current().review.configChanges;
+    const plan = view.active().plan;
+    if (!plan) throw new Error('the conversation has no plan');
+    const planFile = join(h.storage, 'plans', `${plan.id}.json`);
+    const approvals = async (): Promise<PlanDoc['approvals']> =>
+      (JSON.parse(await fs.readFile(planFile, 'utf8')) as PlanDoc).approvals;
+    const turns = view.active().turns.length;
+    const requests = h.requests.length;
+
+    view.send({
+      type: 'plan.approve',
+      planId: plan.id,
+      version: 1,
+      contentHash: plan.versions[0]?.contentHash ?? 'missing',
+    });
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    await sleep(40);
+    expect(await approvals()).toEqual([]);
+    expect(view.active().plan?.approvals).toEqual([]);
+    expect(approvalDialogs(h)).toEqual([]);
+    expect(view.active().turns).toHaveLength(turns);
+    expect(h.requests).toHaveLength(requests);
+
+    // After the change is reverted the same approval goes through.
+    view.send({ type: 'config.revert', changeId: change?.id });
+    await until('the change to go', () => view.current().review.configChanges.length === 0);
+    view.send({
+      type: 'plan.approve',
+      planId: plan.id,
+      version: 1,
+      contentHash: plan.versions[0]?.contentHash ?? 'missing',
+    });
+    await until('the executing turn', () => h.requests.length === requests + 1);
+    await finishedTurn(h, view);
+    expect(approvalDialogs(h)).toHaveLength(1);
+    expect(await approvals()).toHaveLength(1);
+    view.expectMirror();
+  });
+
+  it('does not record an approval when another conversation left a configuration change while the dialog was open', async () => {
+    const h = await harness({
+      sequence: [submitPlanScenario(), writeScenario('.vscode/tasks.json', '{"version":"2.0.0"}')],
+    });
+    const view = h.attach();
+    const plan = await planned(h, view);
+    const turns = view.active().turns.length;
+    const requests = h.requests.length;
+    const release = holdApprovalDialog(h);
+
+    view.send(approveMessage(plan));
+    await until('the dialog', () => approvalDialogs(h).length === 1);
+    // Meanwhile an Agent turn of another conversation in the folder changes configuration.
+    const other = h.attach();
+    sendAgent(other, 'change config');
+    await answer(other, 'allow-once');
+    await finishedTurn(h, other);
+    await until('the change', () => view.current().review.configChanges.length === 1);
+    release();
+
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
+    await sleep(40);
+    expect(view.active().plan?.approvals).toEqual([]);
+    expect(
+      (
+        JSON.parse(
+          await fs.readFile(join(h.storage, 'plans', `${plan.id}.json`), 'utf8'),
+        ) as PlanDoc
+      ).approvals,
+    ).toEqual([]);
+    expect(view.active().turns).toHaveLength(turns);
+    expect(h.requests).toHaveLength(requests + 1);
+    expect(h.controller.runningTurns()).toBe(0);
+    view.expectMirror();
+  });
+
+  it('does not record an approval when an Agent turn of another conversation still runs after the dialog', async () => {
+    const h = await harness({ sequence: [submitPlanScenario(), hanging] });
+    const view = h.attach();
+    const plan = await planned(h, view);
+    const turns = view.active().turns.length;
+    const release = holdApprovalDialog(h);
+
+    view.send(approveMessage(plan));
+    await until('the dialog', () => approvalDialogs(h).length === 1);
+    const other = h.attach();
+    sendAgent(other, 'work');
+    await until('the other turn to run', () => h.requests.length === 2);
+    release();
+
+    await until('the toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: BUSY_MESSAGE });
+    await sleep(40);
+    expect(view.active().plan?.approvals).toEqual([]);
+    expect(
+      (
+        JSON.parse(
+          await fs.readFile(join(h.storage, 'plans', `${plan.id}.json`), 'utf8'),
+        ) as PlanDoc
+      ).approvals,
+    ).toEqual([]);
+    expect(view.active().turns).toHaveLength(turns);
+    expect(h.requests).toHaveLength(2);
+
+    other.send({ type: 'turn.cancel', conversationId: other.active().meta.id });
+    await until('the turn to end', () => h.controller.runningTurns() === 0);
+  });
+
+  it('tells every view of the folder when an Agent turn runs, and not for an Ask turn', async () => {
+    const h = await harness({ sequence: [hanging, hanging] });
+    const view = h.attach();
+    const other = h.attach();
+    expect(view.current().review.busy).toBe(false);
+
+    view.send({ type: 'turn.send', text: 'question', mode: 'ask', model: 'default' });
+    await until('the Ask turn to run', () => h.requests.length === 1);
+    expect(view.current().review.busy).toBe(false);
+    expect(other.current().review.busy).toBe(false);
+    view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    await until('the Ask turn to end', () => h.controller.runningTurns() === 0);
+
+    view.send({ type: 'conversation.new', folder: FOLDER_KEY });
+    sendAgent(view, 'work');
+    await until('the Agent turn to run', () => h.requests.length === 2);
+    await until('busy', () => view.current().review.busy && other.current().review.busy);
+    // A view opened meanwhile starts out busy; one on another folder stays idle.
+    const late = h.attach();
+    expect(late.current().review.busy).toBe(true);
+    const second = join(h.root, 'second');
+    await fs.mkdir(second);
+    h.env.folderList = [...h.env.folderList, { key: SECOND_FOLDER, name: 'second', path: second }];
+    const elsewhere = h.attach();
+    elsewhere.send({ type: 'conversation.new', folder: SECOND_FOLDER });
+    expect(elsewhere.current().review.busy).toBe(false);
+    const before = other.patches().length;
+    view.expectMirror();
+    other.expectMirror();
+    expect(other.patches().length).toBe(before);
+
+    view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    await until('the turn to end', () => h.controller.runningTurns() === 0);
+    await until('not busy', () => !view.current().review.busy && !other.current().review.busy);
+    await until('the late view to be idle', () => !late.current().review.busy);
+    expect(elsewhere.current().review.busy).toBe(false);
+    view.expectMirror();
+    other.expectMirror();
+    late.expectMirror();
+    elsewhere.expectMirror();
   });
 
   it('goes through capturing to ready after start-up', async () => {

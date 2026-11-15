@@ -450,8 +450,10 @@ describe('reference picker and the rest of the composer', () => {
       }),
     );
     expect(screen.getByText('The agent is waiting for your answer above.')).toBeTruthy();
-    // Sending stays unavailable while the turn runs.
-    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
+    // Stop is offered next to Send, and an Ask message sent while the turn runs is a side question.
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    typeText('next');
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(false);
   });
 
   it.each([

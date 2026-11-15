@@ -1,0 +1,131 @@
+/* The Permissions tab: switches, saved permissions, what always asks, and the settings. */
+.permissions {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.permissions-scroll {
+  flex: 1;
+  min-height: 0;
+  padding: 8px;
+  overflow-y: auto;
+}
+/* The container only takes focus from script, so a ring around the whole tab says nothing. */
+.permissions-scroll:focus-visible {
+  outline: none;
+}
+.permissions-scroll > .column {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.permissions-reason {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--vscode-widget-border, currentColor);
+  border-left-width: 4px;
+  border-left-color: var(--vscode-editorInfo-foreground);
+  border-radius: 3px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+
+.permissions-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.permissions-heading {
+  margin: 0;
+  font-size: 1.05em;
+}
+.permissions-subheading {
+  margin: 4px 0 2px;
+  font-size: 0.95em;
+  font-weight: 600;
+}
+.permissions-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.permissions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.permissions-list--plain {
+  gap: 4px;
+}
+.permissions-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px 8px;
+  padding: 4px 8px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 4px;
+}
+.permissions-row-text {
+  display: flex;
+  flex: 1 1 12em;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.permissions-label {
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.permissions-description,
+.permissions-note,
+.permissions-shell {
+  font-size: 0.9em;
+  overflow-wrap: anywhere;
+}
+.permissions-code {
+  font-family: var(--vscode-editor-font-family);
+  overflow-wrap: anywhere;
+}
+.permissions-empty {
+  color: var(--vscode-descriptionForeground);
+}
+.permissions-ask {
+  overflow-wrap: anywhere;
+}
+.permissions-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+/* On is told by the filled icon, the word Allow, the bold label and the outline, not by colour. */
+.permissions-switch {
+  min-width: 6.5em;
+}
+.permissions-switch--on {
+  font-weight: 600;
+  outline: 1px solid var(--vscode-focusBorder);
+}
+
+.permissions-settings {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+}
+.permissions-setting dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.permissions-value {
+  font-weight: 600;
+}

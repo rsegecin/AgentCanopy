@@ -3,26 +3,35 @@ import { join, posix, resolve } from 'node:path';
 import {
   AttachmentSchema,
   EMPTY_VIEW_STATE,
+  MAX_IMAGES_PER_MESSAGE,
+  MAX_IMAGE_BYTES,
+  MAX_IMAGE_BYTES_PER_MESSAGE,
   RelPathSchema,
   WebviewMessageSchema,
 } from '../../shared';
 import type {
+  AsideAnchor,
+  AssistantMessage,
   Attachment,
   Banner,
   CheckpointSummary,
   ConversationId,
   ConversationMeta,
   FolderKey,
-  Hunk,
+  FolderPermissions,
+  ImageMediaType,
   MessageId,
+  PermissionSwitch,
   Mode,
-  PatchOp,
   PlanDoc,
   PlanId,
+  Prompt,
   PromptAnswer,
   OperationId,
+  PatchOp,
   PromptId,
   ProviderStatus,
+  QueuedMessage,
   RelPath,
   RestorePreview,
   WebviewMessage,
@@ -35,6 +44,7 @@ import type {
   Logger,
   ProjectConfigChoice,
   RejectResult,
+  TurnImage,
   TurnObserver,
   TurnPolicy,
   ViewHandle,
@@ -43,7 +53,7 @@ import type {
 import { createFileSearch } from '../context';
 import type { FileSearch } from '../context';
 import { createConversationStore } from '../conversations/store';
-import type { ConversationStore } from '../conversations/store';
+import type { ConversationData, ConversationStore } from '../conversations/store';
 import {
   createPlanStore,
   renderExecutionPrompt,
@@ -52,20 +62,26 @@ import {
 } from '../plans';
 import type { PlanStore } from '../plans';
 import {
+  checkDirectoryToGrant,
   createAgentPolicy,
+  createGrantStore,
   createModePolicy,
   createReadOnlyPolicy,
   createReadOnlyTripwire,
   createRuleStore,
+  createSavedPermissions,
+  type GrantStore,
+  type SavedPermissions,
 } from '../policy';
 import type { RuleStore } from '../policy/agent';
 import { createProjectConfigDecisions, inspectProjectConfig } from '../policy/project-config';
 import { isAlive, stopOrphan } from '../provider/claude';
-import { isNotFound, newId, redact } from '../util';
+import { isNotFound, newId, redact, sha256Hex } from '../util';
 import { collectGarbage } from '../workspace/store';
 import { createCheckpointService } from '../workspace/checkpoints';
 import { createReviewEngine } from '../workspace/review';
 import { findGit } from '../workspace/tracker/git-state';
+import { BUSY_MESSAGE, CONFIG_PENDING_MESSAGE } from '../workspace/tracker/tracker';
 import { createWorkspaceTracker } from '../workspace/tracker';
 import type { WorkspaceTracker } from '../workspace/tracker';
 
@@ -85,9 +101,19 @@ export function checkpointLabel(operation: CheckpointSummary): string {
 
 /** Where a review message goes: a toast in one view, or in every view of a folder. */
 type Report = (level: 'info' | 'warning' | 'error', text: string) => void;
+import { asideOps, asidesOf } from './asides';
+import { createAutoReset } from './auto-reset';
+import type { AutoReset } from './auto-reset';
 import { REFRESH_ACTION, SIGN_IN_ACTION, bannerKey, computeBanners } from './banners';
+import { decodeBase64, matchesImageSignature } from './images';
 import { isInside, resolveInsideWorkspace } from './paths';
-import { alwaysAllowDetail, answerProblem, canonicalJson } from './prompts';
+import {
+  alwaysAllowDetail,
+  answerProblem,
+  canonicalJson,
+  directoryDialog,
+  switchDialog,
+} from './prompts';
 import type { PendingPrompt } from './prompts';
 import { SessionState, previewOf } from './state';
 import type { ConvRuntime } from './state';
@@ -97,10 +123,13 @@ import {
   claudeSignedOut,
   claudeTooOld,
   formatCheckpointTime,
+  homeDirectory,
+  oneLineText,
   safeText,
+  shownPath,
 } from './text';
 import { TurnRun } from './turn';
-import type { TurnServices } from './turn';
+import type { AlwaysRule, TurnServices } from './turn';
 import { ViewRecord } from './view';
 
 const MAX_ATTACHMENTS = 50;
@@ -114,6 +143,8 @@ const MAX_LISTED_REFUSALS = 8;
 const RECOVER_NOW_ACTION = { id: 'recover-now', label: 'Recover now' } as const;
 const IDLE_BASELINE = EMPTY_VIEW_STATE.baseline;
 const TITLE_LENGTH = 60;
+/** How much of a conversation's title the dialog that turns Auto on shows, ellipsis included. */
+const DIALOG_TITLE_LENGTH = 60;
 const ALLOWED_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
 type SendMessage = Extract<WebviewMessage, { type: 'turn.send' }>;
@@ -121,11 +152,26 @@ type SendMessage = Extract<WebviewMessage, { type: 'turn.send' }>;
 /** What differs when a turn is started by approving a plan instead of by the composer. */
 interface TurnOptions {
   /** Runs after every check has passed and before anything is created. Returns the prompt, or false to stop. */
-  gate?: () => Promise<{ promptText: string } | false>;
+  gate?: (decided: { auto: boolean }) => Promise<{ promptText: string } | false>;
   /** Called once the turn exists and has been started. */
   onStarted?: (run: TurnRun) => void;
   /** The message does not take the view's queued attachments. */
   noAttachments?: boolean;
+  /**
+   * The message is one that was queued behind a turn: it takes these attachments instead of the
+   * view's draft, and it is never queued again.
+   */
+  queuedInput?: { attachments: Attachment[] };
+}
+
+/** The message a conversation holds back while a turn runs in it. Kept in memory only. */
+interface QueuedEntry {
+  /** What the views show. */
+  readonly message: QueuedMessage;
+  /** The view that queued it. */
+  readonly viewId: string;
+  /** Set while it is being sent, so nothing else sends, edits or removes it. */
+  sending: boolean;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -161,6 +207,12 @@ class Controller implements AppController {
   private readonly projectConfigAnnounced = new Set<string>();
   private checkpoints: CheckpointEngine | undefined;
   private rules: RuleStore | undefined;
+  /** The switches and saved folders, sites and PowerShell commands. With `saved`: only in the default policy. */
+  private grants: GrantStore | undefined;
+  /** Both stores as the Permissions view lists them. */
+  private saved: SavedPermissions | undefined;
+  /** Views with a permissions dialog open (a switch or a folder), so a view asks for one at a time. */
+  private readonly permissionDialogs = new Set<string>();
   private readonly unsubscribe: (() => void)[] = [];
   /** Folders the tracker has been asked to pre-warm. */
   private readonly prewarmed = new Set<FolderKey>();
@@ -182,6 +234,48 @@ class Controller implements AppController {
   private storageDir: string | undefined;
   private opening: Promise<void> | undefined;
   private readonly runs = new Map<ConversationId, TurnRun>();
+  /**
+   * At most one message per conversation, waiting for the turn that runs in it. Outlives the
+   * conversation's runtime: a conversation that no view shows is released from memory.
+   */
+  private readonly queued = new Map<ConversationId, QueuedEntry>();
+  /** Conversations whose queued message is being sent now by a "Send now". */
+  private readonly sendingNow = new Set<ConversationId>();
+  /** Conversations whose side question is being created: its branch exists, its run may not yet. */
+  private readonly asking = new Set<ConversationId>();
+  /** Views with the dialog that turns Auto on open, so a view asks for one at a time. */
+  private readonly autoDialogs = new Set<string>();
+  /**
+   * Conversations whose Auto is off although the store may still say on: an off is being written, or
+   * its write failed (the store then keeps `true`, in memory and on disk). For them Auto is off in
+   * the whole host, whatever the store says, until a write of `agentAuto: false` succeeds or Auto is
+   * turned on again through the dialog. In memory only: after a reload the disk is the truth.
+   */
+  private readonly autoOffUnsaved = new Set<ConversationId>();
+  /**
+   * How many times Auto was turned off per conversation, so a write that was overtaken by a later off
+   * (an on, or an earlier off) does not end that off.
+   */
+  private readonly autoOffs = new Map<ConversationId, number>();
+  /**
+   * How many times this window saw the setting that offers Auto off. A dialog that turns Auto on
+   * counts only when none happened between its opening and the moment Auto is written.
+   */
+  private autoResets = 0;
+  /** The warning that the reset of Auto could not be saved was shown, and is not yet resolved. */
+  private autoResetWarned = false;
+  /** The machine-wide reset of Auto (`autoReset`), created on first use. */
+  private autoResetStore: AutoReset | undefined;
+  /**
+   * Views whose first message is creating its conversation with the draft's Auto. An off without an
+   * id from such a view sets `cancelled`, and the conversation is then created (or set) without it.
+   */
+  private readonly draftAutoCreating = new Map<string, { cancelled: boolean }>();
+  /**
+   * Bytes of pasted images by id (the content hash), kept only while some view's draft or a queued
+   * message refers to them; a turn takes its own copies when the message is sent.
+   */
+  private readonly imageBytes = new Map<string, Buffer>();
   private readonly prompts = new Map<PromptId, PendingPrompt>();
   private readonly loading = new Map<ConversationId, Promise<ConvRuntime | undefined>>();
   private readonly listeners = new Set<() => void>();
@@ -203,8 +297,9 @@ class Controller implements AppController {
     this.observers = deps.observers ?? [];
     this.fileSearch = createFileSearch({ logger: deps.logger });
     this.state = new SessionState(
-      () => this.store?.list() ?? [],
+      () => (this.store?.list() ?? []).map((meta) => this.shownMeta(meta)),
       (view) => this.syncViewScope(view),
+      (runtime, ops) => this.forwardAside(runtime, ops),
     );
   }
 
@@ -249,6 +344,9 @@ class Controller implements AppController {
         error: redact(String(error)),
       });
     }
+    // A reset of Auto that could not be saved gets one more try, and what is being written finishes.
+    await this.autoResetStore?.refresh();
+    await this.autoResetStore?.idle();
     try {
       await this.store?.flush();
     } catch (error) {
@@ -261,6 +359,8 @@ class Controller implements AppController {
     } catch (error) {
       this.logger.warn('the tool server could not stop', { error: redact(String(error)) });
     }
+    this.queued.clear();
+    this.sendingNow.clear();
     for (const view of this.state.views.values()) view.dispose();
     this.state.views.clear();
     this.listeners.clear();
@@ -318,9 +418,85 @@ class Controller implements AppController {
       trusted: env.trusted(),
       folders: env.folders().map((folder) => ({ key: folder.key, name: folder.name })),
       defaults: { mode: settings.defaultMode, model: settings.defaultModel },
+      agentAuto: { offered: settings.agentAuto, commands: !settings.alwaysAskCommands },
+      policySettings: {
+        editApproval: settings.editApproval,
+        alwaysAskCommands: settings.alwaysAskCommands,
+        askWebTools: settings.askWebTools,
+        autoOffered: settings.agentAuto,
+        autoWebTools: settings.agentAutoWebTools,
+        sandbox: settings.sandbox,
+      },
       models: provider ? provider.listModels(settings.customModels) : [],
       banners: this.banners(status),
     });
+    this.settleAuto(settings.agentAuto);
+    // A setting that narrows Auto, even if changed back before the next decision, narrows every
+    // running turn for the rest of it.
+    for (const run of this.runs.values()) run.observeSettings(settings);
+  }
+
+  /**
+   * Auto after the settings or the folders changed. With the setting off it is cleared everywhere at
+   * once (every draft, every loaded conversation, and every stored one in the background), so that
+   * turning the setting on again arms nothing without a new dialog; the time it was seen off is kept
+   * for the whole machine (`autoReset`), so conversations of other workspaces are off too. A draft
+   * whose first message would now go to another folder than the one the dialog named loses it too.
+   * Never throws.
+   */
+  private settleAuto(offered: boolean): void {
+    const folders = this.deps.env.folders();
+    for (const view of this.state.views.values()) {
+      if (!view.draftAuto) continue;
+      // The folder a send from this view would use now, resolved as `sendTurn` does.
+      const folder = folders.find((candidate) => candidate.key === view.draftFolder) ?? folders[0];
+      if (!offered || folder?.key !== view.draftAuto.folder) this.clearDraftAuto(view);
+    }
+    if (offered) {
+      // Also a chance to save a reset that could not be saved earlier.
+      void this.autoReset.refresh();
+      return;
+    }
+    // Synchronous in memory: every Auto turned on before this moment is off from here on.
+    this.autoResets += 1;
+    void this.saveAutoReset();
+    for (const runtime of this.state.runtimes.values()) this.forceAutoOff(runtime);
+    const { store } = this;
+    if (!store) return;
+    for (const meta of store.list()) {
+      if (meta.agentAuto !== true) continue;
+      const { id } = meta;
+      this.markAutoOff(id);
+      this.updateMeta(store, id, { agentAuto: false }).catch((error: unknown) => {
+        this.logger.warn('Auto could not be turned off in a stored conversation', {
+          error: redact(String(error)),
+        });
+        // Off in the host whatever the store says (the id stays in `autoOffUnsaved`).
+        const current = this.state.runtimes.get(id);
+        if (current) this.forceAutoOff(current);
+      });
+    }
+  }
+
+  /**
+   * Records the reset in the global storage directory, and tries once more to save what could not be
+   * saved. A reset that stays unsaved is reported once in every attached view, and again only after
+   * it was saved and failed anew. Never rejects.
+   */
+  private async saveAutoReset(): Promise<void> {
+    const reset = this.autoReset;
+    await reset.seenOff();
+    await reset.refresh();
+    if (!reset.unsaved()) {
+      this.autoResetWarned = false;
+      return;
+    }
+    if (this.autoResetWarned || this.disposed) return;
+    for (const view of this.state.views.values()) {
+      if (view.disposed) continue;
+      this.state.toast(view, 'warning', TEXT.autoResetNotSaved);
+      this.autoResetWarned = true;
+    }
   }
 
   async refreshProvider(): Promise<void> {
@@ -378,6 +554,8 @@ class Controller implements AppController {
   private async doOpenStore(): Promise<void> {
     const dir = this.deps.env.storageDir();
     if (dir === undefined || this.store) return;
+    // Before any stored conversation is judged: when Auto was last reset on this machine.
+    await this.autoReset.refresh();
     const store = createConversationStore({
       dir: join(dir, 'conversations'),
       logger: this.logger,
@@ -403,6 +581,48 @@ class Controller implements AppController {
     this.storageDir = dir;
     this.store = store;
     this.plans = plans;
+    // The stores exist now: views that attached before show what is saved.
+    for (const view of this.state.views.values()) this.syncPermissions(view);
+    // Conversations stored while the setting was on keep their Auto only while it is on, and only
+    // when it was turned on after the last reset on this machine.
+    if (!this.deps.env.settings().agentAuto) this.settleAuto(false);
+    else this.clearStaleAuto(store);
+  }
+
+  /** The reset of Auto, kept in the global storage directory (in memory only without one). */
+  private get autoReset(): AutoReset {
+    this.autoResetStore ??= createAutoReset({
+      dir: this.deps.env.globalStorageDir(),
+      logger: this.logger,
+      ...(this.deps.clock ? { clock: this.deps.clock } : {}),
+    });
+    return this.autoResetStore;
+  }
+
+  /**
+   * Clears the stored flag of every conversation whose Auto was turned on before the last reset on
+   * this machine. Those are off already (`autoOn`); this only makes the store say so. Never throws.
+   */
+  private clearStaleAuto(store: ConversationStore): void {
+    const lastSeenOff = this.autoReset.lastSeenOff();
+    for (const meta of store.list()) {
+      if (meta.agentAuto !== true || (meta.agentAutoSince ?? 0) > lastSeenOff) continue;
+      this.updateMeta(store, meta.id, { agentAuto: false }).catch((error: unknown) => {
+        this.logger.warn('Auto could not be turned off in a stored conversation', {
+          error: redact(String(error)),
+        });
+      });
+    }
+  }
+
+  /** After the reset was read again: a conversation in memory whose Auto is now out of date shows it off. */
+  private applyAutoReset(): void {
+    for (const runtime of this.state.runtimes.values()) {
+      if (runtime.data.meta.agentAuto === true && !this.autoOn(runtime.data.meta)) {
+        this.forceAutoOff(runtime);
+      }
+    }
+    this.state.refreshSummaries();
   }
 
   /**
@@ -415,11 +635,16 @@ class Controller implements AppController {
       const rules = createRuleStore({ dir: join(dir, 'rules'), logger });
       await rules.init();
       this.rules = rules;
-      const readOnly = createReadOnlyPolicy({ logger });
+      const grants = createGrantStore({ dir: join(dir, 'permissions'), logger });
+      await grants.init();
+      this.grants = grants;
+      this.saved = createSavedPermissions({ rules, grants });
+      const sensitiveRoots = (): string[] => this.sensitiveRoots();
+      const readOnly = createReadOnlyPolicy({ logger, grants, sensitiveRoots });
       this.policy = createModePolicy({
         ask: readOnly,
         plan: readOnly,
-        agent: createAgentPolicy({ rules, logger }),
+        agent: createAgentPolicy({ rules, logger, grants, sensitiveRoots }),
       });
     }
     if (!this.deps.observers) {
@@ -491,6 +716,14 @@ class Controller implements AppController {
 
   get rulesInUse(): RuleStore | undefined {
     return this.rules;
+  }
+
+  get grantsInUse(): GrantStore | undefined {
+    return this.grants;
+  }
+
+  get savedInUse(): SavedPermissions | undefined {
+    return this.saved;
   }
 
   private async startTracker(): Promise<void> {
@@ -716,6 +949,7 @@ class Controller implements AppController {
     this.state.views.delete(view.id);
     if (this.lastUsed === view) this.lastUsed = undefined;
     if (view.activeId !== undefined) this.state.release(view.activeId);
+    this.pruneImages();
   }
 
   private recentView(): ViewRecord | undefined {
@@ -741,6 +975,12 @@ class Controller implements AppController {
     if (!view) return;
     this.startDraft(view, undefined);
     view.event({ kind: 'focus-composer' });
+  }
+
+  showPermissions(): void {
+    const view = this.recentView();
+    if (!view) return;
+    view.event({ kind: 'show-tab', tab: 'permissions' });
   }
 
   review(): ReviewEngine | undefined {
@@ -781,15 +1021,38 @@ class Controller implements AppController {
    *
    * What a compromised webview can still do WITHOUT a native dialog, as the residual risk:
    * - start a turn (`turn.send`), in any mode the policy offers, with text and attachments of its own;
+   * - queue one message per conversation behind a turn that runs there (`turn.send` again), and later
+   *   send it, take it back for editing or remove it (`queue.*`): no more than `turn.send` allows;
+   * - ask one side question at a time per conversation (`turn.send` in Ask mode while a turn runs
+   *   there), which creates a branch (a copy of the finished turns) in storage and runs a read-only
+   *   turn in it alongside the running one;
+   * - hand the host pasted image data, which is checked (type, size, signature) and kept in memory while
+   *   a draft or a queued message refers to it (until that message is sent, edited, removed, its
+   *   conversation deleted, or the window reloads); queued messages together hold at most
+   *   4 * MAX_IMAGE_BYTES_PER_MESSAGE of it;
    * - answer a permission prompt with "allow once" (the prompt shows what it allows, but the click is
    *   the webview's), and answer questions of the agent;
    * - make plan decisions, lock or unlock a plan, revert a plan to an earlier version;
+   * - open a version of a plan as a read-only document (`plan.open`), without a dialog: the text comes
+   *   from the stored plan, not from the message;
    * - accept changes (this only records a decision, no file is written);
-   * - reject a single file or hunk when the file is as the agent left it (the checkpoint history can
-   *   undo it), and the `agent-only` or `overwrite` choices after a native choice dialog;
+   * - reject a single file when it is as the agent left it (the checkpoint history can undo it), and
+   *   the `agent-only` or `overwrite` choices after a native choice dialog (rejecting a single hunk
+   *   exists only in the editor, not in the webview);
    * - copy text to the clipboard, open files inside the workspace folders and links after the editor's
    *   own confirmation;
-   * - rename, change the mode and model of, fork and open conversations.
+   * - rename, change the mode and model of, fork and open conversations;
+   * - turn Agent mode's Auto off, for a conversation or for its own draft, at any time and without a
+   *   dialog (it only takes approvals away), and ask for the dialog that turns it on again and again;
+   *   send turns and queue messages in a conversation where the user turned Auto on, which then run
+   *   commands and edits inside the folder without a prompt. It cannot turn Auto on: only the native
+   *   dialog does, between turns;
+   * - remove any saved permission of the folder its view shows, and turn any of that folder's switches
+   *   off, at any time and without a dialog (that only takes approvals away), and ask for the dialogs
+   *   that add a permission again and again. It cannot add a permission or turn a switch on: only a
+   *   confirmed native dialog does. No message names a folder or a path: the folder is always the one
+   *   the view shows, checked again after the dialog, and a directory comes from the native folder
+   *   picker, never from the message.
    */
   private async handle(view: ViewRecord, message: WebviewMessage): Promise<void> {
     switch (message.type) {
@@ -824,6 +1087,9 @@ class Controller implements AppController {
       case 'conversation.setModel':
         await this.changeConversation(view, message.conversationId, { model: message.model });
         return;
+      case 'conversation.setAuto':
+        await this.setAuto(view, message.conversationId, message.on);
+        return;
       case 'conversation.fork':
         await this.forkConversation(view, message.conversationId, message.messageId);
         return;
@@ -837,6 +1103,15 @@ class Controller implements AppController {
         return;
       case 'turn.cancel':
         await this.runs.get(message.conversationId)?.cancel();
+        return;
+      case 'queue.edit':
+        this.editQueued(view, message.conversationId);
+        return;
+      case 'queue.remove':
+        this.removeQueued(message.conversationId);
+        return;
+      case 'queue.sendNow':
+        await this.sendQueuedNow(view, message.conversationId);
         return;
 
       case 'context.pick':
@@ -853,6 +1128,9 @@ class Controller implements AppController {
         return;
       case 'context.addDiagnostics':
         this.addFromEditor(view, 'diagnostics');
+        return;
+      case 'context.pasteImage':
+        this.pasteImage(view, message.mediaType, message.data);
         return;
       case 'context.remove':
         this.removeAttachment(view, message.attachment);
@@ -886,6 +1164,18 @@ class Controller implements AppController {
       case 'logs.show':
         this.deps.ui.showLogs();
         return;
+      case 'settings.open':
+        this.deps.ui.openSettings();
+        return;
+      case 'permissions.remove':
+        await this.removePermission(view, message.id);
+        return;
+      case 'permissions.setSwitch':
+        await this.setPermissionSwitch(view, message.name, message.on);
+        return;
+      case 'permissions.addDirectory':
+        await this.addPermissionDirectory(view);
+        return;
 
       case 'plan.setLocked':
         await this.changeConversation(view, message.conversationId, { planLocked: message.locked });
@@ -902,15 +1192,8 @@ class Controller implements AppController {
       case 'plan.compare':
         await this.comparePlan(view, message.planId, message.left, message.right);
         return;
-      case 'plan.openInEditor':
-        await this.openPlanInEditor(view, message.planId);
-        return;
-      case 'plan.export':
-        await this.exportPlan(view, message.planId, message.version);
-        return;
-
-      case 'review.requestHunks':
-        await this.requestHunks(view, message.path);
+      case 'plan.open':
+        await this.openPlanVersion(view, message.planId, message.version);
         return;
       case 'review.openDiff':
         await this.openReviewDiff(view, message.path);
@@ -925,17 +1208,6 @@ class Controller implements AppController {
       case 'review.acceptFile':
         if (this.acceptRefused(view)) return;
         await this.reviewAction(view, (engine, key) => engine.acceptFile(key, message.path));
-        return;
-      case 'review.acceptHunk':
-        if (this.acceptRefused(view)) return;
-        await this.reviewResult(view, (engine, key) =>
-          engine.acceptHunk(key, message.path, message.hunkId),
-        );
-        return;
-      case 'review.rejectHunk':
-        await this.reviewResult(view, (engine, key) =>
-          engine.rejectHunk(key, message.path, message.hunkId),
-        );
         return;
       case 'review.rejectFile':
         await this.rejectFileForView(view, message.path);
@@ -995,17 +1267,28 @@ class Controller implements AppController {
         if (!data) return undefined;
         const existing = this.state.runtimes.get(id);
         if (existing) return existing;
-        const plan = await this.loadPlan(data.meta.planId);
+        const [plan, branches] = await Promise.all([
+          this.loadPlan(data.meta.planId),
+          this.loadAsideBranches(store, id),
+        ]);
         const raced = this.state.runtimes.get(id);
         if (raced) return raced;
         this.state.previews.set(id, previewOf(data.messages));
+        // The meta as the store has it now, not as it was read: an Auto turned off (or any other
+        // change written) while the plan and the side questions loaded is not undone.
+        const current = store.list().find((meta) => meta.id === id) ?? data.meta;
         return this.state.addRuntime({
-          meta: data.meta,
+          meta: this.shownMeta(current),
           turns: data.turns,
           messages: data.messages,
           prompts: data.prompts,
           plan,
           activity: null,
+          queued: this.queued.get(id)?.message ?? null,
+          // A branch held in memory is newer than what was read from the store.
+          asides: asidesOf(
+            branches.map((branch) => this.state.runtimes.get(branch.meta.id)?.data ?? branch),
+          ),
         });
       })
       .finally(() => {
@@ -1013,6 +1296,28 @@ class Controller implements AppController {
       });
     this.loading.set(id, load);
     return load;
+  }
+
+  /** The stored branches that hold a side question of a conversation. One that cannot be read is left out. */
+  private async loadAsideBranches(
+    store: ConversationStore,
+    parentId: ConversationId,
+  ): Promise<ConversationData[]> {
+    const ids = store
+      .list()
+      .filter((meta) => meta.aside?.parentId === parentId)
+      .map((meta) => meta.id);
+    const loaded = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          return await store.load(id);
+        } catch (error) {
+          this.logger.warn('a side question could not be read', { error: redact(String(error)) });
+          return undefined;
+        }
+      }),
+    );
+    return loaded.filter((branch): branch is ConversationData => branch !== undefined);
   }
 
   private async loadPlan(planId: PlanId | undefined): Promise<PlanDoc | null> {
@@ -1080,11 +1385,317 @@ class Controller implements AppController {
     id: ConversationId,
     patch: Parameters<ConversationStore['updateMeta']>[1],
   ): Promise<void> {
-    const next = await store.updateMeta(id, patch);
+    const next = await this.writeMeta(store, id, patch);
     const runtime = this.state.runtimes.get(id);
     if (runtime) this.state.mutate(runtime, [{ op: 'set', path: ['meta'], value: next }]);
     this.state.refreshSummaries();
     this.syncAllCheckpoints();
+  }
+
+  /**
+   * Writes a meta patch and resolves to the meta the host shows (`shownMeta`). For a conversation
+   * whose Auto is off but not saved, a patch that does not set Auto also writes it off (a retry). A
+   * successful write of off ends that state, and so does a successful write of on (the dialog), but
+   * only when Auto was not turned off again after that write was issued: a later off keeps its mark
+   * until a write issued after it succeeds.
+   */
+  private async writeMeta(
+    store: ConversationStore,
+    id: ConversationId,
+    patch: Parameters<ConversationStore['updateMeta']>[1],
+  ): Promise<ConversationMeta> {
+    const offs = this.autoOffs.get(id) ?? 0;
+    const retry = this.autoOffUnsaved.has(id) && patch.agentAuto === undefined;
+    const written = retry ? { ...patch, agentAuto: false } : patch;
+    const next = await store.updateMeta(id, written);
+    if (written.agentAuto !== undefined && (this.autoOffs.get(id) ?? 0) === offs) {
+      this.autoOffUnsaved.delete(id);
+    }
+    return this.shownMeta(next);
+  }
+
+  /**
+   * Whether Agent mode's Auto is on for a conversation, for everything in the host: the flag is on,
+   * no off of it is waiting to be saved, and it was turned on after the setting that offers Auto was
+   * last seen off on this machine.
+   */
+  private autoOn(meta: ConversationMeta | undefined): boolean {
+    return (
+      meta?.agentAuto === true &&
+      !this.autoOffUnsaved.has(meta.id) &&
+      (meta.agentAutoSince ?? 0) > this.autoReset.lastSeenOff()
+    );
+  }
+
+  /** A meta as it may leave the store for memory or a view: Auto off when the host has it off. */
+  private shownMeta(meta: ConversationMeta): ConversationMeta {
+    return meta.agentAuto === true && !this.autoOn(meta) ? { ...meta, agentAuto: false } : meta;
+  }
+
+  /** Auto is off for this conversation from now on, in the host, until a write says so in the store. */
+  private markAutoOff(id: ConversationId): void {
+    this.autoOffUnsaved.add(id);
+    this.autoOffs.set(id, (this.autoOffs.get(id) ?? 0) + 1);
+    // History shows it off at once, and keeps showing it off if the write fails.
+    this.state.refreshSummaries();
+  }
+
+  // ---- Agent mode's Auto ---------------------------------------------------------------------------------
+
+  /**
+   * Turns Auto on or off for a conversation, or for the view's draft (no id). Off always works, at
+   * once and without a dialog, also under a running turn. On only works between turns and only
+   * through the native dialog, and everything checked before the dialog is checked again after it.
+   */
+  private async setAuto(
+    view: ViewRecord,
+    id: ConversationId | undefined,
+    on: boolean,
+  ): Promise<void> {
+    if (!on) {
+      if (id === undefined) {
+        this.clearDraftAuto(view);
+        // The first message is creating the conversation with the draft's Auto: it gets none.
+        const creating = this.draftAutoCreating.get(view.id);
+        if (creating) creating.cancelled = true;
+      } else {
+        await this.turnAutoOff(view, id);
+      }
+      return;
+    }
+    const target = this.autoTarget(view, id);
+    if ('refused' in target) {
+      if (target.refused !== undefined) this.state.toast(view, 'warning', target.refused);
+      return;
+    }
+    const scope = {
+      navigation: view.navigation,
+      folder: target.folder.key,
+      resets: this.autoResets,
+    };
+    // The settings the dialog's text names: confirmed for another text, it is refused.
+    const named = this.autoDialogSettings();
+    this.autoDialogs.add(view.id);
+    let confirmed = false;
+    let since: number | undefined;
+    try {
+      confirmed = await this.deps.ui.confirm({
+        title:
+          id === undefined
+            ? 'Turn on Auto for the new conversation?'
+            : 'Turn on Auto for this conversation?',
+        detail: this.autoDialogDetail(target.title, target.folder),
+        confirmLabel: 'Turn On Auto',
+      });
+    } catch (error) {
+      this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+    }
+    try {
+      // The time it is turned on, later than every reset on this machine (the file is read again:
+      // another window may have reset Auto meanwhile) and recorded there before anything is on.
+      if (confirmed && !this.disposed && !view.disposed) since = await this.autoReset.stamp();
+    } catch (error) {
+      this.logger.warn('Auto could not be turned on', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.autoNotSaved);
+      return;
+    } finally {
+      this.autoDialogs.delete(view.id);
+      if (confirmed) this.applyAutoReset();
+    }
+    if (!confirmed || since === undefined || this.disposed || view.disposed) return;
+    // The dialog was open for a while: everything that allowed it must still hold.
+    const again = this.autoTarget(view, id, { afterDialog: true });
+    const unchanged =
+      !('refused' in again) &&
+      again.folder.key === scope.folder &&
+      (id !== undefined || view.navigation === scope.navigation) &&
+      this.autoDialogSettings() === named &&
+      // No reset while the dialog was open or the time was recorded, here or (read from the file)
+      // in another window.
+      this.autoResets === scope.resets &&
+      since > this.autoReset.lastSeenOff();
+    if (!unchanged) {
+      this.state.toast(view, 'warning', TEXT.autoChangedDuringDialog);
+      return;
+    }
+    if (id === undefined) {
+      view.draftAuto = { folder: again.folder.key, since };
+      view.apply([{ op: 'set', path: ['draftAgentAuto'], value: true }]);
+      return;
+    }
+    const { store } = this;
+    if (!store) return;
+    try {
+      // It counts until the setting is next seen off.
+      await this.updateMeta(store, id, { agentAuto: true, agentAutoSince: since });
+    } catch (error) {
+      this.logger.warn('Auto could not be turned on', { error: redact(String(error)) });
+      // Whatever the store kept (it may still say on), Auto is off for the host: the next meta
+      // write retries the off, and on again needs the dialog again.
+      this.markAutoOff(id);
+      const current = this.state.runtimes.get(id);
+      if (current) this.forceAutoOff(current);
+      this.state.toast(view, 'warning', TEXT.autoNotSaved);
+    }
+  }
+
+  /**
+   * What turning Auto on would apply to, or why it cannot be turned on now (`refused` is undefined
+   * when it is on already: nothing to do and nothing to say). After the dialog, "on already" counts
+   * as a change.
+   */
+  private autoTarget(
+    view: ViewRecord,
+    id: ConversationId | undefined,
+    options: { afterDialog?: boolean } = {},
+  ): { title: string | undefined; folder: FolderInfo } | { refused: string | undefined } {
+    const { env } = this.deps;
+    if (!env.settings().agentAuto) return { refused: TEXT.autoNotOffered };
+    if (!env.trusted()) return { refused: TEXT.untrustedRefusal };
+    if (!options.afterDialog && this.autoDialogs.has(view.id)) {
+      return { refused: TEXT.autoDialogOpen };
+    }
+    const folders = env.folders();
+    if (id === undefined) {
+      if (view.activeId !== undefined || view.creating) return { refused: TEXT.autoDraftGone };
+      const folder = folders.find((candidate) => candidate.key === view.draftFolder) ?? folders[0];
+      if (!folder) return { refused: TEXT.noFolder };
+      if (view.draftAuto?.folder === folder.key) {
+        return { refused: options.afterDialog ? TEXT.autoChangedDuringDialog : undefined };
+      }
+      return { title: undefined, folder };
+    }
+    const meta =
+      this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+    if (!meta || !this.store?.list().some((item) => item.id === id)) {
+      return { refused: TEXT.conversationGone };
+    }
+    // Only the conversation the view shows: the webview could name any other one.
+    if (id !== view.activeId) return { refused: TEXT.autoNotShown };
+    if (this.isBusy(id)) return { refused: TEXT.autoWaitForTurn };
+    const folder = folders.find((candidate) => candidate.key === meta.folder);
+    if (!folder) return { refused: TEXT.conversationFolderClosed };
+    if (this.autoOn(meta)) {
+      return { refused: options.afterDialog ? TEXT.autoChangedDuringDialog : undefined };
+    }
+    return { title: meta.title, folder };
+  }
+
+  /** The values of the settings the dialog that turns Auto on names, as one comparable string. */
+  private autoDialogSettings(): string {
+    const { alwaysAskCommands, agentAutoWebTools, sandbox } = this.deps.env.settings();
+    return JSON.stringify([alwaysAskCommands, agentAutoWebTools, sandbox]);
+  }
+
+  /** The text of the dialog that turns Auto on, from the settings and capabilities of this moment. */
+  private autoDialogDetail(title: string | undefined, folder: FolderInfo): string {
+    const settings = this.deps.env.settings();
+    // The folder's path first, on its own line, escaped rather than collapsed so that two paths
+    // never look alike (the folder's name is not shown: a workspace file can set it to anything,
+    // also to a fake path); the title (which the webview can set) comes after it, cut, on one line.
+    const chars = title === undefined ? [] : Array.from(title);
+    const named =
+      title === undefined
+        ? 'new'
+        : chars.length > DIALOG_TITLE_LENGTH
+          ? `${chars.slice(0, DIALOG_TITLE_LENGTH - 1).join('')}…`
+          : title;
+    const path = oneLineText(shownPath(folder.path, homeDirectory()));
+    const where = `Folder: ${path}\nConversation: ${oneLineText(named)}`;
+    const what = settings.alwaysAskCommands
+      ? 'Agent turns in this conversation run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.'
+      : 'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.';
+    const sandbox = !settings.sandbox
+      ? 'Commands are not sandboxed.'
+      : this.state.global.provider?.capabilities.sandbox === true
+        ? 'The sandbox is requested by your settings; AgentCanopy cannot verify that it is active. With Auto on, a command cannot leave it.'
+        : 'The sandbox setting is on, but the sandbox is not available on this platform: commands are not sandboxed.';
+    const stillAsks = settings.agentAutoWebTools
+      ? 'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).'
+      : 'Still asks: protected files, anything outside the folder, web access and other tools.';
+    return [
+      where,
+      what,
+      sandbox,
+      stillAsks,
+      'Review and checkpoints undo file changes inside the folder only. They do not undo what a command does outside it, to Git or over the network, and a command can change protected files without asking.',
+      'Auto stays on for this conversation, also for queued messages and approved plans, until you turn it off.',
+    ].join('\n\n');
+  }
+
+  /**
+   * Turns Auto off for a conversation. A running turn asks again from its next permission request
+   * on, before anything is awaited; the stored flag follows. Never refused, never a dialog.
+   */
+  private async turnAutoOff(view: ViewRecord, id: ConversationId): Promise<void> {
+    this.runs.get(id)?.revokeAuto();
+    const runtime = this.state.runtimes.get(id);
+    const stored = this.store?.list().find((meta) => meta.id === id);
+    const wasOn = runtime?.data.meta.agentAuto === true || stored?.agentAuto === true;
+    if (runtime) this.forceAutoOff(runtime);
+    const { store } = this;
+    if (!wasOn || !store || !stored) return;
+    // Off for the whole host now, before the write: a conversation loaded from disk meanwhile, or a
+    // write that fails and leaves the store on, cannot bring it back.
+    this.markAutoOff(id);
+    try {
+      await this.updateMeta(store, id, { agentAuto: false });
+    } catch (error) {
+      this.logger.warn('Auto could not be turned off in storage', { error: redact(String(error)) });
+      // Off in the host whatever the store says (the id stays in `autoOffUnsaved`), for every turn
+      // that starts from now on.
+      const current = this.state.runtimes.get(id);
+      if (current) this.forceAutoOff(current);
+      this.state.toast(view, 'warning', TEXT.autoOffNotSaved);
+    }
+  }
+
+  /**
+   * Writes an off that `markAutoOff` already made for the host. A failure leaves it off in the host
+   * and is reported in the view (logged without one). Never rejects.
+   */
+  private writeAutoOff(
+    store: ConversationStore,
+    id: ConversationId,
+    view: ViewRecord | undefined,
+  ): void {
+    this.updateMeta(store, id, { agentAuto: false }).catch((error: unknown) => {
+      this.logger.warn('Auto could not be turned off in storage', { error: redact(String(error)) });
+      const current = this.state.runtimes.get(id);
+      if (current) this.forceAutoOff(current);
+      if (view && !view.disposed) this.state.toast(view, 'warning', TEXT.autoOffNotSaved);
+    });
+  }
+
+  /** Sets a loaded conversation's Auto off in memory only, in every view that shows it. */
+  private forceAutoOff(runtime: ConvRuntime): void {
+    if (runtime.data.meta.agentAuto !== true) return;
+    this.state.mutate(runtime, [
+      { op: 'set', path: ['meta'], value: { ...runtime.data.meta, agentAuto: false } },
+    ]);
+  }
+
+  /**
+   * Whether a first message from this view creates its conversation with the draft's Auto: in any
+   * mode (the dialog said Auto stays on for the conversation), in the folder the dialog named, while
+   * the setting is on.
+   */
+  private draftAutoFor(view: ViewRecord, folder: FolderInfo | undefined): boolean {
+    return (
+      view.draftAuto !== undefined &&
+      folder !== undefined &&
+      view.draftAuto.folder === folder.key &&
+      // Confirmed after the last reset on this machine.
+      view.draftAuto.since > this.autoReset.lastSeenOff() &&
+      this.deps.env.settings().agentAuto
+    );
+  }
+
+  private clearDraftAuto(view: ViewRecord): void {
+    view.draftAuto = undefined;
+    if (view.state.draftAgentAuto) {
+      view.apply([{ op: 'set', path: ['draftAgentAuto'], value: false }]);
+    }
   }
 
   private async deleteConversation(view: ViewRecord, id: ConversationId): Promise<void> {
@@ -1099,22 +1710,36 @@ class Controller implements AppController {
       });
       if (!confirmed || view.disposed) return;
     }
-    const run = this.runs.get(id);
-    if (run) {
-      await run.cancel();
-      await run.done;
-    }
-    for (const shown of this.state.views.values()) {
-      if (shown.activeId === id) {
-        shown.navigation += 1;
-        this.state.showDraft(shown);
+    const asideParent = (this.state.runtimes.get(id)?.data.meta ?? meta)?.aside?.parentId;
+    // Nothing may start or be queued in the conversation until it is gone.
+    this.reserved.add(id);
+    try {
+      // Before the turn is stopped: a turn that ends on its own meanwhile must not send it.
+      this.queued.delete(id);
+      const run = this.runs.get(id);
+      if (run) {
+        await run.cancel();
+        await run.done;
       }
+      this.queued.delete(id);
+      for (const shown of this.state.views.values()) {
+        if (shown.activeId === id) {
+          shown.navigation += 1;
+          this.state.showDraft(shown);
+        }
+      }
+      const planId = store.list().find((meta) => meta.id === id)?.planId;
+      await store.delete(id);
+      if (planId !== undefined) await this.deletePlan(planId);
+    } finally {
+      this.reserved.delete(id);
     }
-    const planId = store.list().find((meta) => meta.id === id)?.planId;
-    await store.delete(id);
-    if (planId !== undefined) await this.deletePlan(planId);
     this.state.runtimes.delete(id);
     this.state.previews.delete(id);
+    this.autoOffUnsaved.delete(id);
+    this.autoOffs.delete(id);
+    this.dropAside(asideParent, id);
+    this.pruneImages();
     for (const shown of this.state.views.values()) {
       const search = shown.state.search;
       if (!search) continue;
@@ -1234,13 +1859,16 @@ class Controller implements AppController {
     }
   }
 
-  /** A branch gets its own copy of the plan of the conversation it came from. */
+  /**
+   * A branch gets its own copy of the plan of the conversation it came from. Resolves to false when
+   * the copy failed (logged); true when it was made or there was nothing to copy.
+   */
   private async copyPlanToBranch(
     parentId: ConversationId,
     branchId: ConversationId,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const planId = this.store?.list().find((meta) => meta.id === parentId)?.planId;
-    if (planId === undefined || !this.plans || !this.store) return;
+    if (planId === undefined || !this.plans || !this.store) return true;
     try {
       // The plan as it stood at the fork point. A branch that keeps no turn has no plan; one that
       // keeps every turn gets all of it; otherwise it is cut by the time the last kept turn ended.
@@ -1249,17 +1877,23 @@ class Controller implements AppController {
         this.store.load(parentId),
       ]);
       const lastKept = branch?.meta.fork?.lastKeptParentTurnId;
-      if (lastKept === undefined || !parent) return;
+      if (lastKept === undefined || !parent) return true;
       const keptTurn = parent.turns.find((turn) => turn.id === lastKept);
-      if (!keptTurn) return;
+      if (!keptTurn) return true;
       const wholePlan = parent.turns[parent.turns.length - 1]?.id === lastKept;
       const copy = await this.plans.copy(
         planId,
         branchId,
         wholePlan ? {} : { upToTime: keptTurn.endedAt ?? keptTurn.startedAt },
       );
-      if (!copy) return;
-      await this.store.updateMeta(branchId, { planId: copy.id });
+      if (!copy) return true;
+      try {
+        await this.store.updateMeta(branchId, { planId: copy.id });
+      } catch (error) {
+        // Not recorded on the branch, the copy would be left behind: it goes again.
+        await this.deletePlan(copy.id);
+        throw error;
+      }
       // The copied messages still name the parent's plan; point their plan cards at the copy.
       for (const message of branch?.messages ?? []) {
         if (message.role !== 'assistant') continue;
@@ -1271,26 +1905,36 @@ class Controller implements AppController {
           ),
         });
       }
+      return true;
     } catch (error) {
       this.logger.warn('the plan could not be copied to the branch', {
         error: redact(String(error)),
       });
+      return false;
     }
   }
 
   // ---- turns ---------------------------------------------------------------------------------------------
 
+  /**
+   * Starts a turn for a message. Resolves to whether a run has started; a refusal says why in a toast
+   * (logged instead when no view is given: a queued message is sent without any view attached).
+   */
   private async sendTurn(
-    view: ViewRecord,
+    view: ViewRecord | undefined,
     message: SendMessage,
     options: TurnOptions = {},
-  ): Promise<void> {
+  ): Promise<boolean> {
     const { env } = this.deps;
-    const refuse = (text: string): void => this.state.toast(view, 'warning', text);
+    const refuse = (text: string): false => {
+      if (view) this.state.toast(view, 'warning', text);
+      else this.logger.info('a queued message was not sent', { reason: text });
+      return false;
+    };
     let runtime: ConvRuntime | undefined;
-    const giveUp = (text: string): void => {
+    const giveUp = (text: string): false => {
       if (runtime) this.state.release(runtime.id);
-      refuse(text);
+      return refuse(text);
     };
 
     if (!env.trusted()) return refuse(TEXT.untrustedRefusal);
@@ -1313,8 +1957,30 @@ class Controller implements AppController {
       runtime = await this.getRuntime(message.conversationId);
       if (!runtime) return refuse(TEXT.conversationGone);
     }
-    if (this.disposed) return undefined;
-    if (view.creating || (runtime && this.isBusy(runtime.id))) {
+    if (this.disposed) return false;
+    if (view?.creating || (runtime && this.isBusy(runtime.id))) {
+      // A turn runs in the conversation and nothing else holds it: Agent and Plan messages wait for
+      // it, and a question in Ask mode runs alongside it as a side question.
+      if (
+        view &&
+        runtime &&
+        !view.creating &&
+        !options.gate &&
+        !options.queuedInput &&
+        this.runs.has(runtime.id) &&
+        !this.reserved.has(runtime.id) &&
+        (this.forkHolds.get(runtime.id) ?? 0) === 0
+      ) {
+        if (message.mode !== 'ask') return this.queueMessage(view, runtime, message);
+        // The run is wrapping up a turn that has already ended, so the conversation looks idle and
+        // there is nothing to anchor a side question to: the question waits and goes out as an
+        // ordinary turn.
+        if (!this.hasRunningTurn(runtime)) return this.queueMessage(view, runtime, message);
+        // A side question has no side questions of its own.
+        if (runtime.data.meta.aside !== undefined) return giveUp(TEXT.turnRunning);
+        if (this.asideBusy(runtime.id)) return giveUp(TEXT.asideRunning);
+        return this.startAside(view, store, runtime, message);
+      }
       return giveUp(TEXT.turnRunning);
     }
 
@@ -1322,7 +1988,13 @@ class Controller implements AppController {
     const existing = runtime;
     const folder = existing
       ? folders.find((candidate) => candidate.key === existing.data.meta.folder)
-      : (folders.find((candidate) => candidate.key === view.draftFolder) ?? folders[0]);
+      : (folders.find((candidate) => candidate.key === view?.draftFolder) ?? folders[0]);
+    // Auto the user confirmed for this view's draft: the conversation this send creates has it, in
+    // any mode. Used up where Auto is decided below, in the same synchronous run, so it is never
+    // used twice (a refusal after that point ends it too).
+    const draftAuto = !existing && view !== undefined && this.draftAutoFor(view, folder);
+    // When the user turned it on: the time recorded when the draft's dialog was confirmed.
+    const draftAutoSince = draftAuto ? view.draftAuto?.since : undefined;
     let conversation: ConversationMeta;
     if (existing) {
       conversation = existing.data.meta;
@@ -1339,14 +2011,36 @@ class Controller implements AppController {
         model: message.model,
         mode: message.mode,
         planLocked: false,
+        // So that the profile agrees with the conversation this send creates.
+        ...(draftAutoSince !== undefined
+          ? { agentAuto: true, agentAutoSince: draftAutoSince }
+          : {}),
       };
     } else {
       return refuse(TEXT.noFolder);
     }
-    const profile = policy.profile({ mode: message.mode, settings, conversation });
+    // Decided once, here, synchronously and before any gate: the profile (the sandbox lock), the plan
+    // dialog and the turn all follow this value. Later it can only be taken away.
+    const autoWanted = message.mode === 'agent' && settings.agentAuto && this.autoOn(conversation);
+    if (draftAuto && view) this.clearDraftAuto(view);
+    const profile = policy.profile({
+      mode: message.mode,
+      settings,
+      conversation: { ...conversation, agentAuto: autoWanted },
+    });
     if ('unavailable' in profile) return giveUp(profile.unavailable);
     if (!folder) return giveUp(TEXT.conversationFolderClosed);
     if (runtime && runtime.data.meta.providerId !== provider.id) return giveUp(TEXT.noProvider);
+    // Before the gate and before anything is stored: an Agent turn would be refused by the tracker
+    // anyway, and a plan approval must not be recorded for a turn that cannot start.
+    if (message.mode === 'agent' && (this.tracker?.configChanges(folder.key).length ?? 0) > 0) {
+      return giveUp(CONFIG_PENDING_MESSAGE);
+    }
+    // A plan approval asks the user first: do not ask when another conversation's Agent turn already
+    // holds the folder. The gate checks again for a turn that starts while its dialog is open.
+    if (options.gate && message.mode === 'agent' && this.agentRunningIn(folder.key)) {
+      return giveUp(BUSY_MESSAGE);
+    }
 
     let promptText: string | undefined;
     if (options.gate) {
@@ -1355,20 +2049,26 @@ class Controller implements AppController {
       if (held !== undefined) this.reserved.add(held);
       let outcome: Awaited<ReturnType<NonNullable<TurnOptions['gate']>>>;
       try {
-        outcome = await options.gate();
+        outcome = await options.gate({ auto: autoWanted });
       } finally {
         if (held !== undefined) this.reserved.delete(held);
       }
       if (outcome === false || this.disposed) {
         if (runtime) this.state.release(runtime.id);
-        return undefined;
+        return false;
       }
       promptText = outcome.promptText;
     }
 
     const creating = runtime === undefined;
     if (!runtime) {
+      if (!view) return refuse(TEXT.conversationGone);
+      // The draft's Auto was used up when it was decided above; clear anything set since.
+      this.clearDraftAuto(view);
       view.creating = true;
+      // An off from this view while the conversation is created takes the draft's Auto away.
+      const creatingAuto = { cancelled: false };
+      if (draftAutoSince !== undefined) this.draftAutoCreating.set(view.id, creatingAuto);
       try {
         const title = titleOf(message.text);
         const meta = await store.create({
@@ -1377,31 +2077,57 @@ class Controller implements AppController {
           model: message.model,
           mode: message.mode,
           ...(title !== undefined ? { title } : {}),
+          ...(draftAutoSince !== undefined
+            ? { agentAuto: true, agentAutoSince: draftAutoSince }
+            : {}),
         });
-        if (this.disposed) return undefined;
+        if (creatingAuto.cancelled && meta.agentAuto === true) {
+          // Off for the whole host before anything else sees the conversation; the store follows.
+          this.markAutoOff(meta.id);
+          this.writeAutoOff(store, meta.id, view);
+        }
+        if (this.disposed) return false;
         runtime = this.state.addRuntime({
-          meta,
+          meta: this.shownMeta(meta),
           turns: [],
           messages: [],
           prompts: [],
           plan: null,
           activity: null,
+          queued: null,
+          asides: [],
         });
       } finally {
         view.creating = false;
+        if (this.draftAutoCreating.get(view.id) === creatingAuto) {
+          this.draftAutoCreating.delete(view.id);
+        }
       }
     }
 
     // The sending view's attachments go into the message. They are taken before the view shows the
     // new conversation, which would clear them.
-    const attachments = options.noAttachments ? [] : [...view.state.draftAttachments];
-    if (attachments.length > 0) {
+    const fromDraft = !options.queuedInput && !options.noAttachments && view !== undefined;
+    const taken = options.queuedInput
+      ? [...options.queuedInput.attachments]
+      : fromDraft
+        ? [...view.state.draftAttachments]
+        : [];
+    // Images travel as bytes: look them up now, before the draft is cleared. One whose bytes are gone
+    // is left out of the message.
+    const { attachments, images } = this.resolveAttachments(taken, refuse);
+    if (fromDraft && taken.length > 0) {
       view.apply([{ op: 'set', path: ['draftAttachments'], value: [] }]);
     }
-    if (creating && view.activeId === undefined) this.state.showConversation(view, runtime);
+    this.pruneImages();
+    if (creating && view && view.activeId === undefined) this.state.showConversation(view, runtime);
 
+    // Only narrower than what the profile was built with: still on now, after any gate. During the
+    // turn it can only be taken away (`TurnRun.revokeAuto`).
+    const auto = autoWanted && env.settings().agentAuto && this.autoOn(runtime.data.meta);
     const run = new TurnRun(this.turnServices(store, plans, policy, storageDir), {
       runtime,
+      auto,
       provider,
       folder,
       profile,
@@ -1411,12 +2137,38 @@ class Controller implements AppController {
       mode: message.mode,
       model: message.model,
       attachments,
+      ...(images.length > 0 ? { images } : {}),
     });
     this.runs.set(runtime.id, run);
+    this.syncReviewBusyAll();
     this.fireRunningChanged();
     run.start();
     options.onStarted?.(run);
-    return undefined;
+    return true;
+  }
+
+  /** Splits attachments into what the message lists and the bytes of its images; one with no bytes is left out. */
+  private resolveAttachments(
+    taken: readonly Attachment[],
+    refuse: (text: string) => void,
+  ): { attachments: Attachment[]; images: TurnImage[] } {
+    const images: TurnImage[] = [];
+    const attachments: Attachment[] = [];
+    for (const attachment of taken) {
+      if (attachment.kind !== 'image') {
+        attachments.push(attachment);
+        continue;
+      }
+      const bytes = this.imageBytes.get(attachment.id);
+      if (bytes) {
+        images.push({ mediaType: attachment.mediaType, data: new Uint8Array(bytes) });
+        attachments.push(attachment);
+      } else {
+        this.logger.warn('an attached image was no longer available');
+        refuse(TEXT.imageGone);
+      }
+    }
+    return { attachments, images };
   }
 
   private turnServices(
@@ -1435,6 +2187,7 @@ class Controller implements AppController {
       storageDir,
       prompts: this.prompts,
       refreshProvider: () => this.refreshProvider(),
+      updateMeta: (id, patch) => this.writeMeta(store, id, patch),
       onRefused: (folder, mode) => this.turnRefused(folder, mode),
       ...(this.projectConfigDecisions
         ? { resolveProjectConfig: (folder: FolderInfo) => this.resolveProjectConfig(folder) }
@@ -1449,16 +2202,436 @@ class Controller implements AppController {
           }
         : {}),
       onEnded: (run) => {
+        const status = this.state.runtimes
+          .get(run.conversationId)
+          ?.data.turns.find((turn) => turn.id === run.turnId)?.status;
         this.collectGarbageSoon(run.folderKey);
         this.runs.delete(run.conversationId);
+        this.syncReviewBusyAll();
         // A turn may have created or removed files.
         this.fileSearch.invalidate();
         this.state.running.delete(run.conversationId);
         this.state.refreshSummaries();
         this.state.release(run.conversationId);
         this.fireRunningChanged();
+        // Only after a turn that completed: after a stop or an error the message waits for the user.
+        if (status === 'completed') {
+          this.dispatchQueued(run.conversationId).catch((error: unknown) => {
+            this.logger.error('a queued message could not be sent', {
+              error: redact(String(error)),
+            });
+          });
+        }
       },
     };
+  }
+
+  // ---- side questions ----------------------------------------------------------------------------------
+
+  /** The conversation's last turn has not ended yet. */
+  private hasRunningTurn(runtime: ConvRuntime): boolean {
+    return runtime.data.turns.some(
+      (turn) => turn.status === 'running' || turn.status === 'preparing',
+    );
+  }
+
+  /** A side question of the conversation is being created or still runs. */
+  private asideBusy(parentId: ConversationId): boolean {
+    if (this.asking.has(parentId)) return true;
+    return [...this.runs.values()].some((run) => {
+      const aside = this.state.runtimes.get(run.conversationId)?.data.meta.aside;
+      // A later turn of a branch that was opened as a conversation is not a side question.
+      return (
+        aside?.parentId === parentId && (aside.turnId === undefined || aside.turnId === run.turnId)
+      );
+    });
+  }
+
+  /**
+   * A question asked in Ask mode while a turn runs in the conversation. It runs alongside that turn,
+   * in a branch of the turns that have finished, which is not opened in the view: the parent shows it
+   * as a card at the place it was asked. Nothing of the parent changes. Resolves to whether the side
+   * question's run has started; when it has not, the branch is deleted again.
+   */
+  private async startAside(
+    view: ViewRecord,
+    store: ConversationStore,
+    parent: ConvRuntime,
+    message: SendMessage,
+  ): Promise<boolean> {
+    const parentId = parent.id;
+    const { turns, messages } = parent.data;
+    const running = turns.findLast(
+      (turn) => turn.status === 'running' || turn.status === 'preparing',
+    );
+    const user = running
+      ? messages.find((candidate) => candidate.role === 'user' && candidate.turnId === running.id)
+      : undefined;
+    if (!running || !user) {
+      // Not expected: `sendTurn` queues the message when no turn is running.
+      this.state.toast(view, 'warning', TEXT.turnRunning);
+      return false;
+    }
+    const assistant = messages.find(
+      (candidate): candidate is AssistantMessage =>
+        candidate.role === 'assistant' && candidate.turnId === running.id,
+    );
+    const anchor: AsideAnchor = assistant
+      ? { messageId: assistant.id, afterParts: assistant.parts.length }
+      : { messageId: user.id, afterParts: 0 };
+
+    // Synchronously, before any await: a second send meanwhile is refused.
+    this.asking.add(parentId);
+    let branchId: ConversationId | undefined;
+    let started = false;
+    try {
+      try {
+        // At the user message of the running turn: the branch keeps only the turns that finished.
+        const { meta } = await store.fork({ parentId, atMessageId: user.id });
+        branchId = meta.id;
+        const title = titleOf(message.text);
+        await store.updateMeta(branchId, {
+          aside: { parentId, anchor },
+          mode: 'ask',
+          model: message.model,
+          ...(title !== undefined ? { title } : {}),
+        });
+        // Like any branch, it has its own copy of the plan (the parent's is read, never changed).
+        if (!(await this.copyPlanToBranch(parentId, branchId))) {
+          throw new Error('the plan could not be copied');
+        }
+      } catch (error) {
+        this.logger.warn('a side question could not be created', { error: redact(String(error)) });
+        this.state.toast(view, 'warning', TEXT.asideFailed);
+        return false;
+      }
+      if (this.disposed) return false;
+
+      let run: TurnRun | undefined;
+      started = await this.sendTurn(
+        view,
+        {
+          type: 'turn.send',
+          conversationId: branchId,
+          text: message.text,
+          mode: 'ask',
+          model: message.model,
+        },
+        {
+          onStarted: (startedRun) => {
+            run = startedRun;
+          },
+        },
+      );
+      if (!started || run === undefined) return started;
+      try {
+        await this.updateMeta(store, branchId, {
+          aside: { parentId, anchor, turnId: run.turnId },
+        });
+      } catch (error) {
+        this.logger.warn('a side question could not be marked', { error: redact(String(error)) });
+        // Unmarked, it would run unseen (no card, no Stop) and refuse the next side question: it is
+        // stopped, and its branch goes in `finally`.
+        await run.cancel();
+        await run.done;
+        started = false;
+        this.state.toast(view, 'warning', TEXT.asideFailed);
+        return false;
+      }
+      // A run that ended before its branch was marked has released the branch already.
+      if (!this.state.runtimes.has(branchId)) await this.showStoredAside(store, branchId);
+      return true;
+    } finally {
+      this.asking.delete(parentId);
+      if (!started && branchId !== undefined) await this.discardAside(store, branchId);
+    }
+  }
+
+  /** Deletes the branch of a side question whose run did not start, and its plan, so nothing empty is left. */
+  private async discardAside(store: ConversationStore, branchId: ConversationId): Promise<void> {
+    // Read first: the branch's own copy of the plan goes even when the branch cannot be deleted.
+    const metas = store.list();
+    const branch = metas.find((meta) => meta.id === branchId);
+    const parentPlanId = metas.find((meta) => meta.id === branch?.fork?.parentId)?.planId;
+    const planId = branch?.planId;
+    try {
+      await store.delete(branchId);
+    } catch (error) {
+      this.logger.warn('an unused side question could not be deleted', {
+        error: redact(String(error)),
+      });
+    }
+    // Never the parent's plan, which a branch only ever has a copy of.
+    if (planId !== undefined && planId !== parentPlanId) await this.deletePlan(planId);
+    this.state.release(branchId);
+    this.state.previews.delete(branchId);
+    this.state.refreshSummaries();
+  }
+
+  /** Brings the parent's card in step with a branch that is not in memory. */
+  private async showStoredAside(store: ConversationStore, branchId: ConversationId): Promise<void> {
+    let branch: ConversationData | undefined;
+    try {
+      branch = await store.load(branchId);
+    } catch (error) {
+      this.logger.warn('a side question could not be read', { error: redact(String(error)) });
+    }
+    if (!branch || this.state.runtimes.has(branchId)) return;
+    const parentId = branch.meta.aside?.parentId;
+    const parent = parentId !== undefined ? this.state.runtimes.get(parentId) : undefined;
+    if (!parent) return;
+    this.state.mutate(parent, asideOps(parent.data.asides, branch, []));
+  }
+
+  /**
+   * After a side question's branch changed in memory: the card in its parent follows, in every view
+   * that shows the parent. A parent that is not in memory rebuilds its cards when it is loaded.
+   */
+  private forwardAside(branch: ConvRuntime, ops: readonly PatchOp[]): void {
+    const parentId = branch.data.meta.aside?.parentId;
+    if (parentId === undefined || parentId === branch.id) return;
+    const parent = this.state.runtimes.get(parentId);
+    if (!parent) return;
+    this.state.mutate(parent, asideOps(parent.data.asides, branch.data, ops));
+  }
+
+  /** A deleted branch's card leaves its parent. */
+  private dropAside(parentId: ConversationId | undefined, branchId: ConversationId): void {
+    if (parentId === undefined) return;
+    const parent = this.state.runtimes.get(parentId);
+    const index = parent?.data.asides.findIndex((aside) => aside.conversationId === branchId) ?? -1;
+    if (parent && index >= 0)
+      this.state.mutate(parent, [{ op: 'delete', path: ['asides', index] }]);
+  }
+
+  // ---- the message queued behind a running turn --------------------------------------------------------
+
+  /**
+   * Holds the message of a send that came while a turn runs in the conversation. Nothing is stored
+   * and no toast is shown. Resolves to false: no run has started.
+   */
+  private queueMessage(view: ViewRecord, runtime: ConvRuntime, message: SendMessage): false {
+    const id = runtime.id;
+    if (this.queued.has(id)) {
+      // The draft stays as it is.
+      this.state.toast(view, 'warning', TEXT.messageAlreadyQueued);
+      return false;
+    }
+    const taken = [...view.state.draftAttachments];
+    // All queued messages together may hold only so many image bytes.
+    const imageBytesOf = (list: readonly Attachment[]): number =>
+      list.reduce((sum, item) => sum + (item.kind === 'image' ? item.bytes : 0), 0);
+    const draftBytes = imageBytesOf(taken);
+    if (draftBytes > 0) {
+      let held = draftBytes;
+      for (const entry of this.queued.values()) held += imageBytesOf(entry.message.attachments);
+      if (held > 4 * MAX_IMAGE_BYTES_PER_MESSAGE) {
+        this.state.toast(view, 'warning', TEXT.queuedImagesFull);
+        return false;
+      }
+    }
+    // The bytes of images stay held in `imageBytes`, which the queued message now refers to.
+    const { attachments } = this.resolveAttachments(taken, (text) =>
+      this.state.toast(view, 'warning', text),
+    );
+    const entry: QueuedEntry = {
+      message: {
+        text: message.text,
+        mode: message.mode,
+        model: message.model,
+        attachments,
+        queuedAt: (this.deps.clock ?? { now: () => Date.now() }).now(),
+      },
+      viewId: view.id,
+      sending: false,
+    };
+    this.queued.set(id, entry);
+    if (taken.length > 0) {
+      view.apply([{ op: 'set', path: ['draftAttachments'], value: [] }]);
+    }
+    this.pruneImages();
+    this.showQueued(id, entry.message);
+    return false;
+  }
+
+  /** Shows the queued message of a conversation (or none) in every view that shows it. */
+  private showQueued(id: ConversationId, message: QueuedMessage | null): void {
+    const runtime = this.state.runtimes.get(id);
+    if (runtime) this.state.mutate(runtime, [{ op: 'set', path: ['queued'], value: message }]);
+  }
+
+  /**
+   * The view a queued message is reported in: the one that queued it while it still shows the
+   * conversation, else one that shows it. A view that moved on is not told about it.
+   */
+  private viewForQueued(id: ConversationId, entry: QueuedEntry): ViewRecord | undefined {
+    const queuedBy = this.state.views.get(entry.viewId);
+    if (queuedBy && !queuedBy.disposed && queuedBy.activeId === id) return queuedBy;
+    for (const candidate of this.state.views.values()) {
+      if (candidate.activeId === id) return candidate;
+    }
+    return undefined;
+  }
+
+  /**
+   * Sends the queued message of a conversation through `sendTurn`. Safe to call from anywhere and
+   * more than once: whoever gets there first marks it as being sent. When the conversation is busy
+   * or an Agent message meets pending configuration changes it stays queued, and `by` (an explicit
+   * Send) is told why. When no run starts it stays queued.
+   */
+  private async dispatchQueued(
+    id: ConversationId,
+    by?: ViewRecord,
+    expected?: QueuedEntry,
+  ): Promise<void> {
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending || this.disposed) return;
+    if (expected !== undefined && entry !== expected) return;
+    const meta =
+      this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+    let reason: string | undefined;
+    if (this.isBusy(id)) {
+      reason = TEXT.turnRunning;
+    } else if (
+      entry.message.mode === 'agent' &&
+      meta !== undefined &&
+      this.agentRunningIn(meta.folder)
+    ) {
+      // The tracker would refuse the turn after it was created: keep the message for the user's Send.
+      reason = BUSY_MESSAGE;
+    } else if (
+      entry.message.mode === 'agent' &&
+      meta !== undefined &&
+      (this.tracker?.configChanges(meta.folder).length ?? 0) > 0
+    ) {
+      reason = CONFIG_PENDING_MESSAGE;
+    }
+    if (reason !== undefined) {
+      if (by) this.state.toast(by, 'warning', reason);
+      return;
+    }
+    // Synchronously, before any await.
+    entry.sending = true;
+    let started = false;
+    try {
+      started = await this.sendTurn(
+        by ?? this.viewForQueued(id, entry),
+        {
+          type: 'turn.send',
+          conversationId: id,
+          text: entry.message.text,
+          mode: entry.message.mode,
+          model: entry.message.model,
+        },
+        { queuedInput: { attachments: entry.message.attachments } },
+      );
+    } catch (error) {
+      this.logger.error('a queued message could not be sent', { error: redact(String(error)) });
+    } finally {
+      entry.sending = false;
+    }
+    if (started && this.queued.get(id) === entry) {
+      this.queued.delete(id);
+      this.showQueued(id, null);
+      this.pruneImages();
+    }
+  }
+
+  /** "Send now": a turn that runs is stopped and waited for first. */
+  private async sendQueuedNow(view: ViewRecord, id: ConversationId): Promise<void> {
+    const entry = this.queued.get(id);
+    if (!entry || this.sendingNow.has(id)) return;
+    if (entry.message.mode === 'agent') {
+      // Stopping the running turn would be for nothing when the message cannot go out afterwards.
+      const meta =
+        this.state.runtimes.get(id)?.data.meta ?? this.store?.list().find((item) => item.id === id);
+      if (meta !== undefined) {
+        if ((this.tracker?.configChanges(meta.folder).length ?? 0) > 0) {
+          this.state.toast(view, 'warning', CONFIG_PENDING_MESSAGE);
+          return;
+        }
+        const otherAgent = [...this.runs.values()].some(
+          (other) =>
+            other.folderKey === meta.folder &&
+            other.mode === 'agent' &&
+            other.conversationId !== id,
+        );
+        if (otherAgent) {
+          this.state.toast(view, 'warning', BUSY_MESSAGE);
+          return;
+        }
+      }
+    }
+    this.sendingNow.add(id);
+    try {
+      const run = this.runs.get(id);
+      if (run) {
+        await run.cancel();
+        await run.done;
+      }
+      await this.dispatchQueued(id, view, entry);
+    } finally {
+      this.sendingNow.delete(id);
+    }
+  }
+
+  private removeQueued(id: ConversationId): void {
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending) return;
+    this.queued.delete(id);
+    this.showQueued(id, null);
+    this.pruneImages();
+  }
+
+  /**
+   * Takes the message back into the composer of the view that asked: its attachments return to that
+   * view's draft, under the limits of a paste, and the host sends the text back. A view that does not
+   * show the conversation changes nothing.
+   */
+  private editQueued(view: ViewRecord, id: ConversationId): void {
+    if (view.activeId !== id) return;
+    const entry = this.queued.get(id);
+    if (!entry || entry.sending) return;
+    this.queued.delete(id);
+    this.showQueued(id, null);
+    this.restoreAttachments(view, entry.message.attachments);
+    this.pruneImages();
+    // The event must reach the view after the patches that change its draft.
+    view.flush();
+    view.event({ kind: 'prefill-composer', text: entry.message.text });
+  }
+
+  /** Puts attachments back into a draft; an image that would break the limits of a paste is left out. */
+  private restoreAttachments(view: ViewRecord, attachments: readonly Attachment[]): void {
+    const additions: Attachment[] = [];
+    let count = 0;
+    let total = 0;
+    const held = new Set<string>();
+    for (const attachment of view.state.draftAttachments) {
+      if (attachment.kind !== 'image') continue;
+      count += 1;
+      total += attachment.bytes;
+      held.add(attachment.id);
+    }
+    for (const attachment of attachments) {
+      if (attachment.kind !== 'image') {
+        additions.push(attachment);
+      } else if (!held.has(attachment.id)) {
+        if (count >= MAX_IMAGES_PER_MESSAGE) {
+          this.state.toast(view, 'warning', TEXT.imageLimit);
+          continue;
+        }
+        if (total + attachment.bytes > MAX_IMAGE_BYTES_PER_MESSAGE) {
+          this.state.toast(view, 'warning', TEXT.imagesTooLarge);
+          continue;
+        }
+        held.add(attachment.id);
+        count += 1;
+        total += attachment.bytes;
+        additions.push(attachment);
+      }
+    }
+    this.attach(view, additions);
   }
 
   /** A turn runs in the conversation, or one is about to start (a plan was approved, a session is being copied). */
@@ -1511,6 +2684,199 @@ class Controller implements AppController {
     }
   }
 
+  // ---- saved permissions ----------------------------------------------------------------------------
+
+  /**
+   * Removes a saved permission of the folder the view shows. Always works: no dialog, no trust check,
+   * also under a running turn (the policy reads the stores at every request). Every outcome ends with
+   * the permissions sent to the asking view again, because the view locks its controls until then.
+   */
+  private async removePermission(view: ViewRecord, id: string): Promise<void> {
+    const { saved } = this;
+    if (!saved) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      const folder = this.viewFolder(view);
+      if (!folder) return;
+      try {
+        await saved.remove(folder.key, id);
+      } catch (error) {
+        this.logger.warn('a saved permission could not be removed', {
+          error: redact(String(error)),
+        });
+        this.state.toast(view, 'warning', TEXT.permissionNotRemoved);
+      }
+      this.refreshPermissionsOf(folder.key);
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  /**
+   * Turns a switch of the folder the view shows off or on. Off always works, at once and without a
+   * dialog. On only through the native dialog, and what was checked before it is checked again after.
+   */
+  private async setPermissionSwitch(
+    view: ViewRecord,
+    name: PermissionSwitch,
+    on: boolean,
+  ): Promise<void> {
+    const { grants } = this;
+    if (!grants) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      if (!on) {
+        const folder = this.viewFolder(view);
+        if (folder) await this.saveSwitch(view, grants, folder.key, name, false);
+        return;
+      }
+      const folder = this.permissionTarget(view);
+      if (!folder || grants.get(folder.key).switches.includes(name)) return;
+      this.permissionDialogs.add(view.id);
+      let confirmed = false;
+      try {
+        confirmed = await this.confirmPermission(switchDialog(name, folder.path));
+      } finally {
+        this.permissionDialogs.delete(view.id);
+      }
+      if (!confirmed) return;
+      if (!this.sameAfterDialog(view, folder.key)) {
+        this.state.toast(view, 'warning', TEXT.permissionChangedDuringDialog);
+        return;
+      }
+      await this.saveSwitch(view, grants, folder.key, name, true);
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  private async saveSwitch(
+    view: ViewRecord,
+    grants: GrantStore,
+    folderKey: FolderKey,
+    name: PermissionSwitch,
+    on: boolean,
+  ): Promise<void> {
+    try {
+      await grants.setSwitch(folderKey, name, on);
+    } catch (error) {
+      this.logger.warn('a switch could not be changed', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.switchNotChanged);
+    }
+    this.refreshPermissionsOf(folderKey);
+  }
+
+  /**
+   * Lets the user pick a directory in the native folder picker, and saves it as readable for the
+   * folder the view shows after the policy's checks and a native confirmation that names it. The
+   * path never comes from the webview.
+   */
+  private async addPermissionDirectory(view: ViewRecord): Promise<void> {
+    const { grants } = this;
+    if (!grants) {
+      this.state.toast(view, 'info', TEXT.notAvailableYet);
+      return;
+    }
+    try {
+      const folder = this.permissionTarget(view);
+      if (!folder) return;
+      // Held from the picker to the end, so the view asks for one dialog at a time.
+      this.permissionDialogs.add(view.id);
+      try {
+        await this.pickAndSaveDirectory(view, grants, folder);
+      } finally {
+        this.permissionDialogs.delete(view.id);
+      }
+    } finally {
+      this.syncPermissions(view, true);
+    }
+  }
+
+  private async pickAndSaveDirectory(
+    view: ViewRecord,
+    grants: GrantStore,
+    folder: FolderInfo,
+  ): Promise<void> {
+    let picked: string | undefined;
+    try {
+      picked = await this.deps.ui.pickDirectory({
+        title: 'Allow reads in a folder',
+        openLabel: 'Choose Folder',
+      });
+    } catch (error) {
+      this.logger.warn('the folder picker could not be shown', { error: redact(String(error)) });
+    }
+    if (picked === undefined || this.disposed || view.disposed) return;
+    const result = await checkDirectoryToGrant({
+      path: picked,
+      folderPath: folder.path,
+      granted: grants.get(folder.key),
+      sensitiveRoots: () => this.sensitiveRoots(),
+    });
+    if ('refused' in result) {
+      this.state.toast(view, 'warning', TEXT.directoryRefusal[result.refused]);
+      return;
+    }
+    if (!(await this.confirmPermission(directoryDialog(result.dir, folder.path)))) return;
+    if (!this.sameAfterDialog(view, folder.key)) {
+      this.state.toast(view, 'warning', TEXT.permissionChangedDuringDialog);
+      return;
+    }
+    try {
+      await grants.add(folder.key, { kind: 'read-directory', path: result.dir });
+    } catch (error) {
+      this.logger.warn('a folder could not be saved as allowed', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.permissionNotSaved);
+    }
+    this.refreshPermissionsOf(folder.key);
+  }
+
+  /**
+   * The folder a message that adds a permission is about (the one the view shows), or undefined after
+   * saying why it cannot be done now. The webview cannot name another folder.
+   */
+  private permissionTarget(view: ViewRecord): FolderInfo | undefined {
+    if (!this.deps.env.trusted()) {
+      this.state.toast(view, 'warning', TEXT.untrustedRefusal);
+      return undefined;
+    }
+    if (this.permissionDialogs.has(view.id)) {
+      this.state.toast(view, 'warning', TEXT.permissionDialogOpen);
+      return undefined;
+    }
+    const folder = this.viewFolder(view);
+    if (!folder) this.state.toast(view, 'warning', TEXT.noFolder);
+    return folder;
+  }
+
+  /** The native dialog. A dialog that cannot be shown counts as declined. */
+  private async confirmPermission(dialog: {
+    title: string;
+    detail: string;
+    confirmLabel: string;
+  }): Promise<boolean> {
+    try {
+      return await this.deps.ui.confirm(dialog);
+    } catch (error) {
+      this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+      return false;
+    }
+  }
+
+  /** After a dialog that adds a permission: nothing that allowed it has changed. */
+  private sameAfterDialog(view: ViewRecord, folderKey: FolderKey): boolean {
+    return (
+      !this.disposed &&
+      !view.disposed &&
+      this.deps.env.trusted() &&
+      this.viewFolder(view)?.key === folderKey
+    );
+  }
+
   // ---- baseline and configuration changes ----------------------------------------------------------
 
   /** The folder whose baseline and configuration changes a view shows. */
@@ -1522,8 +2888,46 @@ class Controller implements AppController {
   private syncViewScope(view: ViewRecord): void {
     this.syncBaseline(view, true);
     this.syncConfigChanges(view);
+    this.syncReviewBusy(view);
     this.syncReviewEntries(view);
     this.syncCheckpoints(view);
+    this.syncPermissions(view);
+  }
+
+  /**
+   * What a view shows of its folder's switches and saved permissions. With `force` it is sent again
+   * although nothing changed: the webview locks a control after a click and releases it only when it
+   * receives the permissions.
+   */
+  private syncPermissions(view: ViewRecord, force = false): void {
+    if (view.disposed) return;
+    const { grants, saved } = this;
+    const folder = this.viewFolder(view);
+    const next: FolderPermissions =
+      folder && grants && saved
+        ? {
+            folder: folder.key,
+            switches: grants.get(folder.key).switches,
+            saved: saved.list(folder.key),
+          }
+        : { folder: null, switches: [], saved: [] };
+    if (!force && canonicalJson(next) === canonicalJson(view.state.permissions)) return;
+    view.apply([{ op: 'set', path: ['permissions'], value: next }]);
+  }
+
+  /** AgentCanopy's own storage directories: they always ask, whatever is saved. Read at every decision. */
+  private sensitiveRoots(): string[] {
+    const { env } = this.deps;
+    return [env.storageDir(), env.globalStorageDir()].filter(
+      (root): root is string => root !== undefined,
+    );
+  }
+
+  /** Every view that shows this folder looks at its permissions again. */
+  private refreshPermissionsOf(folderKey: FolderKey): void {
+    for (const view of this.state.views.values()) {
+      if (this.viewFolder(view)?.key === folderKey) this.syncPermissions(view);
+    }
   }
 
   /** The baseline status of the view's folder. Frequent changes are held back to a few patches a second. */
@@ -1903,17 +3307,26 @@ class Controller implements AppController {
   }
 
   /**
-   * The user chose "always allow" for a command. The policy stores the rule, but it only logs when it
-   * cannot: so the application checks the rule store itself and tells the user.
+   * The user chose "always allow" for a command, a tool, a directory or a site. The policy stores it,
+   * but it only logs when it cannot: so the application checks the stores itself and tells the user.
+   * Every view of the folder then looks at what is saved.
    */
   private checkAlwaysRule(
     conversationId: ConversationId,
     folderKey: FolderKey,
-    rule: string,
+    rule: AlwaysRule,
   ): void {
-    const { rules } = this;
-    if (!rules || rules.list(folderKey).includes(rule)) return;
-    this.state.toastConversation(conversationId, 'warning', TEXT.ruleNotSaved);
+    const { saved } = this;
+    if (!saved) return;
+    if (!saved.has(folderKey, rule)) {
+      const outside = rule.kind === 'read-directory' || rule.kind === 'web-site';
+      this.state.toastConversation(
+        conversationId,
+        'warning',
+        outside ? TEXT.permissionNotSaved : TEXT.ruleNotSaved,
+      );
+    }
+    this.refreshPermissionsOf(folderKey);
   }
 
   /** Deletes what the review and the checkpoints keep for a folder, after the user has confirmed. */
@@ -2023,48 +3436,26 @@ class Controller implements AppController {
         if (touched.length === 0) return [];
         const count = touched.length === 1 ? '1 file' : `${touched.length} files`;
         return [
-          { level: 'info', text: `This turn changed ${count}. Review them in the Review tab.` },
+          {
+            level: 'info',
+            text: `This turn changed ${count}. Review them in the changes card below the chat.`,
+          },
         ];
       },
     };
   }
 
-  /** The review entries of the view's folder, and the hunks of the files whose hunks are shown. */
+  /** The review entries of the view's folder. */
   private syncReviewEntries(view: ViewRecord): void {
     const { engine } = this;
     if (!engine || view.disposed) return;
     const token = ++view.reviewToken;
     const folder = this.viewFolder(view);
     void (async () => {
-      let entries: Awaited<ReturnType<ReviewEngine['entries']>> = [];
-      const hunks: Record<string, Hunk[]> = {};
-      if (folder) {
-        entries = await engine.entries(folder.key);
-        const pending = new Set<string>(
-          entries.filter((entry) => entry.status === 'pending').map((entry) => entry.path),
-        );
-        for (const path of Object.keys(view.state.review.hunks)) {
-          if (pending.has(path)) hunks[path] = await engine.hunks(folder.key, path);
-        }
-      }
+      const entries = folder ? await engine.entries(folder.key) : [];
       if (view.disposed || token !== view.reviewToken) return;
-      // Hunks asked for while this was reading are kept; paths that are no longer pending go.
-      if (folder) {
-        const pending = new Set<string>(
-          entries.filter((entry) => entry.status === 'pending').map((entry) => entry.path),
-        );
-        for (const [path, shown] of Object.entries(view.state.review.hunks)) {
-          if (pending.has(path) && hunks[path] === undefined) hunks[path] = shown;
-        }
-      }
-      const ops: PatchOp[] = [];
-      if (canonicalJson(entries) !== canonicalJson(view.state.review.entries)) {
-        ops.push({ op: 'set', path: ['review', 'entries'], value: entries });
-      }
-      if (canonicalJson(hunks) !== canonicalJson(view.state.review.hunks)) {
-        ops.push({ op: 'set', path: ['review', 'hunks'], value: hunks });
-      }
-      view.apply(ops);
+      if (canonicalJson(entries) === canonicalJson(view.state.review.entries)) return;
+      view.apply([{ op: 'set', path: ['review', 'entries'], value: entries }]);
     })().catch((error: unknown) => {
       this.logger.warn('the review could not be read', { error: redact(String(error)) });
     });
@@ -2074,11 +3465,29 @@ class Controller implements AppController {
   private acceptRefused(view: ViewRecord): boolean {
     const folder = this.viewFolder(view);
     if (!folder) return false;
-    const running = [...this.runs.values()].some(
-      (run) => run.folderKey === folder.key && run.mode === 'agent',
-    );
+    const running = this.agentRunningIn(folder.key);
     if (running) this.state.toast(view, 'warning', TEXT.waitBeforeAccepting);
     return running;
+  }
+
+  /** An Agent turn runs in the folder: file changes cannot be accepted or rejected meanwhile. */
+  private agentRunningIn(folderKey: FolderKey): boolean {
+    return [...this.runs.values()].some(
+      (run) => run.folderKey === folderKey && run.mode === 'agent',
+    );
+  }
+
+  private syncReviewBusy(view: ViewRecord): void {
+    if (view.disposed) return;
+    const folder = this.viewFolder(view);
+    const next = folder !== undefined && this.agentRunningIn(folder.key);
+    if (next === view.state.review.busy) return;
+    view.apply([{ op: 'set', path: ['review', 'busy'], value: next }]);
+  }
+
+  /** Every view of every folder, after a run started or ended. */
+  private syncReviewBusyAll(): void {
+    for (const view of this.state.views.values()) this.syncReviewBusy(view);
   }
 
   /** The engine and folder a review message is about. Without them the feature is not there. */
@@ -2136,54 +3545,13 @@ class Controller implements AppController {
     this.syncReviewEntries(view);
   }
 
-  /** Runs an engine call that answers with a result and toasts what was not done. */
-  private async reviewResult(
-    view: ViewRecord,
-    action: (engine: ReviewEngine, key: FolderKey) => Promise<RejectResult>,
-  ): Promise<RejectResult | undefined> {
-    const target = this.reviewTarget(view);
-    if (!target) return undefined;
-    let result: RejectResult | undefined;
-    try {
-      result = await action(target.engine, target.folder.key);
-      this.reportRejectProblem(this.reportToView(view), result);
-    } catch (error) {
-      this.reviewFailed(this.reportToView(view), error);
-    }
-    this.syncReviewEntries(view);
-    return result;
-  }
-
   private reportRejectProblem(report: Report, result: RejectResult): void {
     if (result.status === 'refused') report('warning', result.message);
     else if (result.status === 'conflict') {
       report(
         'warning',
-        result.reason === 'unsaved-editor'
-          ? TEXT.unsavedInEditor
-          : result.reason === 'uncertain-source'
-            ? TEXT.mayHoldOwnWork
-            : TEXT.changedSinceAgent,
+        result.reason === 'unsaved-editor' ? TEXT.unsavedInEditor : TEXT.changedSinceAgent,
       );
-    }
-  }
-
-  private async requestHunks(view: ViewRecord, path: RelPath): Promise<void> {
-    const target = this.reviewTarget(view);
-    if (!target) return;
-    const scope = this.scopeOf(view);
-    try {
-      const hunks = await target.engine.hunks(target.folder.key, path);
-      if (!this.stillIn(view, scope)) return;
-      view.apply([
-        {
-          op: 'set',
-          path: ['review', 'hunks'],
-          value: { ...view.state.review.hunks, [path]: hunks },
-        },
-      ]);
-    } catch (error) {
-      this.reviewFailed(this.reportToView(view), error);
     }
   }
 
@@ -2476,7 +3844,7 @@ class Controller implements AppController {
     });
   }
 
-  private async exportPlan(view: ViewRecord, planId: PlanId, version: number): Promise<void> {
+  private async openPlanVersion(view: ViewRecord, planId: PlanId, version: number): Promise<void> {
     const plan = await this.findPlan(view, planId);
     if (!plan) return;
     const found = plan.versions.find((candidate) => candidate.version === version);
@@ -2484,17 +3852,12 @@ class Controller implements AppController {
       this.state.toast(view, 'warning', TEXT.planVersionGone);
       return;
     }
-    await this.deps.ui.showDocument({
+    await this.deps.ui.showReadOnlyDocument({
+      key: `plan-${plan.id}-v${version}`,
+      title: `Plan v${version} - ${found.content.title}`,
       text: renderPlanMarkdown(found.content),
-      language: 'markdown',
+      beside: view.kind === 'panel',
     });
-  }
-
-  private async openPlanInEditor(view: ViewRecord, planId: PlanId): Promise<void> {
-    const plan = await this.findPlan(view, planId);
-    if (!plan) return;
-    this.deps.ui.openEditorPanel(plan.conversationId);
-    view.event({ kind: 'show-tab', tab: 'plan' });
   }
 
   /**
@@ -2530,12 +3893,6 @@ class Controller implements AppController {
       return;
     }
     const unanswered = unansweredCount(plan, version);
-    const detail =
-      `Version ${version} of "${safeText(stored.content.title)}" will be implemented in Agent mode. ` +
-      'Changes are checkpointed and you review them afterwards.' +
-      (unanswered > 0
-        ? `\n\n${unanswered} question(s) or decision(s) in this plan have no answer yet.`
-        : '');
 
     await this.sendTurn(
       view,
@@ -2548,7 +3905,10 @@ class Controller implements AppController {
       },
       {
         noAttachments: true,
-        gate: async () => {
+        gate: async ({ auto }) => {
+          // Auto as `sendTurn` decided it for this turn (the profile has it too): the dialog says it
+          // is on exactly when the turn may run with it. It can only be turned off from here on.
+          const detail = this.planApprovalDetail(auto, version, stored.content.title, unanswered);
           let confirmed = false;
           try {
             confirmed = await this.deps.ui.confirm({
@@ -2562,6 +3922,16 @@ class Controller implements AppController {
             });
           }
           if (!confirmed || this.disposed) return false;
+          // The dialog was open for a while: a turn of another conversation in this folder may have
+          // ended with configuration changes, or may still run. Record nothing then.
+          if ((this.tracker?.configChanges(meta.folder).length ?? 0) > 0) {
+            this.state.toast(view, 'warning', CONFIG_PENDING_MESSAGE);
+            return false;
+          }
+          if (this.agentRunningIn(meta.folder)) {
+            this.state.toast(view, 'warning', BUSY_MESSAGE);
+            return false;
+          }
           // The approval must be on disk before the turn exists.
           const approval = await plans.approve(planId, version, contentHash);
           if (!approval.ok) {
@@ -2584,6 +3954,31 @@ class Controller implements AppController {
         },
       },
     );
+  }
+
+  /** The text of the plan approval dialog. It says so when the execution turn will run with Auto. */
+  private planApprovalDetail(
+    auto: boolean,
+    version: number,
+    title: string,
+    unanswered: number,
+  ): string {
+    const settings = this.deps.env.settings();
+    const paragraphs = [
+      `Version ${version} of "${safeText(title)}" will be implemented in Agent mode. ` +
+        'Changes are checkpointed and you review them afterwards.',
+    ];
+    if (unanswered > 0) {
+      paragraphs.push(`${unanswered} question(s) or decision(s) in this plan have no answer yet.`);
+    }
+    if (auto) {
+      paragraphs.push(
+        settings.alwaysAskCommands
+          ? 'Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask.'
+          : 'Auto is on for this conversation: terminal commands and edits inside the folder will run without asking.',
+      );
+    }
+    return paragraphs.join('\n\n');
   }
 
   private async recordExecution(planId: PlanId, version: number, run: TurnRun): Promise<void> {
@@ -2617,21 +4012,42 @@ class Controller implements AppController {
     }
     let effective = answer;
     if (answer.kind === 'permission' && answer.choice === 'allow-always') {
-      entry.answering = true;
-      let confirmed = false;
-      try {
-        confirmed = await this.deps.ui.confirm({
-          title: 'Always allow this?',
-          detail: alwaysAllowDetail(entry.prompt),
-          confirmLabel: 'Always allow',
-        });
-      } catch (error) {
-        this.logger.warn('the confirmation could not be shown', { error: redact(String(error)) });
+      const { prompt } = entry;
+      const offered = prompt.kind === 'permission' ? prompt.alwaysRule?.kind : undefined;
+      // A directory or a site is saved for a workspace folder, which the dialog must name.
+      const needsFolder = offered === 'read-directory' || offered === 'web-site';
+      const folder = needsFolder ? this.promptFolder(prompt) : undefined;
+      if (needsFolder && !folder) {
+        this.logger.info('an always answer was taken as allow once: its folder is not open');
+        effective = { ...answer, choice: 'allow-once' };
+      } else {
+        entry.answering = true;
+        let confirmed = false;
+        try {
+          confirmed = await this.deps.ui.confirm({
+            title: 'Always allow this?',
+            detail: alwaysAllowDetail(prompt, folder?.path),
+            confirmLabel: 'Always allow',
+          });
+        } catch (error) {
+          this.logger.warn('the confirmation could not be shown', {
+            error: redact(String(error)),
+          });
+        }
+        if (!confirmed) effective = { ...answer, choice: 'allow-once' };
       }
-      if (!confirmed) effective = { ...answer, choice: 'allow-once' };
     }
     if (entry.settled) return;
     entry.settle('answered', effective);
+  }
+
+  /** The open workspace folder of the conversation a prompt belongs to, if it is open. */
+  private promptFolder(prompt: Prompt): FolderInfo | undefined {
+    const { conversationId } = prompt;
+    const key =
+      this.state.runtimes.get(conversationId)?.data.meta.folder ??
+      this.store?.list().find((meta) => meta.id === conversationId)?.folder;
+    return this.deps.env.folders().find((folder) => folder.key === key);
   }
 
   // ---- composer context -----------------------------------------------------------------------------------
@@ -2716,6 +4132,69 @@ class Controller implements AppController {
     const next = current.filter((item) => canonicalJson(item) !== key);
     if (next.length === current.length) return;
     view.apply([{ op: 'set', path: ['draftAttachments'], value: next }]);
+    this.pruneImages();
+  }
+
+  /**
+   * An image pasted into the composer. Everything is checked here, because the webview is not
+   * trusted: the text must be exact base64, the size within the limits and the first bytes those of
+   * the declared type. Synchronous on purpose: nothing can happen between the paste and the next
+   * message of the view. The data itself is never logged or shown.
+   */
+  private pasteImage(view: ViewRecord, mediaType: ImageMediaType, data: string): void {
+    const bytes = decodeBase64(data);
+    if (!bytes) {
+      this.logger.warn('ignored a pasted image that is not valid base64');
+      this.state.toast(view, 'warning', TEXT.imageInvalid);
+      return;
+    }
+    if (bytes.length === 0 || bytes.length > MAX_IMAGE_BYTES) {
+      this.logger.warn('ignored a pasted image of an unacceptable size');
+      this.state.toast(view, 'warning', TEXT.imageTooLarge);
+      return;
+    }
+    if (!matchesImageSignature(mediaType, bytes)) {
+      this.logger.warn('ignored a pasted image that is not of the declared type');
+      this.state.toast(view, 'warning', TEXT.imageInvalid);
+      return;
+    }
+    const id = sha256Hex(bytes);
+    const draft: Extract<Attachment, { kind: 'image' }>[] = [];
+    for (const attachment of view.state.draftAttachments) {
+      if (attachment.kind === 'image') draft.push(attachment);
+    }
+    if (draft.some((attachment) => attachment.id === id)) return;
+    if (draft.length >= MAX_IMAGES_PER_MESSAGE) {
+      this.state.toast(view, 'warning', TEXT.imageLimit);
+      return;
+    }
+    const total = draft.reduce((sum, attachment) => sum + attachment.bytes, 0);
+    if (total + bytes.length > MAX_IMAGE_BYTES_PER_MESSAGE) {
+      this.state.toast(view, 'warning', TEXT.imagesTooLarge);
+      return;
+    }
+    this.pruneImages();
+    this.imageBytes.set(id, bytes);
+    this.attach(view, [{ kind: 'image', id, mediaType, bytes: bytes.length }]);
+  }
+
+  /** Forgets the bytes of every image that no view's draft and no queued message refers to any more. */
+  private pruneImages(): void {
+    if (this.imageBytes.size === 0) return;
+    const wanted = new Set<string>();
+    for (const view of this.state.views.values()) {
+      for (const attachment of view.state.draftAttachments) {
+        if (attachment.kind === 'image') wanted.add(attachment.id);
+      }
+    }
+    for (const entry of this.queued.values()) {
+      for (const attachment of entry.message.attachments) {
+        if (attachment.kind === 'image') wanted.add(attachment.id);
+      }
+    }
+    for (const id of [...this.imageBytes.keys()]) {
+      if (!wanted.has(id)) this.imageBytes.delete(id);
+    }
   }
 
   /** Closes the file search of a view; an answer that is still on its way is dropped. */
@@ -2862,6 +4341,10 @@ export interface ControllerInternals {
   tracker(): WorkspaceTracker | undefined;
   /** The rule store of the default policy, when the application created one. */
   rules(): RuleStore | undefined;
+  /** The grant store (switches, folders, sites, PowerShell commands) of the default policy. */
+  grants(): GrantStore | undefined;
+  /** Both stores as the Permissions view lists them. */
+  saved(): SavedPermissions | undefined;
   /** The review engine, with the extras the application uses itself. */
   reviewEngine(): ReviewEngine | undefined;
   /** Asks for the clean-up of stored file contents; resolves when it has run or been skipped. */
@@ -2883,6 +4366,8 @@ export function createAppControllerWithInternals(
     internals: {
       tracker: () => controller.trackerInUse,
       rules: () => controller.rulesInUse,
+      grants: () => controller.grantsInUse,
+      saved: () => controller.savedInUse,
       reviewEngine: () => controller.review(),
       collectGarbage: (folderKey) => controller.collectGarbageNow(folderKey),
       checkpointService: () => controller.checkpointsInUse,

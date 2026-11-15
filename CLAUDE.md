@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 AgentCanopy is a VS Code extension that drives the locally installed Claude Code CLI (Ask, Plan and Agent modes, change review, checkpoints, forking).
 
 - The plan in force, with a status table per phase: `docs/planning/2026-11-10-implementation-plan.md`.
+- Plans for work after the first release are in `roadmap/plans/`. Built: `roadmap/plans/2026-11-13-chat-cards-and-concurrent-send.md` (Phase 9 in the status table, with what was decided along the way). Built: `roadmap/plans/2026-11-13-agent-auto-mode.md` (Phase 10; the status table's paragraphs record where it differs from the roadmap). Built: `roadmap/plans/2026-11-15-saved-permissions.md` (Phase 11; its Progress section records what each stage built, where it differs from the plan, what was verified and what was not, and the points left open for the owner).
 - The owner's specification: `docs/SPEC.md`. Evidence for CLI and VS Code facts: `docs/planning/2026-11-10-research-and-architecture.md`.
 - Layers, enforced by ESLint: `src/shared` and `src/core` import neither `vscode` nor React; `src/webview` imports only `src/shared`; `src/vscode` adapts core to VS Code.
 - `package.json`, the lockfile, `src/shared/`, `src/core/contracts/` and `src/vscode/extension.ts` are changed only by the primary model. Subagents report the dependency or contract change they need instead of editing them.
@@ -21,7 +22,7 @@ AgentCanopy is a VS Code extension that drives the locally installed Claude Code
 | `npm run build` | Bundle the extension and the webview into `dist/` |
 | `npm run test:integration` | VS Code integration tests against the installed VS Code, in an isolated profile. Opens a second window briefly |
 | `npm run test:live` | Opt-in tests against the real CLI. They use the owner's subscription; run only when asked |
-| `npm run build && node scripts/preview-webview.mjs` | Serve the built webview with sample data in a browser, under the extension's CSP. Add `--check` to render it in headless Chrome and write screenshots |
+| `npm run build && node scripts/preview-webview.mjs` | Serve the built webview with sample data in a browser, under the extension's CSP. Add `--check` to render it in headless Chrome and write screenshots (on Windows set `CHROME_PATH` to `chrome.exe`) |
 | `npm run package` | Production build and VSIX (`AGENTCANOPY_PUBLISHER` overrides the publisher) |
 
 Commits are local, on `develop`, one or more per phase. Nothing is pushed.

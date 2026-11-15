@@ -42,4 +42,9 @@ suite('activation', () => {
     await activateExtension();
     await vscode.commands.executeCommand('agentcanopy.focusChat');
   });
+
+  test('the show permissions command runs', async () => {
+    await activateExtension();
+    await vscode.commands.executeCommand('agentcanopy.showPermissions');
+  });
 });

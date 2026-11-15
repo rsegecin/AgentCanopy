@@ -1,5 +1,5 @@
 import * as z from 'zod';
-import { AttachmentSchema } from './conversation';
+import { AttachmentSchema, ImageMediaTypeSchema, MAX_IMAGE_BASE64_LENGTH } from './conversation';
 import {
   ConversationIdSchema,
   FolderKeySchema,
@@ -10,6 +10,7 @@ import {
   RelPathSchema,
 } from './ids';
 import { ModeSchema } from './modes';
+import { PermissionSwitchSchema } from './permissions';
 import { PromptAnswerSchema } from './prompts';
 import { ViewStateSchema } from './view-state';
 
@@ -31,10 +32,11 @@ export type PatchOp = z.infer<typeof PatchOpSchema>;
 /** Something that happens once and is not state. */
 export const ViewEventSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('focus-composer') }),
+  /** Text for the composer. It goes in front of what the user has already typed, never over it. */
   z.object({ kind: z.literal('prefill-composer'), text: z.string() }),
   z.object({
     kind: z.literal('show-tab'),
-    tab: z.enum(['chat', 'history', 'plan', 'review', 'checkpoints']),
+    tab: z.enum(['chat', 'history', 'checkpoints', 'permissions']),
   }),
   z.object({
     kind: z.literal('toast'),
@@ -86,6 +88,16 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     conversationId,
     model: z.string().min(1).max(200),
   }),
+  /**
+   * Turns Agent mode's Auto switch on or off: for a conversation, or without an id for the
+   * conversation this view is about to start. Turning it on opens a native dialog on the host;
+   * turning it off needs none and also applies to a turn that is running.
+   */
+  z.object({
+    type: z.literal('conversation.setAuto'),
+    conversationId: conversationId.optional(),
+    on: z.boolean(),
+  }),
   z.object({ type: z.literal('conversation.fork'), conversationId, messageId: MessageIdSchema }),
   z.object({
     type: z.literal('conversation.openInEditor'),
@@ -102,6 +114,17 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     model: z.string().min(1).max(200),
   }),
   z.object({ type: z.literal('turn.cancel'), conversationId }),
+
+  // The message queued behind a running turn
+  /**
+   * Takes the queued message back for editing: the host drops it, returns its attachments to this
+   * view's draft and sends the text back with a `prefill-composer` event. Nothing happens when the
+   * message is already being sent.
+   */
+  z.object({ type: z.literal('queue.edit'), conversationId }),
+  z.object({ type: z.literal('queue.remove'), conversationId }),
+  /** Sends the queued message now. A turn that is running is stopped first and waited for. */
+  z.object({ type: z.literal('queue.sendNow'), conversationId }),
 
   // Composer context
   z.object({
@@ -122,6 +145,15 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     type: z.literal('context.addDiagnostics'),
     conversationId: conversationId.optional(),
   }),
+  /**
+   * An image pasted into the composer, as base64. The host checks the bytes, keeps them in memory
+   * and attaches a reference to the view's draft.
+   */
+  z.object({
+    type: z.literal('context.pasteImage'),
+    mediaType: ImageMediaTypeSchema,
+    data: z.string().min(1).max(MAX_IMAGE_BASE64_LENGTH),
+  }),
   z.object({
     type: z.literal('context.remove'),
     conversationId: conversationId.optional(),
@@ -135,6 +167,23 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     displayHash: z.string().min(1).max(200),
     answer: PromptAnswerSchema,
   }),
+
+  // Permissions of the folder the view shows. No message names a folder: the host uses the view's.
+  /** Removes one saved permission, by the id the view state gave it. Needs no dialog. */
+  z.object({ type: z.literal('permissions.remove'), id: z.string().min(1).max(64) }),
+  /**
+   * Turns one of the folder's switches on or off. Turning it on opens a native dialog on the host;
+   * turning it off needs none and also applies to a turn that is running.
+   */
+  z.object({
+    type: z.literal('permissions.setSwitch'),
+    name: PermissionSwitchSchema,
+    on: z.boolean(),
+  }),
+  /** Asks the host for its native folder picker, to allow reads and searches in a folder. */
+  z.object({ type: z.literal('permissions.addDirectory') }),
+  /** Opens the editor's settings on AgentCanopy's own. */
+  z.object({ type: z.literal('settings.open') }),
 
   // Plans
   z.object({ type: z.literal('plan.setLocked'), conversationId, locked: z.boolean() }),
@@ -162,15 +211,14 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
     left: z.number().int().positive(),
     right: z.number().int().positive(),
   }),
-  z.object({ type: z.literal('plan.openInEditor'), planId: PlanIdSchema }),
+  /** Opens one version of the plan as a read-only Markdown document in the editor. */
   z.object({
-    type: z.literal('plan.export'),
+    type: z.literal('plan.open'),
     planId: PlanIdSchema,
     version: z.number().int().positive(),
   }),
 
   // Review
-  z.object({ type: z.literal('review.requestHunks'), path: RelPathSchema }),
   z.object({ type: z.literal('review.openDiff'), path: RelPathSchema }),
   z.object({ type: z.literal('review.openAll') }),
   z.object({ type: z.literal('review.acceptAll') }),
@@ -180,16 +228,6 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
   }),
   z.object({ type: z.literal('review.acceptFile'), path: RelPathSchema }),
   z.object({ type: z.literal('review.rejectFile'), path: RelPathSchema }),
-  z.object({
-    type: z.literal('review.acceptHunk'),
-    path: RelPathSchema,
-    hunkId: z.string().min(1).max(200),
-  }),
-  z.object({
-    type: z.literal('review.rejectHunk'),
-    path: RelPathSchema,
-    hunkId: z.string().min(1).max(200),
-  }),
   z.object({ type: z.literal('config.keep'), changeId: z.string().min(1).max(200) }),
   z.object({ type: z.literal('config.revert'), changeId: z.string().min(1).max(200) }),
   z.object({ type: z.literal('config.openDiff'), changeId: z.string().min(1).max(200) }),

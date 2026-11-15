@@ -1,6 +1,6 @@
 # AgentCanopy
 
-AgentCanopy is a free, MIT-licensed VS Code extension that puts a chat view in the Secondary Side Bar and runs the Claude Code command-line tool for you. It has three modes: Ask (read-only questions about your code), Plan (a saved, versioned plan you review before anything changes) and Agent (edits and commands, with your approval). Everything an agent changes in your folder is tracked, so you can review it, accept or reject it, and go back to an earlier state.
+AgentCanopy is a free, MIT-licensed VS Code extension that puts a chat view in the Secondary Side Bar and runs the Claude Code command-line tool for you. It has three modes: Ask (read-only questions about your code), Plan (a saved, versioned plan you review before anything changes) and Agent (edits and commands, which ask for your approval unless you turn on Auto for a conversation). Everything an agent changes in your folder is tracked, so you can review it, accept or reject it, and go back to an earlier state.
 
 AgentCanopy does not include Claude Code and is not affiliated with, endorsed by, or sponsored by Anthropic or by Cursor. It runs the Claude Code CLI that you installed yourself, unmodified, and uses whatever sign-in that CLI already has. It never asks for, reads, stores or forwards a password, token or API key. Signing in happens in Claude Code itself: the Sign In action opens a terminal running `claude auth login`.
 
@@ -34,7 +34,14 @@ This writes `agentcanopy-0.1.0.vsix` to the repository root. In VS Code, run **E
 4. Choose a mode (Ask, Plan or Agent) and a model under the message box. New conversations start in the mode set by `agentCanopy.defaultMode`, which is `ask`.
 5. Type a message and press Enter (Shift+Enter adds a line). Type `@` to attach a file or folder, or use the buttons beside the model selector to add a file, a folder, the editor selection or the current problems. **AgentCanopy: Add Selection to Chat** is also in the editor context menu.
 
-The tabs are Chat, History and, when there is something to show, Plan, Review and Checkpoints. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
+The tabs are Chat, Checkpoints, History and Permissions. Checkpoints appears once there is a step in the folder's history. Permissions appears while something is saved for the folder or a switch is on, and **More actions > Permissions** opens it at any time. Plans, the agent's questions and the changes an Agent turn made are cards in the chat, not tabs. Use **AgentCanopy: Open Chat in Editor Area** to move the chat into an editor tab.
+
+## While the agent works
+
+You can type and send at any moment. **Stop** and **Send** are both shown while a turn runs. Nothing can be added to a running turn, because Claude Code reads its prompt once when the turn starts, so what happens to a message you send depends on its mode. The mode you choose under the message box applies to the next message and does not affect the running turn, so you can change it while the agent works: choose Ask to ask a side question, or Agent or Plan to queue an instruction of that mode.
+
+- **Agent or Plan.** The message is queued: one per conversation, shown as a chip above the message box with **Edit**, **Remove** and **Send now**. It is sent when the turn completes. After a stop or an error, a message of any mode stays queued and the chip offers **Send**. A queued Agent message is sent when the turn completes only if configuration changes are decided and no Agent turn runs in another conversation of the same folder by then; otherwise it stays queued, its **Send** is disabled with a line saying why, and you press **Send** after the blocker clears. A queued Plan message is sent regardless. **Send now** stops the running turn and sends the message, but an Agent message that could not be sent afterwards for those reasons does not stop the turn, and a warning says why. A queued message is kept in memory only, so a window reload loses it.
+- **Ask.** The question is answered alongside, in a **Side question** card in the chat, while the agent keeps working. It knows the conversation up to the last finished turn, not the work in progress, and the agent never sees it. One side question runs at a time per conversation. It is a branch: History lists it under its conversation as a side question, and **Open as conversation** on the card continues it.
 
 ## Project settings that can run programs
 
@@ -52,7 +59,7 @@ Ask cannot change your files.
 
 - Claude Code is started with exactly four tools: Read, Grep, Glob and AskUserQuestion. Web search and fetch are added only if you turn on `agentCanopy.ask.webTools`.
 - At the start of every turn AgentCanopy checks the tool list, the tool servers, the permission mode and the folder that Claude Code reports, and it watches every tool call and hook event after that. Any mismatch stops the turn.
-- Reading a file outside the workspace folder asks you first, and so does every use of web search or fetch.
+- Reading a file outside the workspace folder asks you first, and so does every use of web search or fetch, unless you allowed it for the folder (see [Agent mode](docs/guide/agent-mode.md#permissions)).
 - When the turn ends, AgentCanopy compares file metadata in the folder with how it was before and reports any change. It only reports; it never reverts.
 
 Details: [docs/guide/ask-mode.md](docs/guide/ask-mode.md).
@@ -61,7 +68,8 @@ Details: [docs/guide/ask-mode.md](docs/guide/ask-mode.md).
 
 Plan is read-only like Ask, with one added tool that saves a plan.
 
-- Each save is a new immutable version. You can answer the plan's decisions and questions, compare two versions in VS Code's diff editor, and revert to an earlier version.
+- The plan is a sequence of cards in the chat: your request, the agent's questions about the options (a plan options card, asked before the plan is written), and one plan card per saved version. The card's title opens the plan as a read-only Markdown document.
+- Each save is a new immutable version. The newest card lists your decisions and what is still to decide, and offers **Approve and Execute**, **View changes** (the version before against this one in VS Code's diff editor) and **Revert to the version before**. An older card opens, compares and restores its own version.
 - A lock switches the plan tool off, so the agent can discuss the plan but not change it. Ask mode always works with the plan locked.
 - **Approve and execute** is the only way a plan runs. You confirm in a native dialog, and an Agent turn starts on the same conversation with the approved version embedded.
 
@@ -72,28 +80,30 @@ Details: [docs/guide/plan-mode.md](docs/guide/plan-mode.md).
 Agent can edit files and run commands.
 
 - Edits inside the workspace are applied without asking and are tracked for review. `agentCanopy.agent.editApproval` can make every edit ask.
-- Every terminal command asks first, including harmless ones such as `ls`, unless you chose **Always allow** for that exact command. Reads inside the workspace go through without a prompt. Reads outside it, edits to protected paths, edits outside the workspace and web access ask first.
-- **Always allow** is offered only for a plain literal command, never one that starts with an environment variable, and you confirm it in a native dialog.
+- A terminal command asks first, including harmless ones such as `ls`, unless you chose **Always allow** for that exact command or turned on Auto for the conversation (see below). Reads inside the workspace go through without a prompt. Reads outside it, edits to protected paths, edits outside the workspace and web access ask first.
+- **Always allow** is offered for a plain literal command (never one that starts with an environment variable), a plain PowerShell command, a folder to read from and a web site to fetch from, and you confirm it in a native dialog.
+- **Permissions** is a tab, also opened by **AgentCanopy: Show Permissions**. For the workspace folder it lists what you saved with **Always allow**, with **Remove** for each, and has three switches, off by default, that let reads outside the folder, web fetch and web search run without asking; credential locations and AgentCanopy's own storage always ask, and edits outside the folder do too. Turning a switch on and adding a folder need a native dialog, removing and turning off do not, and nothing is stored in the repository or in VS Code settings. A saved site or the fetch switch lets file contents leave in an address; read [SECURITY.md](SECURITY.md#permissions).
+- **Auto** is a switch next to the mode selector, per conversation, off by default. After you confirm a native dialog, terminal commands and edits inside the workspace run without asking for each one. This removes a safeguard on purpose: commands then run unreviewed with your privileges, and review and checkpoints do not undo what they do outside the folder, to Git or over the network. Protected paths, anything outside the workspace, other tools and MCP tools still ask, web access too unless `agentCanopy.agent.auto.webTools` is on, and commands too while `agentCanopy.agent.alwaysAskCommands` is on. Turning Auto off needs no dialog and works at once, also during a turn. A new conversation, a branch and a side question start with it off. Read [SECURITY.md](SECURITY.md#auto) first.
 - A permission card shows every line of a command, marks each line break and says how many lines there are.
-- Each tool card shows who allowed the call: you, AgentCanopy or, for some other tools that your own Claude Code settings pre-approve, Claude Code.
+- Each tool card shows who allowed the call: you, AgentCanopy, Auto ("Auto-approved") or Claude Code, when it allowed the call on its own: tools it runs without asking, such as launching a subagent, and tools your own Claude Code settings pre-approve; never commands, edits, reads or web access, which always reach AgentCanopy's policy.
 
 Details: [docs/guide/agent-mode.md](docs/guide/agent-mode.md).
 
 ## Reviewing changes
 
-After an Agent turn, the Review tab lists every file the agent changed, with its added and removed lines. Open a file's diff in VS Code's diff editor from there, or from the command **AgentCanopy: Show Agent Changes for File**. In the normal editor, changed lines are marked and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
+When an Agent turn ends, a **Changes** card appears under the chat. It lists every file the agent changed, with its added and removed lines, and while an Agent turn runs in the folder it says "File changes can be reviewed when the turn ends." in place of the file list. Click a path to open the file's diff in VS Code's diff editor, or use the command **AgentCanopy: Show Agent Changes for File**. The card has **Accept All**, **Reject All** and **Open All in Diff Editor**, **Accept** and **Reject** for each file, and a collapsed **Accepted** group. You can collapse the card. Review of single changes is in the editor: changed lines are marked in the gutter and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
 
-| Action                          | Where                                  | Key           |
-| :------------------------------ | :------------------------------------- | :------------ |
-| Next / previous change          | Editor with pending changes            | Alt+] / Alt+[ |
-| Accept the change at the cursor | Editor with pending changes            | Alt+Enter     |
-| Reject the change at the cursor | Editor with pending changes            | Alt+Backspace |
-| Accept or reject a whole file   | Editor title bar, CodeLens, Review tab | none          |
-| Accept All, Reject All          | Review tab, Command Palette            | none          |
+| Action                          | Where                                    | Key           |
+| :------------------------------ | :--------------------------------------- | :------------ |
+| Next / previous change          | Editor with pending changes              | Alt+] / Alt+[ |
+| Accept the change at the cursor | Editor with pending changes              | Alt+Enter     |
+| Reject the change at the cursor | Editor with pending changes              | Alt+Backspace |
+| Accept or reject a whole file   | Editor title bar, CodeLens, Changes card | none          |
+| Accept All, Reject All          | Changes card, Command Palette            | none          |
 
 - Files that may hold your own work (you changed them too, they changed outside one of the agent's tool calls, or they were reconstructed after an interruption) are listed apart. Rejecting one always asks first. Reject All leaves them out unless you tick them, and never rejects a file that both of you changed or that was reconstructed after an interruption.
 - A file marked **Cannot be restored** was not captured before the agent changed it, so you can accept it but not put the old content back.
-- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the Review tab shows a warning and you must **Keep** or **Revert** each file, with a confirmation, before the next Agent turn.
+- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the Changes card shows a warning with each file, and you must **Keep** or **Revert** each one, with a confirmation, before the next Agent turn. That section stays visible, also when you collapse the card. Until you decide, Send is disabled in Agent mode and says where to decide; Ask and Plan still work.
 
 Details: [docs/guide/reviewing-changes.md](docs/guide/reviewing-changes.md).
 
@@ -105,7 +115,7 @@ Every Agent turn, reject and restore is a step in a per-folder history.
 - A restore is a step of its own, so it can be undone. Retention (`agentCanopy.checkpoints.keepOperations`, `keepDays`) never removes anything a review entry still needs or anything after the last Agent turn.
 - File restore does not undo Git operations, database changes, network calls or anything outside the folder.
 
-A message has a **Fork from here** action that starts a branch: a new conversation that remembers where it came from.
+A message has a **Fork from here** action that starts a branch: a new conversation that remembers where it came from. A side question (see above) is a branch too, made for you.
 
 - A branch is exact only when its first turn runs on a copy of the parent's Claude Code session: the whole session, or a cut at the last kept turn when the installed CLI supports it, `agentCanopy.forks.exactEarlierMessages` is on and that turn finished normally.
 - Otherwise the context is rebuilt from the visible messages. The branch header says which one it got and names what was not carried over: tool inputs and outputs, reasoning, attached files and selections, and earlier messages that did not fit.
@@ -115,24 +125,28 @@ See [docs/guide/checkpoints-and-branches.md](docs/guide/checkpoints-and-branches
 
 ## Settings
 
-| Setting                                  | Default   | What it does                                                                                                                 |
-| :--------------------------------------- | :-------- | :--------------------------------------------------------------------------------------------------------------------------- |
-| `agentCanopy.claude.path`                | empty     | Absolute path to `claude`. Empty means search the absolute entries of `PATH` and `~/.local/bin`.                             |
-| `agentCanopy.defaultMode`                | `ask`     | Mode a new conversation starts in (`ask`, `plan`, `agent`).                                                                  |
-| `agentCanopy.defaultModel`               | `default` | Model for new conversations: an alias, a full id, or `default` to let Claude Code decide.                                    |
-| `agentCanopy.customModels`               | `[]`      | Extra model ids for the model selector.                                                                                      |
-| `agentCanopy.ask.webTools`               | `false`   | Let Ask and Plan use web search and fetch. Fetched pages and queries leave your machine.                                     |
-| `agentCanopy.readOnly.strict`            | `false`   | Refuse Ask and Plan turns when a plugin other than the built-in ones is loaded.                                              |
-| `agentCanopy.agent.editApproval`         | `auto`    | `auto` applies edits inside the workspace and reviews them afterwards; `ask` asks before every edit.                         |
-| `agentCanopy.agent.alwaysAskCommands`    | `false`   | Ask before every terminal command and ignore all always-allow rules.                                                         |
-| `agentCanopy.agent.sandbox`              | `false`   | Run commands in Claude Code's sandbox (macOS, Linux, WSL2).                                                                  |
-| `agentCanopy.forks.exactEarlierMessages` | `true`    | Ask Claude Code to cut its session when branching from an earlier message. Uses a flag missing from Claude Code's reference. |
-| `agentCanopy.unsavedFiles`               | `warn`    | Warn at the start of a turn when files have unsaved changes (`warn` or `ignore`).                                            |
-| `agentCanopy.snapshots.maxFileSizeMB`    | `10`      | Largest file whose content is captured for undoing command changes.                                                          |
-| `agentCanopy.snapshots.maxTotalSizeMB`   | `512`     | Disk budget for captured content per workspace.                                                                              |
-| `agentCanopy.snapshots.exclude`          | `[]`      | Extra paths to leave out of change tracking, in `.gitignore` syntax.                                                         |
-| `agentCanopy.checkpoints.keepOperations` | `50`      | Checkpoints kept per workspace folder.                                                                                       |
-| `agentCanopy.checkpoints.keepDays`       | `30`      | Days checkpoints are kept.                                                                                                   |
+| Setting                                  | Default   | What it does                                                                                                                      |
+| :--------------------------------------- | :-------- | :-------------------------------------------------------------------------------------------------------------------------------- |
+| `agentCanopy.claude.path`                | empty     | Absolute path to `claude`. Empty means search the absolute entries of `PATH` and `~/.local/bin`.                                  |
+| `agentCanopy.defaultMode`                | `ask`     | Mode a new conversation starts in (`ask`, `plan`, `agent`).                                                                       |
+| `agentCanopy.defaultModel`               | `default` | Model for new conversations: an alias, a full id, or `default` to let Claude Code decide.                                         |
+| `agentCanopy.customModels`               | `[]`      | Extra model ids for the model selector.                                                                                           |
+| `agentCanopy.ask.webTools`               | `false`   | Let Ask and Plan use web search and fetch. Fetched pages and queries leave your machine.                                          |
+| `agentCanopy.readOnly.strict`            | `false`   | Refuse Ask and Plan turns when a plugin other than the built-in ones is loaded.                                                   |
+| `agentCanopy.agent.editApproval`         | `auto`    | `auto` applies edits inside the workspace and reviews them afterwards; `ask` asks before every edit.                              |
+| `agentCanopy.agent.alwaysAskCommands`    | `false`   | Ask before every terminal command and ignore all always-allow rules.                                                              |
+| `agentCanopy.agent.sandbox`              | `false`   | Run commands in Claude Code's sandbox (macOS, Linux, WSL2).                                                                       |
+| `agentCanopy.agent.auto.enabled`         | `true`    | Offer the Auto switch in Agent mode. Off hides it and turns Auto off in every conversation, and turning it on again arms nothing. |
+| `agentCanopy.agent.auto.webTools`        | `false`   | Let Auto also approve web fetch and web search. A fetched page can carry instructions for the agent.                              |
+| `agentCanopy.forks.exactEarlierMessages` | `true`    | Ask Claude Code to cut its session when branching from an earlier message. Uses a flag missing from Claude Code's reference.      |
+| `agentCanopy.unsavedFiles`               | `warn`    | Warn at the start of a turn when files have unsaved changes (`warn` or `ignore`).                                                 |
+| `agentCanopy.snapshots.maxFileSizeMB`    | `10`      | Largest file whose content is captured for undoing command changes.                                                               |
+| `agentCanopy.snapshots.maxTotalSizeMB`   | `512`     | Disk budget for captured content per workspace.                                                                                   |
+| `agentCanopy.snapshots.exclude`          | `[]`      | Extra paths to leave out of change tracking, in `.gitignore` syntax.                                                              |
+| `agentCanopy.checkpoints.keepOperations` | `50`      | Checkpoints kept per workspace folder.                                                                                            |
+| `agentCanopy.checkpoints.keepDays`       | `30`      | Days checkpoints are kept.                                                                                                        |
+
+A setting that narrows Auto takes effect at once, also for a running turn: `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off makes the next call ask, and it stays in effect for the rest of that turn even if you change it back. A setting that widens what runs applies from the next turn.
 
 Every setting except `agentCanopy.unsavedFiles` has machine scope, so a repository's `.vscode/settings.json` cannot change them, including the default mode and model.
 
@@ -150,6 +164,7 @@ All commands are in the Command Palette under the category AgentCanopy. The revi
 | Sign In to Claude Code                                         | Open a terminal running `claude auth login`                                                           |
 | Show Logs                                                      | Open the AgentCanopy output channel                                                                   |
 | Ask Again About This Folder's Claude Code Project Settings     | Clear your answer about the project's Claude Code settings, so the next turn asks again               |
+| Show Permissions                                               | Open the Permissions tab: what is allowed without asking in the folder, and what is saved             |
 | Delete Stored File Contents and Change History for This Folder | Delete the captured file contents, the list of agent changes and the checkpoint history of one folder |
 | Show Agent Changes for File / Show All Agent Changes           | Open the diff of one file or of every pending file                                                    |
 | Accept / Reject Agent Changes in File                          | Decide on a whole file                                                                                |
@@ -160,16 +175,17 @@ All commands are in the Command Palette under the category AgentCanopy. The revi
 ## Limits at a glance
 
 - Ask and Plan do not cover hooks from managed policy, settings helper commands or plugins. Plugins show a notice, or stop the turn with `agentCanopy.readOnly.strict`.
-- A command you allow in Agent mode runs with your privileges unless the sandbox setting is on.
+- A command you allow in Agent mode runs with your privileges unless the sandbox setting is on, and with Auto on commands are allowed without review (unless `agentCanopy.agent.alwaysAskCommands` is on). Review and checkpoints do not undo what a command does outside the folder. See [SECURITY.md](SECURITY.md#auto).
 - Changes a command makes to ignored, oversized or over-budget files are detected but cannot be restored.
 - Background tasks are disabled, so the agent cannot leave a dev server running between turns.
-- Images are not supported in messages, and the agent has text search but no symbol search.
+- Images can only be pasted, at most 5 images and 5 MB together per message, and a message with an image still needs text. The agent has text search but no symbol search.
+- Nothing can be added to a running turn: an Agent or Plan message waits in a queue, and a side question does not see the work in progress.
 - Windows supports the native Claude Code install only, and stopping a turn there is a hard stop.
 
 ## Keyboard, contrast and screen readers
 
 - The review keys above work when the editor shows a file with pending changes. Every review action is also a command in the Command Palette.
-- The tabs (Chat, Plan, Review, Checkpoints, History) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
+- The tabs (Chat, Checkpoints, History, Permissions) form a tab list: use the arrow keys, Home and End to move between them. Pressing Escape in the message box while a turn runs moves focus to Stop. Escape closes the **More actions** menu and the `@` picker and cancels a rename.
 - Controls have text names that say what they act on, state is never shown by color alone, and the interface uses only VS Code theme colors, with extra borders in high-contrast themes. Animation respects the reduced-motion setting.
 - Streaming text is not announced. A short status line announces that the agent is working, finished, failed or was stopped, and when it waits for your answer.
 - This has been checked with automated tests and a written checklist (`src/webview/ACCESSIBILITY.md`). It has not yet been tested with a screen reader, so expect rough edges.

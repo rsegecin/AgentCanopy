@@ -1,23 +1,58 @@
 import * as z from 'zod';
 import {
+  AsideAnchorSchema,
   AttachmentSchema,
   ConversationMetaSchema,
   ConversationSummarySchema,
+  MessagePartSchema,
   MessageSchema,
   TurnSchema,
+  TurnStatusSchema,
 } from './conversation';
-import { ConversationIdSchema, FolderKeySchema, RelPathSchema } from './ids';
+import { ConversationIdSchema, FolderKeySchema, RelPathSchema, TimestampSchema } from './ids';
 import { ModeSchema } from './modes';
+import { FolderPermissionsSchema, PolicySettingsSchema } from './permissions';
 import { PlanDocSchema } from './plan';
 import { PromptSchema } from './prompts';
 import { ModelInfoSchema, ProviderStatusSchema } from './provider-status';
 import {
   CheckpointSummarySchema,
   ConfigChangeSchema,
-  HunkSchema,
   RestorePreviewSchema,
   ReviewEntrySchema,
 } from './workspace';
+
+/**
+ * A message the user sent while a turn was running in the conversation. The host sends it when that
+ * turn has ended as completed; after a stop or an error it waits for the user. Kept in memory only.
+ */
+export const QueuedMessageSchema = z.object({
+  text: z.string().min(1),
+  mode: ModeSchema,
+  model: z.string(),
+  attachments: z.array(AttachmentSchema),
+  queuedAt: TimestampSchema,
+});
+export type QueuedMessage = z.infer<typeof QueuedMessageSchema>;
+
+/**
+ * A side question of the open conversation, as its card shows it: the question and the answer of the
+ * one turn that asked it. The host keeps it in step with the branch that holds it.
+ */
+export const AsideSchema = z.object({
+  /** The branch that holds the side question. Stop and "Open as conversation" act on it. */
+  conversationId: ConversationIdSchema,
+  anchor: AsideAnchorSchema,
+  question: z.string(),
+  /** The answer so far, in order. Grows while the side question's turn streams. */
+  parts: z.array(MessagePartSchema),
+  /** The prompts of that turn; a `prompt` part of `parts` refers to one of these. */
+  prompts: z.array(PromptSchema),
+  status: TurnStatusSchema,
+  /** Plain-language error when the turn failed. */
+  error: z.string().optional(),
+});
+export type Aside = z.infer<typeof AsideSchema>;
 
 export const ActiveConversationSchema = z.object({
   meta: ConversationMetaSchema,
@@ -28,6 +63,10 @@ export const ActiveConversationSchema = z.object({
   plan: PlanDocSchema.nullable(),
   /** One-line description of what the turn is doing, while one runs. */
   activity: z.string().nullable(),
+  /** The message waiting for the running turn to end, if there is one. At most one per conversation. */
+  queued: QueuedMessageSchema.nullable(),
+  /** Side questions asked in this conversation, oldest first. */
+  asides: z.array(AsideSchema),
 });
 export type ActiveConversation = z.infer<typeof ActiveConversationSchema>;
 
@@ -57,10 +96,24 @@ export const ViewStateSchema = z.object({
   provider: ProviderStatusSchema.nullable(),
   models: z.array(ModelInfoSchema),
   defaults: z.object({ mode: ModeSchema, model: z.string() }),
+  /** What the settings allow of Agent mode's Auto switch. The same in every view. */
+  agentAuto: z.object({
+    /** The switch is offered at all (`agentCanopy.agent.auto.enabled`). */
+    offered: z.boolean(),
+    /** Auto covers terminal commands. False while `agentCanopy.agent.alwaysAskCommands` is on. */
+    commands: z.boolean(),
+  }),
+  /** The machine-wide settings that shape what asks, for the Permissions view. The same in every view. */
+  policySettings: PolicySettingsSchema,
   conversations: z.array(ConversationSummarySchema),
   active: ActiveConversationSchema.nullable(),
   /** Attachments queued for this view's next message, whether or not a conversation exists yet. */
   draftAttachments: z.array(AttachmentSchema),
+  /**
+   * The user turned Auto on for the conversation this view is about to start. Its first message, in
+   * any mode, creates the conversation with Auto on. Gone when the view moves on.
+   */
+  draftAgentAuto: z.boolean(),
   /** Results of the composer's file search (typing `@`), or null when no search is open. */
   fileSearch: z
     .object({
@@ -78,13 +131,18 @@ export const ViewStateSchema = z.object({
     .nullable(),
   review: z.object({
     entries: z.array(ReviewEntrySchema),
-    /** Hunks per path, filled when a view asks for them. */
-    hunks: z.record(RelPathSchema, z.array(HunkSchema)),
     configChanges: z.array(ConfigChangeSchema),
+    /**
+     * An Agent turn is running in this view's folder. File changes cannot be accepted or rejected
+     * meanwhile, so the view hides those actions. Configuration changes stay decidable.
+     */
+    busy: z.boolean(),
   }),
   checkpoints: z.array(CheckpointSummarySchema),
   restorePreview: RestorePreviewSchema.nullable(),
   baseline: BaselineStatusSchema,
+  /** The switches and saved permissions of the folder this view shows. */
+  permissions: FolderPermissionsSchema,
   banners: z.array(BannerSchema),
 });
 export type ViewState = z.infer<typeof ViewStateSchema>;
@@ -95,14 +153,25 @@ export const EMPTY_VIEW_STATE: ViewState = {
   provider: null,
   models: [],
   defaults: { mode: 'ask', model: 'default' },
+  agentAuto: { offered: false, commands: false },
+  policySettings: {
+    editApproval: 'auto',
+    alwaysAskCommands: false,
+    askWebTools: false,
+    autoOffered: false,
+    autoWebTools: false,
+    sandbox: false,
+  },
   conversations: [],
   active: null,
   draftAttachments: [],
+  draftAgentAuto: false,
   fileSearch: null,
   search: null,
-  review: { entries: [], hunks: {}, configChanges: [] },
+  review: { entries: [], configChanges: [], busy: false },
   checkpoints: [],
   restorePreview: null,
   baseline: { state: 'idle', filesDone: 0, filesTotal: 0 },
+  permissions: { folder: null, switches: [], saved: [] },
   banners: [],
 };

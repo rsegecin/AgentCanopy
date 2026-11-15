@@ -1,11 +1,13 @@
-import { createElement, memo } from 'react';
+import { createElement, memo, useContext } from 'react';
 import type { ComponentType } from 'react';
 import type { MessagePart } from '../../../shared';
 import { Icon, VisuallyHidden } from '../../app/components';
 import { useViewState } from '../../app/store';
 import { Markdown } from './Markdown';
 import { ToolCard, useIsNested } from './ToolCard';
+import { PromptScope } from './prompt-scope';
 import { getPartRenderer } from './registry';
+import { SUBMIT_PLAN_TOOL } from './tool-present';
 import type { PartKind, PartRendererProps } from './registry';
 
 type Of<K extends MessagePart['kind']> = PartRendererProps<K>;
@@ -60,9 +62,12 @@ const PROMPT_TEXT = {
 
 /** The one-line stand-in for a prompt part: used when no prompt card is registered or the prompt is gone. */
 export function PromptPlaceholder({ part }: Of<'prompt'>) {
-  const state = useViewState(
-    (s) => s.active?.prompts.find((p) => p.id === part.promptId)?.state ?? 'pending',
+  const scope = useContext(PromptScope);
+  const activeState = useViewState((s) =>
+    scope === null ? s.active?.prompts.find((p) => p.id === part.promptId)?.state : undefined,
   );
+  const state =
+    (scope === null ? activeState : scope.find((p) => p.id === part.promptId)?.state) ?? 'pending';
   return (
     <div className="part-line">
       <Icon name="comment-discussion" />
@@ -75,6 +80,9 @@ function ToolPart({ part, messageId }: Of<'tool'>) {
   // A call made by another call of the same message is drawn inside that call's card.
   const nested = useIsNested(messageId, part.call);
   if (nested) return null;
+  // A submitted plan is shown by the plan card that follows it; only a call that is still running,
+  // failed or was denied has something the card does not say.
+  if (part.call.name === SUBMIT_PLAN_TOOL && part.call.status === 'done') return null;
   return <ToolCard call={part.call} messageId={messageId} />;
 }
 

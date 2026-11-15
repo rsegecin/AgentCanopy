@@ -27,6 +27,12 @@ export interface PolicyContext {
   mode: Mode;
   folder: FolderInfo;
   settings: Settings;
+  /**
+   * Agent mode's Auto applies right now: the turn started with it and it has not been turned off
+   * since. Read it at the moment of approving, after anything awaited: it can turn false between
+   * two reads, and it never becomes true during a turn.
+   */
+  readonly auto: boolean;
   /** What the user decided about the project's own Claude Code configuration for this turn. Absent means "ignore both". */
   projectConfig?: ProjectConfigChoice;
   /**

@@ -1,11 +1,20 @@
 import { promises as fs } from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { join, parse } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { PromptAnswer } from '../../../shared';
+import type { FolderKey, PromptAnswer, Settings } from '../../../shared';
 import type { PermissionRequest, PolicyContext, PolicyDecision } from '../../contracts';
+import type { GrantStore } from '../grants';
 import { createReadOnlyPolicy, escapeForDisplay } from './index';
-import { makeContext, makeTempDir, removeDir, writeTree } from './test-support';
+import {
+  makeContext,
+  makeTempDir,
+  openGrantStore,
+  recordingLogger,
+  removeDir,
+  useHome,
+  writeTree,
+} from './test-support';
 
 const DENIAL = 'This action is not allowed in Ask mode because the mode is read-only.';
 const PLAN_DENIAL = 'This action is not allowed in Plan mode because the mode is read-only.';
@@ -471,6 +480,586 @@ describe('decide: web tools', () => {
   });
 });
 
+const ALLOW_ALWAYS: PromptAnswer = { kind: 'permission', choice: 'allow-always' };
+const FOLDER_KEY = 'folder-1' as FolderKey;
+const ONCE_DENY = ['allow-once', 'deny'];
+const ONCE_ALWAYS_DENY = ['allow-once', 'allow-always', 'deny'];
+
+describe('decide: saved permissions for reads', () => {
+  let root: string;
+  let folder: string;
+  let outside: string;
+  let other: string;
+  let home: string;
+  let storage: string;
+  let restoreHome: () => void;
+  let grants: GrantStore;
+
+  // The temporary directories lie under the real home (under AppData on Windows, which is
+  // sensitive), so these tests run with a home directory of their own.
+  beforeEach(async () => {
+    root = await makeTempDir('readonly-saved');
+    folder = join(root, 'folder');
+    outside = join(root, 'outside');
+    other = join(root, 'other');
+    home = join(root, 'home');
+    storage = join(root, 'ext', 'storage');
+    await writeTree(folder, { 'src/a.ts': 'a' });
+    await writeTree(outside, { 'secret.txt': 's', 'dir/inner.txt': 'i' });
+    await writeTree(other, { 'x.txt': 'x' });
+    await fs.mkdir(join(home, '.ssh'), { recursive: true });
+    await fs.mkdir(storage, { recursive: true });
+    await fs.symlink(other, join(outside, 'link-other'));
+    await fs.symlink(outside, join(folder, 'link-out'));
+    restoreHome = useHome(home);
+    grants = await openGrantStore(join(root, 'permissions'));
+  });
+  afterEach(async () => {
+    restoreHome();
+    await removeDir(root);
+  });
+
+  const secured = (
+    store: GrantStore = grants,
+    logger?: Parameters<typeof createReadOnlyPolicy>[0],
+  ) => createReadOnlyPolicy({ ...logger, grants: store, sensitiveRoots: () => [storage] });
+
+  async function run(
+    toolName: string,
+    input: Record<string, unknown>,
+    answer?: PromptAnswer,
+    options: { mode?: 'ask' | 'plan'; policy?: ReturnType<typeof secured> } = {},
+  ) {
+    const { context, prompts } = makeContext({
+      folderPath: folder,
+      answer,
+      mode: options.mode ?? 'ask',
+    });
+    const full = toolName === 'Glob' ? { pattern: '*.ts', ...input } : input;
+    const decision = await (options.policy ?? secured()).decide(request(toolName, full), context);
+    return { decision, prompts };
+  }
+
+  const fwd = (path: string): string => path.split('\\').join('/');
+
+  it('inside the folder is unchanged, with nothing saved and with the switch on', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    for (const tool of ['Read', 'Grep', 'Glob']) {
+      const key = tool === 'Read' ? 'file_path' : 'path';
+      const { decision, prompts } = await run(tool, { [key]: 'src/a.ts' });
+      expect(decision).toEqual(allow('policy'));
+      expect(prompts).toEqual([]);
+    }
+  });
+
+  it('outside with nothing saved offers once, always and deny, and names the directory', async () => {
+    const file = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY);
+    expect(file.prompts).toHaveLength(1);
+    expect(file.prompts[0]).toMatchObject({
+      kind: 'permission',
+      category: 'read-outside',
+      title: 'Read a file outside the workspace',
+      detail: join(outside, 'secret.txt'),
+      choices: ONCE_ALWAYS_DENY,
+      alwaysRule: { kind: 'read-directory', rule: outside, runsProjectCode: false },
+    });
+    expect(file.decision).toEqual(deny('The user declined.', 'user'));
+
+    // A directory is offered itself; a file gives its parent.
+    const dir = await run('Grep', { pattern: 'x', path: join(outside, 'dir') }, DENY);
+    expect(dir.prompts[0]).toMatchObject({
+      choices: ONCE_ALWAYS_DENY,
+      alwaysRule: { kind: 'read-directory', rule: join(outside, 'dir') },
+    });
+    // Of a path and a pattern, the directory that holds the other.
+    const both = await run('Glob', { path: outside, pattern: 'dir/**/*.txt' }, DENY);
+    expect(both.prompts[0]).toMatchObject({
+      detail: `${join(outside, 'dir')}/**/*.txt`,
+      alwaysRule: { rule: outside },
+    });
+    // A file that does not exist yet gives its parent.
+    const missing = await run('Read', { file_path: join(outside, 'new', 'f.txt') }, DENY);
+    expect(missing.prompts[0]).toMatchObject({ alwaysRule: { rule: join(outside, 'new') } });
+  });
+
+  it('works the same in Plan mode', async () => {
+    const { prompts } = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY, {
+      mode: 'plan',
+    });
+    expect(prompts[0]).toMatchObject({ choices: ONCE_ALWAYS_DENY });
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    const allowed = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY, {
+      mode: 'plan',
+    });
+    expect(allowed.decision).toEqual(allow('user'));
+  });
+
+  it('the read-outside switch allows with approval user and no prompt, and off asks again', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    for (const [tool, input] of [
+      ['Read', { file_path: join(other, 'x.txt') }],
+      ['Grep', { pattern: 'x', path: outside }],
+      ['Glob', { path: outside, pattern: '../other/*' }],
+      ['Read', { file_path: 'link-out/secret.txt' }],
+    ] as const) {
+      const { decision, prompts } = await run(tool, { ...input }, DENY);
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    }
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', false);
+    expect((await run('Read', { file_path: join(other, 'x.txt') }, DENY)).prompts).toHaveLength(1);
+  });
+
+  it('another folder is not affected by the switch or a saved directory', async () => {
+    await grants.setSwitch('folder-2' as FolderKey, 'read-outside', true);
+    await grants.add('folder-2' as FolderKey, { kind: 'read-directory', path: outside });
+    const { prompts } = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY);
+    expect(prompts).toHaveLength(1);
+  });
+
+  it('a saved directory allows a file below it and asks for a sibling', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    for (const [tool, input] of [
+      ['Read', { file_path: join(outside, 'secret.txt') }],
+      ['Read', { file_path: join(outside, 'dir', 'inner.txt') }],
+      ['Read', { file_path: join(outside, 'not', 'yet.txt') }],
+      ['Grep', { pattern: 'x', path: outside }],
+      ['Glob', { path: outside, pattern: 'dir/**/*.txt' }],
+      ['Glob', { pattern: `${fwd(outside)}/*.txt` }],
+      ['Read', { file_path: 'link-out/secret.txt' }],
+    ] as const) {
+      const { decision, prompts } = await run(tool, { ...input }, DENY);
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    }
+    for (const path of [join(other, 'x.txt'), `${outside}-evil/x`, root]) {
+      const { prompts } = await run('Read', { file_path: path }, DENY);
+      expect(prompts).toHaveLength(1);
+    }
+  });
+
+  it('a symlink inside a saved directory that points out of it asks', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    const { prompts, decision } = await run(
+      'Read',
+      { file_path: join(outside, 'link-other', 'x.txt') },
+      DENY,
+    );
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ detail: join(other, 'x.txt') });
+    expect(decision.response.behavior).toBe('deny');
+  });
+
+  it('a path and a pattern that are both outside need both covered', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    const { prompts } = await run('Glob', { path: outside, pattern: '../other/*' }, DENY);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ detail: `${other}/*`, choices: ONCE_DENY });
+    expect(prompts[0]).not.toHaveProperty('alwaysRule');
+
+    // With both saved, nothing asks.
+    await grants.add(FOLDER_KEY, { kind: 'read-directory', path: other });
+    const covered = await run('Glob', { path: outside, pattern: '../other/*' }, DENY);
+    expect(covered.decision).toEqual(allow('user'));
+    expect(covered.prompts).toEqual([]);
+
+    // Only the pattern covered: the path is the one that asks.
+    await grants.remove(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    const grep = await run('Grep', { pattern: 'x', path: outside, glob: `${fwd(other)}/*` }, DENY);
+    expect(grep.prompts).toHaveLength(1);
+  });
+
+  describe('what is sensitive always asks', () => {
+    beforeEach(async () => {
+      await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    });
+
+    it.each([
+      ['a file under a storage root', () => join(storage, 'permissions', 'k.json')],
+      ['the storage root', () => storage],
+      ['a file under ~/.ssh', () => join(home, '.ssh', 'x')],
+      ['the credentials file in the home directory', () => join(home, '.npmrc')],
+    ])('%s, with the switch on, gives once and deny only', async (_name, path) => {
+      const { prompts, decision } = await run('Read', { file_path: path() }, ALLOW_ONCE);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ category: 'read-outside', choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      expect(decision).toEqual(allow('user'));
+    });
+
+    it('Grep and Glob below a sensitive location ask too', async () => {
+      for (const [tool, input] of [
+        ['Grep', { pattern: 'x', path: join(home, '.ssh') }],
+        ['Glob', { path: storage, pattern: '**/*' }],
+        ['Glob', { pattern: `${fwd(join(home, '.ssh'))}/*` }],
+      ] as const) {
+        const { prompts } = await run(tool, { ...input }, DENY);
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      }
+    });
+
+    it('a search whose path is the home directory asks, because it would reach the credentials', async () => {
+      const { prompts } = await run('Grep', { pattern: 'x', path: home }, DENY);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+    });
+
+    it('a sensitive target beside a covered one asks', async () => {
+      const { prompts } = await run(
+        'Glob',
+        { path: outside, pattern: `${fwd(join(home, '.ssh'))}/*` },
+        DENY,
+      );
+      expect(prompts).toHaveLength(1);
+    });
+
+    it('a pattern with .. after a wildcard asks without always', async () => {
+      for (const pattern of [
+        `${fwd(outside)}/*/../x`,
+        `${fwd(outside)}/**/../../x`,
+        '{a,../b}/*',
+        '{..,a}/*',
+      ]) {
+        const input = pattern.startsWith('{') ? { path: outside, pattern } : { pattern };
+        const { prompts } = await run('Glob', input, DENY);
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      }
+    });
+
+    it('a pattern with an alternative in braces that starts at a root, a drive or the home folder asks without always', async () => {
+      for (const pattern of ['{a,/etc/*}', '{a,~/x}/*', '{C:/x,a}/*', '{a, /etc/*}']) {
+        const { prompts } = await run('Glob', { path: outside, pattern }, DENY);
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      }
+    });
+
+    it('a pattern with plain alternatives stays covered', async () => {
+      const { decision, prompts } = await run(
+        'Glob',
+        { path: outside, pattern: '**/*.{ts,tsx}' },
+        DENY,
+      );
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    });
+
+    it('a pattern that only looks like .. is fine', async () => {
+      const { decision, prompts } = await run(
+        'Glob',
+        { pattern: `${fwd(outside)}/*/a..b/x...` },
+        DENY,
+      );
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    });
+
+    it('a path the host cannot judge asks without always', async () => {
+      const { prompts } = await run('Grep', { pattern: 'x', path: ' src' }, DENY);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ detail: ' src', choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      const trailing = await run('Read', { file_path: 'src/a.ts ' }, DENY);
+      expect(trailing.prompts).toHaveLength(1);
+      expect(trailing.prompts[0]).not.toHaveProperty('alwaysRule');
+    });
+
+    it.runIf(process.platform === 'win32')(
+      'a Windows path the host cannot judge asks without always',
+      async () => {
+        for (const value of ['\\Users\\x', 'C:Users', 'src\\.ssh.\\x']) {
+          const { prompts } = await run('Read', { file_path: value }, DENY);
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]).not.toHaveProperty('alwaysRule');
+        }
+      },
+    );
+
+    it('a saved directory does not cover a sensitive location', async () => {
+      await grants.setSwitch(FOLDER_KEY, 'read-outside', false);
+      await grants.add(FOLDER_KEY, { kind: 'read-directory', path: join(home, '.ssh') });
+      await grants.add(FOLDER_KEY, { kind: 'read-directory', path: storage });
+      for (const path of [join(home, '.ssh', 'x'), join(storage, 'k.json')]) {
+        const { prompts } = await run('Read', { file_path: path }, DENY);
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      }
+    });
+  });
+
+  it('a saved directory that may not be granted covers nothing', async () => {
+    // `add` checks the shape only, so a hand-written file can hold these.
+    for (const path of [home, root, storage, parse(root).root]) {
+      await grants.add(FOLDER_KEY, { kind: 'read-directory', path });
+    }
+    const { prompts } = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY);
+    expect(prompts).toHaveLength(1);
+    await writeTree(home, { 'docs/n.txt': 'n' });
+    const inHome = await run('Read', { file_path: join(home, 'docs', 'n.txt') }, DENY);
+    expect(inHome.prompts).toHaveLength(1);
+  });
+
+  it('always saves the directory, the next request passes, and removing it makes the next ask', async () => {
+    const first = await run('Read', { file_path: join(outside, 'secret.txt') }, ALLOW_ALWAYS);
+    expect(first.decision).toEqual(allow('user'));
+    expect(first.prompts).toHaveLength(1);
+    expect(grants.get(FOLDER_KEY).grants).toEqual([{ kind: 'read-directory', path: outside }]);
+
+    const next = await run('Grep', { pattern: 'x', path: join(outside, 'dir') });
+    expect(next.decision).toEqual(allow('user'));
+    expect(next.prompts).toEqual([]);
+
+    await grants.remove(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    const again = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY);
+    expect(again.prompts).toHaveLength(1);
+    expect(again.decision.response.behavior).toBe('deny');
+  });
+
+  it('once saves nothing, and deny keeps its feedback', async () => {
+    await run('Read', { file_path: join(outside, 'secret.txt') }, ALLOW_ONCE);
+    expect(grants.get(FOLDER_KEY).grants).toEqual([]);
+    const feedback: PromptAnswer = { kind: 'permission', choice: 'deny', feedback: 'no' };
+    const { decision } = await run('Read', { file_path: join(outside, 'secret.txt') }, feedback);
+    expect(decision).toEqual(deny('no', 'user'));
+    expect((await run('Read', { file_path: join(outside, 'secret.txt') })).decision).toEqual(
+      deny('The user did not answer.'),
+    );
+  });
+
+  it('an allow-always answer to a prompt that did not offer it is denied, and saves nothing', async () => {
+    const { decision, prompts } = await run(
+      'Read',
+      { file_path: join(storage, 'k') },
+      ALLOW_ALWAYS,
+    );
+    expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+    expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+    expect(grants.get(FOLDER_KEY)).toEqual({ switches: [], grants: [] });
+  });
+
+  it('a store whose add fails is logged, and the call still goes ahead once', async () => {
+    const { logger, warnings } = recordingLogger();
+    const failing: GrantStore = { ...grants, add: () => Promise.reject(new Error('disk full')) };
+    const policy = secured(failing, { logger });
+    const { decision } = await run(
+      'Read',
+      { file_path: join(outside, 'secret.txt') },
+      ALLOW_ALWAYS,
+      { policy },
+    );
+    expect(decision).toEqual(allow('user'));
+    expect(warnings).toHaveLength(1);
+    const next = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY, { policy });
+    expect(next.prompts).toHaveLength(1);
+  });
+
+  it('reads the store after the awaits, so a removal made while it waited counts', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    // `sensitiveRoots` is called before the policy awaits the real paths: from then on the store
+    // answers as if everything was removed, so a value read before that would still approve.
+    let removed = false;
+    const live: GrantStore = {
+      ...grants,
+      get: (key) => (removed ? { switches: [], grants: [] } : grants.get(key)),
+    };
+    const policy = createReadOnlyPolicy({
+      grants: live,
+      sensitiveRoots: () => {
+        removed = true;
+        return [storage];
+      },
+    });
+    const { context, prompts } = makeContext({ folderPath: folder, answer: DENY });
+    const decision = await policy.decide(
+      request('Read', { file_path: join(outside, 'secret.txt') }),
+      context,
+    );
+    expect(prompts).toHaveLength(1);
+    expect(decision.response.behavior).toBe('deny');
+  });
+
+  it('a policy without a grant store behaves as before', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+    const plain = createReadOnlyPolicy();
+    const { prompts } = await run('Read', { file_path: join(outside, 'secret.txt') }, DENY, {
+      policy: plain,
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+    expect(prompts[0]).not.toHaveProperty('alwaysRule');
+  });
+});
+
+describe('decide: saved permissions for web tools', () => {
+  let root: string;
+  let grants: GrantStore;
+  const settings: Partial<Settings> = { askWebTools: true };
+
+  beforeEach(async () => {
+    root = await makeTempDir('readonly-web');
+    grants = await openGrantStore(join(root, 'permissions'));
+  });
+  afterEach(() => removeDir(root));
+
+  async function run(
+    tool: 'WebFetch' | 'WebSearch',
+    value: string,
+    answer?: PromptAnswer,
+    options: { settings?: Partial<Settings>; mode?: 'ask' | 'plan'; policy?: PolicyPolicy } = {},
+  ) {
+    const { context, prompts } = makeContext({
+      folderPath: '/x',
+      answer,
+      settings: options.settings ?? settings,
+      mode: options.mode ?? 'ask',
+    });
+    const policy = options.policy ?? createReadOnlyPolicy({ grants });
+    const decision = await policy.decide(
+      request(tool, { [tool === 'WebFetch' ? 'url' : 'query']: value }),
+      context,
+    );
+    return { decision, prompts };
+  }
+  type PolicyPolicy = ReturnType<typeof createReadOnlyPolicy>;
+
+  it('a fetch with nothing saved offers once, always (the site) and deny', async () => {
+    const { prompts, decision } = await run('WebFetch', 'https://Docs.Example.com/a?b=c', DENY);
+    expect(prompts[0]).toMatchObject({
+      category: 'network',
+      title: 'Fetch a web page',
+      choices: ONCE_ALWAYS_DENY,
+      alwaysRule: { kind: 'web-site', rule: 'docs.example.com', runsProjectCode: false },
+    });
+    expect(decision).toEqual(deny('The user declined.', 'user'));
+  });
+
+  it('a saved site matches the exact host and port only', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'web-site', host: 'docs.example.com' });
+    for (const url of [
+      'https://docs.example.com/x',
+      'http://docs.example.com/x',
+      'https://DOCS.example.com:443/x',
+    ]) {
+      const { decision, prompts } = await run('WebFetch', url, DENY);
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    }
+    for (const url of [
+      'https://docs.example.com:8443/x',
+      'https://example.com/',
+      'https://a.docs.example.com/',
+      'https://docs.example.com.evil.com/',
+      'https://evil.com/?u=docs.example.com',
+      'https://evil.com/docs.example.com',
+    ]) {
+      expect((await run('WebFetch', url, DENY)).prompts).toHaveLength(1);
+    }
+    await grants.add(FOLDER_KEY, { kind: 'web-site', host: 'docs.example.com:8443' });
+    expect((await run('WebFetch', 'https://docs.example.com:8443/x', DENY)).prompts).toEqual([]);
+    expect((await run('WebFetch', 'https://docs.example.com:9000/x', DENY)).prompts).toHaveLength(
+      1,
+    );
+  });
+
+  it.each([
+    ['a user name', 'https://user@docs.example.com/'],
+    ['a user name and password', 'https://u:p@docs.example.com/'],
+    ['a host hidden behind a user name', 'http://docs.example.com:8080@evil.com/'],
+    ['a file address', 'file:///etc/passwd'],
+    ['an unparsable address', 'not a url'],
+    ['a backslash', 'https://docs.example.com\\@evil.com/'],
+  ])('an address with %s asks without always', async (_name, url) => {
+    await grants.add(FOLDER_KEY, { kind: 'web-site', host: 'docs.example.com' });
+    await grants.add(FOLDER_KEY, { kind: 'web-site', host: 'evil.com' });
+    const { prompts } = await run('WebFetch', url, ALLOW_ALWAYS);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+    expect(prompts[0]).not.toHaveProperty('alwaysRule');
+  });
+
+  it('always saves the site, and the next fetch there passes', async () => {
+    const first = await run('WebFetch', 'https://docs.example.com/a', ALLOW_ALWAYS);
+    expect(first.decision).toEqual(allow('user'));
+    expect(grants.get(FOLDER_KEY).grants).toEqual([{ kind: 'web-site', host: 'docs.example.com' }]);
+    const next = await run('WebFetch', 'https://docs.example.com/b');
+    expect(next.decision).toEqual(allow('user'));
+    expect(next.prompts).toEqual([]);
+  });
+
+  it('a search never offers always, and an always answer to it is denied', async () => {
+    const { prompts, decision } = await run('WebSearch', 'how do links work', ALLOW_ALWAYS);
+    expect(prompts[0]).toMatchObject({ title: 'Search the web', choices: ONCE_DENY });
+    expect(prompts[0]).not.toHaveProperty('alwaysRule');
+    expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+    expect(grants.get(FOLDER_KEY).grants).toEqual([]);
+  });
+
+  it('each switch allows its own tool only, with approval user', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'web-fetch', true);
+    const fetch = await run('WebFetch', 'https://anything.example/x', DENY);
+    expect(fetch.decision).toEqual(allow('user'));
+    expect(fetch.prompts).toEqual([]);
+    expect((await run('WebFetch', 'https://u:p@anything.example/', DENY)).decision).toEqual(
+      allow('user'),
+    );
+    expect((await run('WebSearch', 'q', DENY)).prompts).toHaveLength(1);
+
+    await grants.setSwitch(FOLDER_KEY, 'web-fetch', false);
+    await grants.setSwitch(FOLDER_KEY, 'web-search', true);
+    const search = await run('WebSearch', 'q', DENY);
+    expect(search.decision).toEqual(allow('user'));
+    expect(search.prompts).toEqual([]);
+    expect((await run('WebFetch', 'https://anything.example/x', DENY)).prompts).toHaveLength(1);
+  });
+
+  it('with the setting off, web tools are denied whatever is saved, in Ask and in Plan', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'web-fetch', true);
+    await grants.setSwitch(FOLDER_KEY, 'web-search', true);
+    await grants.add(FOLDER_KEY, { kind: 'web-site', host: 'docs.example.com' });
+    for (const mode of ['ask', 'plan'] as const) {
+      for (const [tool, value] of [
+        ['WebFetch', 'https://docs.example.com/'],
+        ['WebSearch', 'q'],
+      ] as const) {
+        const { decision, prompts } = await run(tool, value, ALLOW_ONCE, {
+          settings: { askWebTools: false },
+          mode,
+        });
+        expect(decision).toEqual(
+          deny('Web access is turned off for Ask and Plan modes in the AgentCanopy settings.'),
+        );
+        expect(prompts).toEqual([]);
+      }
+    }
+  });
+
+  it('a store whose add fails is logged, and the fetch still goes ahead once', async () => {
+    const { logger, warnings } = recordingLogger();
+    const failing: GrantStore = { ...grants, add: () => Promise.reject(new Error('disk full')) };
+    const policy = createReadOnlyPolicy({ grants: failing, logger });
+    const { decision } = await run('WebFetch', 'https://docs.example.com/', ALLOW_ALWAYS, {
+      policy,
+    });
+    expect(decision).toEqual(allow('user'));
+    expect(warnings).toHaveLength(1);
+  });
+
+  it('a policy without a grant store behaves as before', async () => {
+    await grants.setSwitch(FOLDER_KEY, 'web-fetch', true);
+    const { prompts } = await run('WebFetch', 'https://docs.example.com/', DENY, {
+      policy: createReadOnlyPolicy(),
+    });
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).not.toHaveProperty('alwaysRule');
+  });
+});
+
 describe('decide: AskUserQuestion', () => {
   const questions = [
     {
@@ -717,4 +1306,43 @@ describe('decide: malformed requests never throw', () => {
     expect(decision.response.behavior).toBe('deny');
     expect(warnings).toHaveLength(1);
   });
+});
+
+describe('decide: paths the host cannot judge', () => {
+  let root: string;
+  let folder: string;
+  let outside: string;
+
+  beforeEach(async () => {
+    root = await makeTempDir('readonly-unjudged');
+    folder = join(root, 'folder');
+    outside = join(root, 'outside');
+    await writeTree(folder, { 'src/a.ts': 'a' });
+    await writeTree(outside, { 'dir/inner.txt': 'i' });
+  });
+  afterEach(() => removeDir(root));
+
+  it('a Grep whose path has a leading space asks, showing the text as given', async () => {
+    const value = ' src';
+    const { context, prompts } = makeContext({ folderPath: folder, answer: DENY });
+    const decision = await policy.decide(request('Grep', { pattern: 'x', path: value }), context);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ category: 'read-outside', detail: value });
+    expect(decision.response.behavior).toBe('deny');
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'a Glob with a backslash pattern into a real directory outside asks',
+    async () => {
+      const { context, prompts } = makeContext({ folderPath: folder, answer: DENY });
+      const pattern = `${join(outside, 'dir')}\\*`;
+      const decision = await policy.decide(request('Glob', { pattern }), context);
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        category: 'read-outside',
+        detail: `${join(outside, 'dir')}/*`,
+      });
+      expect(decision.response.behavior).toBe('deny');
+    },
+  );
 });

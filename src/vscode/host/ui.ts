@@ -14,6 +14,8 @@ const EXTERNAL_SCHEMES = new Set(['http:', 'https:', 'mailto:']);
 export interface UiParts {
   openPanel(conversationId?: ConversationId): void;
   showLogs(): void;
+  /** The id of this extension (`publisher.name`), which the publisher override at packaging changes. */
+  extensionId: string;
   /** The review service, once it is ready. */
   review(): ReviewService | undefined;
 }
@@ -185,6 +187,26 @@ export function createUiPort(parts: UiParts): UiPort {
       terminal.sendText('claude auth login');
     },
 
+    async showReadOnlyDocument({ key, title, text, beside }) {
+      const uri = createVirtualDocument(text, title, key);
+      // A tab for this document may be open already, in any group: show that one, where it is.
+      let openIn: vscode.ViewColumn | undefined;
+      for (const group of vscode.window.tabGroups.all) {
+        const open = group.tabs.some(
+          (tab) =>
+            tab.input instanceof vscode.TabInputText && tab.input.uri.toString() === uri.toString(),
+        );
+        if (open) {
+          openIn = group.viewColumn;
+          break;
+        }
+      }
+      await vscode.window.showTextDocument(uri, {
+        preview: false,
+        viewColumn: openIn ?? (beside ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active),
+      });
+    },
+
     async showDiff({ title, leftLabel, leftText, rightLabel, rightText }) {
       const left = createVirtualDocument(leftText, leftLabel);
       const right = createVirtualDocument(rightText, rightLabel);
@@ -213,16 +235,31 @@ export function createUiPort(parts: UiParts): UiPort {
       await openAllChanges(review, folderKey);
     },
 
-    async showDocument({ text, language }) {
-      const document = await vscode.workspace.openTextDocument({ content: text, language });
-      await vscode.window.showTextDocument(document);
-    },
-
     openEditorPanel: (conversationId) => {
       parts.openPanel(conversationId);
     },
     showLogs: () => {
       parts.showLogs();
+    },
+
+    async pickDirectory({ title, openLabel, defaultPath }) {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: false,
+        canSelectFolders: true,
+        canSelectMany: false,
+        title,
+        openLabel,
+        ...(defaultPath === undefined ? {} : { defaultUri: vscode.Uri.file(defaultPath) }),
+      });
+      const first = picked?.[0];
+      return first?.scheme === 'file' ? first.fsPath : undefined;
+    },
+
+    openSettings: () => {
+      void vscode.commands.executeCommand(
+        'workbench.action.openSettings',
+        `@ext:${parts.extensionId}`,
+      );
     },
   };
 }

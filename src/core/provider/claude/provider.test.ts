@@ -121,6 +121,45 @@ describe('Claude provider', () => {
     expect(await fs.realpath(record.cwd)).toBe(turnRequest.cwd);
   });
 
+  it('sends an image turn as one stream-json line on stdin', async () => {
+    const { provider, fake } = await providerFor(
+      { steps: [...textTurn('seen'), ...resultEvent('seen')] },
+      true,
+    );
+    const data = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1, 2, 3]);
+    const handle = provider.startTurn(
+      await request({ images: [{ mediaType: 'image/png', data }] }),
+    );
+    await collect(handle.events);
+    const exit = await handle.done;
+    expect(exit.exitCode).toBe(0);
+
+    const record = JSON.parse(
+      await fs.readFile(fake.recordPath as string, 'utf8'),
+    ) as FakeClaudeRecord;
+    expect(record.argv.slice(-2)).toEqual(['--input-format', 'stream-json']);
+    expect(record.argv.join(' ')).not.toContain(Buffer.from(data).toString('base64'));
+    expect(record.stdin.endsWith('\n')).toBe(true);
+    expect(JSON.parse(record.stdin) as unknown).toEqual({
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: {
+              type: 'base64',
+              media_type: 'image/png',
+              data: Buffer.from(data).toString('base64'),
+            },
+          },
+          { type: 'text', text: 'hello there' },
+        ],
+      },
+      parent_tool_use_id: null,
+    });
+  });
+
   it('routes a permission request through the host server and acts on the answer', async () => {
     const seen: PermissionRequest[] = [];
     const registration = server.registerTurn(
@@ -162,7 +201,13 @@ describe('Claude provider', () => {
     });
     const turnRequest = await request({
       mode: 'agent',
-      profile: { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false },
+      profile: {
+        kind: 'agent',
+        allowRules: [],
+        alwaysAskCommands: false,
+        sandbox: false,
+        sandboxLocked: false,
+      },
       host: registration.endpoint,
     });
     const handle = provider.startTurn(turnRequest);

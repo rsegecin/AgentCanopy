@@ -2,6 +2,7 @@ import { act } from '@testing-library/react';
 import { EMPTY_VIEW_STATE, HostMessageSchema, WebviewMessageSchema } from '../../shared';
 import type {
   ActiveConversation,
+  Aside,
   AssistantMessage,
   ConversationId,
   ConversationSummary,
@@ -16,12 +17,13 @@ import type {
   PlanVersion,
   CheckpointSummary,
   ConfigChange,
+  FolderPermissions,
   RestoreItem,
   RestorePreview,
-  Hunk,
   ReviewEntry,
   PromptId,
   ProviderStatus,
+  SavedPermission,
   QuestionPrompt,
   ToolCallView,
   Turn,
@@ -166,6 +168,18 @@ export function assistantMessage(
   };
 }
 
+export function makeAside(id: string, over: Partial<Aside> = {}): Aside {
+  return {
+    conversationId: convId(id),
+    anchor: { messageId: msgId('a1'), afterParts: 1 },
+    question: 'What does this function return?',
+    parts: [],
+    prompts: [],
+    status: 'running',
+    ...over,
+  };
+}
+
 export function makeTurn(over: Partial<Turn> = {}): Turn {
   return {
     id: turnId('t1'),
@@ -195,6 +209,8 @@ export function makeActive(
     prompts: [],
     plan: null,
     activity: null,
+    queued: null,
+    asides: [],
     ...rest,
   };
 }
@@ -404,18 +420,6 @@ export function makeReviewEntry(path: string, over: Partial<ReviewEntry> = {}): 
   };
 }
 
-export function makeHunk(index: number, over: Partial<Hunk> = {}): Hunk {
-  return {
-    id: `hunk-${String(index)}`,
-    index,
-    baselineStart: index * 10,
-    baselineLines: ['old\n'],
-    currentStart: index * 10,
-    currentLines: ['new\n'],
-    ...over,
-  };
-}
-
 export function makeConfigChange(id: string, over: Partial<ConfigChange> = {}): ConfigChange {
   return {
     id,
@@ -461,4 +465,22 @@ export function makeRestorePreview(over: Partial<RestorePreview> = {}): RestoreP
     bytesNeeded: 0,
     ...over,
   };
+}
+
+/** The view state fields for Auto being offered by the settings. Spread into `makeState`. */
+export function autoOffered(commands = true): Pick<ViewState, 'agentAuto'> {
+  return { agentAuto: { offered: true, commands } };
+}
+
+/** A saved permission for the Permissions view. A directory unless `over` says otherwise. */
+export function makeSavedPermission(
+  id: string,
+  over: Partial<SavedPermission> = {},
+): SavedPermission {
+  return { id, kind: 'read-directory', text: '/libs/shared', ...over };
+}
+
+/** The permissions of the folder of a view: its folder, the switches that are on, the saved entries. */
+export function makeFolderPermissions(over: Partial<FolderPermissions> = {}): FolderPermissions {
+  return { folder: 'folder-1' as FolderKey, switches: [], saved: [], ...over };
 }

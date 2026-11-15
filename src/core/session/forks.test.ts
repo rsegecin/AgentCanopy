@@ -10,6 +10,8 @@ import {
   assistantToolUse,
   createHarness,
   finishedTurn,
+  pasteImageMessage,
+  pngBytes,
   resultStep,
   sendAndFinish,
   stateEvent,
@@ -195,6 +197,26 @@ describe('the first turn of a branch', () => {
     expect(fork?.lost).toEqual(reconstructContext(view.active().messages.slice(0, 2)).lost);
     expect(noticesOf(assistants(view)[1])).toEqual([EXACT_UNAVAILABLE]);
     expect(h.requests[2]?.session.kind).toBe('new');
+    view.expectMirror();
+  });
+
+  it('is rebuilt without the images of the kept messages, and reports them as lost instead of with a notice', async () => {
+    const h = await harness({ sequence: answers(2, [text('b')]) });
+    const view = h.attach();
+    view.send(pasteImageMessage(pngBytes('kept-image')));
+    await sendAndFinish(h, view, 'question 1');
+    await sendAndFinish(h, view, 'question 2');
+    h.env.settingsValue = { ...DEFAULT_SETTINGS, exactEarlierForks: false };
+    await branchAt(view, messageIds(view)[1]);
+    await sendAndFinish(h, view, 'a different follow-up');
+
+    const request = h.requests[2];
+    expect(request?.session.kind).toBe('new');
+    expect('images' in (request ?? {})).toBe(false);
+    expect(request?.prompt).toContain('Attached: image (png)');
+    expect(view.active().meta.fork?.lost).toEqual(['Images attached to messages']);
+    // A branch says what it lost in its label; the notice is for conversations that are not branches.
+    expect(noticesOf(assistants(view)[1])).toEqual([EXACT_UNAVAILABLE]);
     view.expectMirror();
   });
 

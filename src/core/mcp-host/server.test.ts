@@ -315,6 +315,10 @@ describe('startup sequence of the CLI', () => {
     expect(tools.map((t) => t.name)).toEqual(['permission_prompt', 'submit_plan']);
     expect(tools[1]?.inputSchema).toEqual(schema);
     expect(tools[1]?.description).toMatch(/^Save the plan for the user to review\./);
+    expect(tools[1]?.description).toContain('asked with AskUserQuestion before this call');
+    expect(tools[1]?.description).toContain(
+      'instead of listing them as decision points or open questions',
+    );
   });
 });
 

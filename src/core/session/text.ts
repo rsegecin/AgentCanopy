@@ -1,5 +1,6 @@
+import { homedir } from 'node:os';
 import type { ErrorCategory, ResultEvent } from '../../shared';
-import { escapeForDisplay } from '../policy/readonly';
+import { escapeForDisplay, escapeOneLine } from '../policy/readonly';
 
 /** Plain-language sentences the controller shows to the user. Kept in one place so they are easy to review. */
 
@@ -13,6 +14,11 @@ export const TEXT = {
   noProvider: 'No agent provider is available.',
   checkingProvider: 'AgentCanopy is still checking Claude Code. Try again in a moment.',
   turnRunning: 'A turn is already running in this conversation.',
+  messageAlreadyQueued: 'A message is already waiting for this turn. Edit or remove it first.',
+  queuedImagesFull:
+    'Too many images are waiting in queued messages. Send or remove a queued message first.',
+  asideRunning: 'A side question is already running. Wait for it or stop it.',
+  asideFailed: 'The side question could not be started.',
   conversationGone: 'That conversation no longer exists.',
   conversationFolderClosed:
     'This conversation belongs to a folder that is not open in this window.',
@@ -40,8 +46,6 @@ export const TEXT = {
   configTextsGone: "This file's content was not kept, so it cannot be shown.",
   unsavedInEditor: 'Save or discard your unsaved changes in this file first.',
   changedSinceAgent: 'This file changed after the agent edited it, so it could not be rejected.',
-  mayHoldOwnWork:
-    'This file may include your own work. Use Reject on the whole file to choose what happens.',
   nothingToReject: 'There is nothing to reject.',
   exactForkUnavailable:
     'An exact copy of the conversation at an earlier message is turned off or not supported, so this branch continues from its visible messages as context.',
@@ -64,9 +68,45 @@ export const TEXT = {
   noSelection: 'There is no selection to add.',
   noDiagnostics: 'There are no problems to add.',
   attachmentLimit: 'You can attach at most 50 items to a message.',
+  imageInvalid: 'The pasted image could not be read. Paste a PNG, JPEG, GIF or WebP image.',
+  imageTooLarge: 'The pasted image is larger than 5 MB.',
+  imagesTooLarge: 'Images in one message can be at most 5 MB together.',
+  imageLimit: 'A message can have at most 5 images.',
+  imageGone: 'An attached image was no longer available and was left out.',
+  earlierImagesLost:
+    'Claude Code no longer has the earlier images of this conversation: only their mention was carried into the new session.',
   branchFailed: 'A branch could not be created from that message.',
   openFailed: 'That conversation could not be opened.',
   renameFailed: 'That conversation could not be renamed.',
+  autoNotOffered: 'Auto is turned off in the settings (agentCanopy.agent.auto.enabled).',
+  autoWaitForTurn: 'Wait for the current turn to finish before turning on Auto.',
+  autoDialogOpen: 'The dialog to turn on Auto is already open.',
+  autoDraftGone: 'Auto can be turned on for a new conversation only before its first message.',
+  autoNotShown: 'Open the conversation to turn Auto on.',
+  autoChangedDuringDialog:
+    'Auto was not turned on: the conversation changed while the dialog was open.',
+  autoNotSaved: 'Auto could not be turned on. The AgentCanopy log has the details.',
+  autoOffNotSaved:
+    'Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later.',
+  autoResetNotSaved:
+    'Auto is off in this window, but that could not be saved for other workspaces on this machine. AgentCanopy will try again.',
+  permissionNotSaved:
+    'It was allowed this once, but the permission to always allow it could not be saved.',
+  permissionNotRemoved: 'The permission could not be removed.',
+  switchNotChanged: 'The switch could not be changed.',
+  permissionDialogOpen: 'A permissions dialog is already open.',
+  permissionChangedDuringDialog:
+    'The folder or the trust of the workspace changed while the dialog was open, so nothing was changed.',
+  /** Why a folder picked in the Permissions view cannot be saved, by the policy's reason. */
+  directoryRefusal: {
+    'not-a-directory': 'That folder could not be read.',
+    'inside-folder': 'That folder is inside the workspace folder, where reads never ask.',
+    sensitive:
+      "That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask.",
+    'too-broad':
+      'That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location.',
+    covered: 'That folder is already inside a saved folder.',
+  },
 } as const;
 
 export function claudeNotInstalled(displayName: string): string {
@@ -154,6 +194,61 @@ export function formatCheckpointTime(atMs: number): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+/** The user's home directory, or '' when it cannot be told. */
+export function homeDirectory(): string {
+  try {
+    return homedir();
+  } catch {
+    return '';
+  }
+}
+
+/** How many code points of a folder's path the dialog that turns Auto on shows at most. */
+const SHOWN_PATH_LENGTH = 120;
+/** A longer path is cut in the middle: this many code points of its start, then `…`, then the rest. */
+const SHOWN_PATH_HEAD = 40;
+const SHOWN_PATH_TAIL = SHOWN_PATH_LENGTH - SHOWN_PATH_HEAD - 1;
+
+/** A drive letter and a separator: a Windows path, whose letter case does not matter. */
+const DRIVE_PATH = /^[A-Za-z]:[\\/]/;
+
+/** The part of `path` that follows `home` when `home` is its directory at a path boundary. */
+function belowHome(path: string, home: string): string | undefined {
+  const windows = DRIVE_PATH.test(home);
+  const same = (a: string, b: string): boolean =>
+    windows ? a.toLowerCase() === b.toLowerCase() : a === b;
+  if (!same(path.slice(0, home.length), home)) return undefined;
+  const rest = path.slice(home.length);
+  return rest === '' || rest.startsWith('/') || rest.startsWith('\\') ? rest : undefined;
+}
+
+/**
+ * A folder's path as a dialog shows it, before it is escaped: the user's home directory as `~`
+ * (without regard to the case of a drive letter), and a path longer than 120 code points cut in the
+ * middle with an ellipsis, so that both its root and its end stay visible.
+ */
+export function shownPath(path: string, home: string): string {
+  let shown = path;
+  // A home that is only a root (`/`, `C:\`) says nothing, so it is not shown as `~`.
+  if (home.length > 0 && home !== '/' && home !== '\\' && !/^[A-Za-z]:[\\/]?$/.test(home)) {
+    const rest = belowHome(path, home);
+    if (rest !== undefined) shown = `~${rest}`;
+  }
+  const chars = Array.from(shown);
+  return chars.length > SHOWN_PATH_LENGTH
+    ? `${chars.slice(0, SHOWN_PATH_HEAD).join('')}…${chars.slice(chars.length - SHOWN_PATH_TAIL).join('')}`
+    : shown;
+}
+
+/**
+ * Text from the workspace or the webview (a path, a title) for one line of a native dialog: line
+ * breaks, tabs, control and direction-changing characters are written out rather than dropped, so it
+ * cannot add a line and two texts that differ only by such a character show differently.
+ */
+export function oneLineText(text: string): string {
+  return escapeOneLine(text);
 }
 
 /**

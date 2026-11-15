@@ -1,10 +1,13 @@
 import { promises as fs } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
-import type { AssistantMessage, Prompt, ToolCallView } from '../../shared';
+import type { AssistantMessage, PermissionPrompt, Prompt, ToolCallView } from '../../shared';
 import type { NewPrompt, TurnPolicy } from '../contracts';
 import { createConversationStore } from '../conversations/store';
+import { alwaysAllowDetail, directoryDialog, switchDialog } from './prompts';
+import { shownPath } from './text';
 import {
   assistantText,
   assistantToolUse,
@@ -452,6 +455,208 @@ describe('permission prompts and "allow always"', () => {
     const settled = view.active().prompts[0];
     expect(settled?.kind === 'permission' && settled.answered).toBe('allow-always');
     expect(await fs.readFile(join(h.workspace, 'ran.txt'), 'utf8')).toBe('ran');
+  });
+
+  /** A prompt that offers to always allow a directory or a site, for the workspace folder. */
+  function outsidePrompt(
+    toolCallId: string,
+    kind: 'read-directory' | 'web-site',
+    rule: string,
+  ): NewPrompt {
+    return {
+      kind: 'permission',
+      toolCallId,
+      toolName: 'Read',
+      category: 'read-outside',
+      title: 'Read a file outside the workspace',
+      detail: rule,
+      inputPreview: '',
+      choices: [...choices],
+      alwaysRule: { kind, rule, runsProjectCode: false },
+    };
+  }
+
+  it.each([
+    [
+      'a directory',
+      'read-directory',
+      'D:\\libs\\shared',
+      (workspace: string) =>
+        `Directory: D:\\libs\\shared\nWorkspace folder: ${workspace}\n\nReads and searches in this directory and below will no longer ask, in Ask, Plan and Agent mode, for this workspace folder. What is read is sent to the model.\n\nYou can remove this under Permissions.`,
+    ],
+    [
+      'a site',
+      'web-site',
+      'docs.example.com:8080',
+      (workspace: string) =>
+        `Site: docs.example.com:8080\nWorkspace folder: ${workspace}\n\nAny address on this site will be fetched without asking, for this workspace folder. An address can carry file contents to the site. A redirect to another site is reported to the agent, and its next request is judged on its own.\n\nYou can remove this under Permissions.`,
+    ],
+  ] as const)(
+    'names %s and the workspace folder in the confirmation, with no stores behind it',
+    async (_name, kind, rule, expected) => {
+      const h = await harness({
+        scenario: bashScenario(),
+        policy: policyAsking((id) => outsidePrompt(id, kind, rule)),
+      });
+      const view = h.attach();
+      await answerPermission(h, view, 'allow-always');
+      const [input] = h.ui.callsOf('confirm')[0] as [
+        { title: string; detail: string; confirmLabel: string },
+      ];
+      expect(input.title).toBe('Always allow this?');
+      expect(input.confirmLabel).toBe('Always allow');
+      expect(input.detail).toBe(expected(shownPath(h.workspace, homedir())));
+      const prompt = view.active().prompts[0];
+      expect(prompt?.kind === 'permission' && prompt.answered).toBe('allow-always');
+      // The application was given its policy, so it has no stores to check: nothing to warn about.
+      expect(view.toasts).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['a directory', 'read-directory', 'D:\\libs\\shared'],
+    ['a site', 'web-site', 'docs.example.com'],
+  ] as const)(
+    'takes an always answer for %s as allow once, with no dialog, when the folder is not open',
+    async (_name, kind, rule) => {
+      const h = await harness({
+        scenario: bashScenario(),
+        policy: policyAsking((id) => outsidePrompt(id, kind, rule)),
+      });
+      const view = h.attach();
+      const prompt = await startAndWaitForPrompt(h, view);
+      h.env.folderList = [];
+      h.controller.environmentChanged();
+      view.send({
+        type: 'prompt.answer',
+        promptId: prompt.id,
+        displayHash: prompt.displayHash,
+        answer: { kind: 'permission', choice: 'allow-always' },
+      });
+      await finishedTurn(h, view);
+      expect(h.ui.callsOf('confirm')).toEqual([]);
+      const settled = view.active().prompts[0];
+      expect(settled?.kind === 'permission' && settled.answered).toBe('allow-once');
+    },
+  );
+});
+
+describe('the text of the confirmations of permissions', () => {
+  const FOLDER = 'D:\\projects\\app';
+  const permissionPrompt = (
+    rule: NonNullable<PermissionPrompt['alwaysRule']>,
+  ): PermissionPrompt => ({
+    id: 'p' as PermissionPrompt['id'],
+    conversationId: 'c' as PermissionPrompt['conversationId'],
+    turnId: 't' as PermissionPrompt['turnId'],
+    toolCallId: 'tool',
+    createdAt: 0,
+    state: 'pending',
+    displayHash: 'h',
+    kind: 'permission',
+    toolName: 'Bash',
+    category: 'command',
+    title: 'Run',
+    detail: 'the detail',
+    inputPreview: '',
+    choices: ['allow-once', 'allow-always', 'deny'],
+    alwaysRule: rule,
+  });
+  const PROJECT_CODE = 'This command runs code from the project, which can do anything you can do.';
+
+  it('is the rule itself for a command or a tool, as before kinds existed', () => {
+    expect(
+      alwaysAllowDetail(permissionPrompt({ rule: 'Bash(npm test)', runsProjectCode: true })),
+    ).toBe(`Bash(npm test)\n\n${PROJECT_CODE}`);
+    expect(
+      alwaysAllowDetail(
+        permissionPrompt({ kind: 'command', rule: 'Bash(git status)', runsProjectCode: false }),
+        FOLDER,
+      ),
+    ).toBe('Bash(git status)');
+    expect(
+      alwaysAllowDetail(
+        permissionPrompt({ kind: 'command', rule: 'PowerShell(npm test)', runsProjectCode: true }),
+        FOLDER,
+      ),
+    ).toBe(`PowerShell(npm test)\n\n${PROJECT_CODE}`);
+    expect(
+      alwaysAllowDetail(
+        permissionPrompt({ kind: 'tool', rule: 'mcp__docs__search', runsProjectCode: false }),
+        FOLDER,
+      ),
+    ).toBe('mcp__docs__search');
+  });
+
+  it('names the directory and the workspace folder, with each sentence', () => {
+    const detail = alwaysAllowDetail(
+      permissionPrompt({
+        kind: 'read-directory',
+        rule: 'D:\\libs\\shared',
+        runsProjectCode: false,
+      }),
+      FOLDER,
+    );
+    expect(detail).toBe(
+      [
+        `Directory: D:\\libs\\shared\nWorkspace folder: ${FOLDER}`,
+        'Reads and searches in this directory and below will no longer ask, in Ask, Plan and Agent mode, for this workspace folder. What is read is sent to the model.',
+        'You can remove this under Permissions.',
+      ].join('\n\n'),
+    );
+    expect(directoryDialog('D:\\libs\\shared', FOLDER)).toEqual({
+      title: 'Always allow reads in this folder?',
+      detail,
+      confirmLabel: 'Always allow',
+    });
+  });
+
+  it('names the site and the workspace folder, with each sentence', () => {
+    expect(
+      alwaysAllowDetail(
+        permissionPrompt({ kind: 'web-site', rule: 'docs.example.com', runsProjectCode: false }),
+        FOLDER,
+      ),
+    ).toBe(
+      [
+        `Site: docs.example.com\nWorkspace folder: ${FOLDER}`,
+        'Any address on this site will be fetched without asking, for this workspace folder. An address can carry file contents to the site. A redirect to another site is reported to the agent, and its next request is judged on its own.',
+        'You can remove this under Permissions.',
+      ].join('\n\n'),
+    );
+  });
+
+  it('is written for each switch, with the title and the label', () => {
+    expect(switchDialog('read-outside', FOLDER)).toEqual({
+      title: 'Allow reads outside the folder without asking?',
+      detail: [
+        `Workspace folder: ${FOLDER}`,
+        'In this workspace folder the agent will read and search files anywhere on this machine without asking, in Ask, Plan and Agent mode. What it reads is sent to the model.',
+        "Credential locations and AgentCanopy's own storage still ask. Edits outside the folder still ask.",
+        'You can turn this off under Permissions.',
+      ].join('\n\n'),
+      confirmLabel: 'Allow',
+    });
+    expect(switchDialog('web-fetch', FOLDER)).toEqual({
+      title: 'Allow web fetches without asking?',
+      detail: [
+        `Workspace folder: ${FOLDER}`,
+        'In this workspace folder any web address will be fetched without asking. A page can carry instructions for the agent, and an address can carry file contents out.',
+        'In Ask and Plan mode this applies only while agentCanopy.ask.webTools is on.',
+        'You can turn this off under Permissions.',
+      ].join('\n\n'),
+      confirmLabel: 'Allow',
+    });
+    expect(switchDialog('web-search', FOLDER)).toEqual({
+      title: 'Allow web searches without asking?',
+      detail: [
+        `Workspace folder: ${FOLDER}`,
+        'In this workspace folder every web search will run without asking. The query leaves this machine.',
+        'In Ask and Plan mode this applies only while agentCanopy.ask.webTools is on.',
+        'You can turn this off under Permissions.',
+      ].join('\n\n'),
+      confirmLabel: 'Allow',
+    });
   });
 });
 

@@ -1,3 +1,3 @@
-export { escapeForDisplay } from './escape';
+export { escapeForDisplay, escapeOneLine } from './escape';
 export { createReadOnlyPolicy } from './policy';
 export { createReadOnlyTripwire } from './tripwire';

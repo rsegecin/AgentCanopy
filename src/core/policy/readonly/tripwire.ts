@@ -41,7 +41,7 @@ function noticeText(paths: RelPath[]): string {
   const one = paths.length === 1;
   return (
     `${paths.length} ${one ? 'file' : 'files'} changed in the workspace while this read-only turn was running: ${list}. ` +
-    `The agent had no tool that can write, so another program or an edit of yours changed ${one ? 'it' : 'them'}. ` +
+    `The agent of this turn had no tool that can write, so an Agent turn in this folder, another program or an edit of yours changed ${one ? 'it' : 'them'}. ` +
     'AgentCanopy reverts nothing here.'
   );
 }

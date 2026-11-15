@@ -118,7 +118,39 @@ With `--tools Read,Grep,Glob,AskUserQuestion --strict-mcp-config --disable-slash
 - Orphan recovery must signal the recorded CLI process first (so it stops its own commands) before killing anything.
 - A sandboxed run creates `.claude/.cc-writes/` in the workspace; the tracker must ignore it.
 
-## 12. Not covered
+## 12. Image input (`--input-format stream-json`)
+
+Probed on 2026-11-12 on Windows 10 with CLI 2.1.323, Haiku, spawned without a shell as the runner does.
+
+- With `--input-format stream-json`, stdin takes one line `{"type":"user","message":{"role":"user","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"..."}},{"type":"text","text":"..."}]},"parent_tool_use_id":null}` followed by a newline. Closing stdin after it is enough: the CLI answers, emits `result` and exits 0 about 0.5 to 0.8 s later. No `user` event is echoed on stdout.
+- The image is kept in the session: a later `--resume` turn with plain-text stdin, a whole fork (`--resume X --fork-session --session-id Y`) and a cut fork (`--resume-session-at`) all still answered from it.
+- With the full Ask-mode argument list (permission prompt tool on the loopback server, `--settings`, `--strict-mcp-config`, `--tools Read,Grep,Glob,AskUserQuestion`), the permission prompt for `Read` arrived and was answered after stdin had been closed.
+- PNGs of 3.0 MB and 5.85 MB (a 7.8 MB stdin line) were accepted.
+- `--resume` of an unknown session gives the same shape as with text input: exit code 1, no `init`, one `result` with `error_during_execution` and "No conversation found with session ID".
+- A PNG declared as `image/jpeg` was still read. Bytes that are not an image did not fail the turn: the model said it could not read the image, and the session resumed normally afterwards.
+- Not probed: the Agent-mode argument list (HTTP hooks, sandbox), SIGINT on macOS or Linux in this input mode, stdin lines above 7.8 MB, CLI versions before 2.1.323.
+
+## 13. Permission facts from the documentation (not probed)
+
+Checked on 2026-11-14 against the Claude Code documentation for 2.1.322, for the Auto switch of Agent mode. Nothing in this section was observed in a run.
+
+- **Which tools ask.** The tools reference marks as needing permission: `Bash`, `PowerShell`, `Edit`, `Write`, `NotebookEdit`, `WebFetch`, `WebSearch`, `Monitor`, `Skill`, `ExitPlanMode`, `EnterWorktree`, `Workflow`. It marks as running without asking: subagent launch (`Task`, called `Agent` in the reference), `ToolSearch`, `ListAgents`, `TaskStop`, `EnterPlanMode`, `ExitWorktree`, `CronCreate` / `CronDelete` / `CronList`, `ScheduleWakeup`, `SendMessage`, `RemoteTrigger`, `PushNotification`, `ReportFindings`, `AskUserQuestion`. `DesignSync`, `SendToProject` and `SendToProjectContext` are not in the reference. So the host is never asked about the second group: those calls show as "Allowed by Claude Code".
+- **Rules.** "Rules are evaluated in order: deny, then ask, then allow." A bare tool name in `permissions.ask` prompts for that tool, also when an allow rule matches. That a prompt caused by an ask rule goes to `--permission-prompt-tool` in `-p` mode is the behaviour section 4 observed for the named tools; the documentation does not state it for every tool.
+- **Sandbox.** macOS, Linux and WSL2 only; on native Windows commands run unsandboxed. The `Bash` input `dangerouslyDisableSandbox` asks to run one command outside the sandbox, behind a prompt. `sandbox.allowUnsandboxedCommands: false` removes that retry and, set through `--settings`, holds against project settings. Whether the permission prompt tool receives the `dangerouslyDisableSandbox` field is not documented.
+- **Monitor** runs a background command and "uses the same permission rules as Bash"; its own name also needs permission.
+- **Skill.** A skill's `allowed-tools` grants the listed tools for the turn that invokes it, without prompting. That an ask rule still wins over that grant follows from the evaluation order; it is not stated.
+- **Subagents.** Their tool calls fire `PreToolUse` and `PostToolUse` like the main agent's. A subagent definition's `permissionMode` applies under a parent in the default mode. Whether a subagent's inner calls reach the permission prompt tool was not probed (see section 14).
+- **Plan mode tools.** `EnterPlanMode` switches the session to plan mode without asking. Approving `ExitPlanMode` can switch the session's permission mode for later calls. The policy's `inspect` checks the mode at session start only.
+- **Hooks.** "PreToolUse hook decisions don't bypass permission rules": a matching ask rule still prompts when a hook returned allow.
+
+Added on 2026-11-15 for the saved permissions of Phase 11, from the tools reference and the permissions page as published that day. Nothing here was observed in a run either.
+
+- **WebFetch and redirects.** "When a URL redirects to a different host, WebFetch returns a text result that names the original URL and the redirect target instead of following it. Claude then fetches the new URL with a second WebFetch call." That second call is a new tool call, so it reaches the host under the ask rule and is judged on its own address. Redirects that WebFetch does follow exist ("including any redirects WebFetch follows"); the documentation does not say which, beyond "a different host" not being among them, nor whether `www.example.com` and `example.com` count as different hosts. A site saved in AgentCanopy therefore covers what that host serves, including a redirect within it.
+- **WebFetch, other behaviour.** "HTTP URLs are automatically upgraded to HTTPS." It refuses `localhost` and any hostname without a dot before making a request. The CLI's own domain rules (`WebFetch(domain:example.com)`) match the hostname without regard to case, support `*` and strip a trailing dot; AgentCanopy does not use them: its site match is done in the host, on the exact `host` of the address (lower case, with a port that is not the default one).
+- **PowerShell input.** The permissions page names `command` as the primary content field "for Bash and PowerShell", and the tools reference says hooks "receive the tool's command string in `tool_input.command`, with the same fields as the Bash tool". The tool's own input schema is not printed. The policy reads `command` for both tools.
+- **PowerShell rules.** "PowerShell permission rules use the same shape as Bash rules"; "Common aliases are canonicalized before matching" and "Matching is case-insensitive". AgentCanopy does not pass PowerShell rules to the CLI: a saved PowerShell command is matched in the host by exact text, so `ls` and `Get-ChildItem` are two commands there. On Windows the PowerShell tool is not sandboxed ("On Windows, sandboxing is not supported").
+
+## 14. Not covered
 
 - Windows and Linux.
 - Authentication failure and rate-limit shapes (not reproducible without logging out or exhausting limits).

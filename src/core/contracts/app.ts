@@ -29,6 +29,16 @@ export interface UiPort {
   confirm(input: { title: string; detail: string; confirmLabel: string }): Promise<boolean>;
   /** Lets the user choose files or folders inside a folder. Returns paths relative to it. */
   pickPaths(input: { folder: FolderInfo; what: 'file' | 'folder' }): Promise<string[]>;
+  /**
+   * Lets the user choose one folder anywhere on this machine, in the native folder picker. Resolves
+   * its absolute path as the picker gave it (not yet judged in any way), or undefined when dismissed.
+   */
+  pickDirectory(input: {
+    title: string;
+    openLabel: string;
+    /** Where the picker starts. */
+    defaultPath?: string;
+  }): Promise<string | undefined>;
   /** The active editor's selection as an attachment, when it lies inside the folder and is not empty. */
   currentSelection(folder: FolderInfo): Attachment | undefined;
   /** Problems of the active editor's file as an attachment, when there are any. */
@@ -65,9 +75,20 @@ export interface UiPort {
   openChangeDiff(folderKey: FolderKey, path: string): Promise<void>;
   /** Opens the native multi-file changes editor for every pending file of a folder. */
   openAllChanges(folderKey: FolderKey): Promise<void>;
-  /** Opens a text as a new untitled document the user can save (used to export a plan). */
-  showDocument(input: { text: string; language: string }): Promise<void>;
+  /**
+   * Opens a Markdown text as a read-only document (used to read one version of a plan). The same
+   * `key` shows the same editor tab again instead of opening another. `beside` opens it next to the
+   * active editor, for a request that comes from a chat in the editor area.
+   */
+  showReadOnlyDocument(input: {
+    key: string;
+    title: string;
+    text: string;
+    beside?: boolean;
+  }): Promise<void>;
   showLogs(): void;
+  /** Opens the editor's settings, filtered to this extension's own. */
+  openSettings(): void;
 }
 
 export interface ViewSink {
@@ -111,6 +132,8 @@ export interface AppController {
   purgeStoredFileData(folderKey: FolderKey): Promise<void>;
   /** Forgets the user's decision about the folder's project Claude Code configuration, so the next turn asks again. */
   resetProjectConfigDecision(folderKey: FolderKey): Promise<void>;
+  /** Shows the Permissions tab in the most recently used view. */
+  showPermissions(): void;
   /** "Reject all" with its preview and native confirmation, for the given folder. */
   rejectAllInteractive(folderKey: FolderKey, includePaths: readonly string[]): Promise<void>;
   /** Number of turns currently running, for the status bar. */

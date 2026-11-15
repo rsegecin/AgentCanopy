@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react';
 import type { KeyboardEvent } from 'react';
 import { IconButton } from './components';
-import { usePost } from './context';
+import { useApp, usePost } from './context';
 import { useViewState } from './store';
 
 export function OverflowMenu() {
+  const { ui } = useApp();
   const post = usePost();
   const activeId = useViewState((s) => s.active?.meta.id);
   const [open, setOpen] = useState(false);
@@ -109,6 +110,17 @@ export function OverflowMenu() {
             }}
           >
             Open in editor area
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              choose(() => {
+                ui.setTab('permissions');
+              });
+            }}
+          >
+            Permissions
           </button>
           <button
             type="button"

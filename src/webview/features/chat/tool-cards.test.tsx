@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { MessagePart, ToolCallView } from '../../../shared';
 import {
@@ -269,9 +269,12 @@ describe('web, task, question and MCP cards', () => {
     expect(toggleOf('my_server: a__b')).toBeTruthy();
   });
 
-  it('shows a submitted plan', () => {
-    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' })]);
+  it('shows a plan submission that is still running, and hides it once it is done', () => {
+    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' }, { status: 'running' })]);
     expect(toggleOf('Submitted a plan')).toBeTruthy();
+    cleanup();
+    render([call('mcp__agentcanopy__submit_plan', { plan: '# Plan' })]);
+    expect(screen.queryByRole('button', { name: 'Submitted a plan' })).toBeNull();
   });
 
   it('falls back to the generic card for a malformed MCP name and for unknown tools', () => {
@@ -555,5 +558,27 @@ describe('tool card accessibility', () => {
     // Status and approval are announced with the button.
     const described = document.getElementById(toggle.getAttribute('aria-describedby') ?? '');
     expect(described?.textContent).toContain('Done');
+  });
+});
+
+describe('approval by Auto', () => {
+  it('shows "Auto-approved" next to the other approval labels', () => {
+    render([
+      call('Bash', { command: 'ls' }, { id: 'a', approval: 'auto' }),
+      call('Bash', { command: 'pwd' }, { id: 'b', approval: 'user' }),
+      call(
+        'Edit',
+        { file_path: 'a.ts', old_string: 'a', new_string: 'b' },
+        { id: 'c', approval: 'policy' },
+      ),
+    ]);
+    const headers = Array.from(document.querySelectorAll('.tool-card-header')).map(
+      (h) => h.textContent ?? '',
+    );
+    expect(headers[0]).toContain('Auto-approved');
+    expect(headers[1]).toContain('Approved by you');
+    expect(headers[1]).not.toContain('Auto-approved');
+    expect(headers[2]).toContain('Allowed by AgentCanopy');
+    expect(headers[2]).not.toContain('Auto-approved');
   });
 });

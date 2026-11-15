@@ -75,7 +75,13 @@ async function play(
     mode: 'agent',
     model: 'default',
     session: { kind: 'new', sessionId: SESSION },
-    profile: { kind: 'agent', allowRules: [], alwaysAskCommands: false, sandbox: false },
+    profile: {
+      kind: 'agent',
+      allowRules: [],
+      alwaysAskCommands: false,
+      sandbox: false,
+      sandboxLocked: false,
+    },
     host: {
       serverName: 'agentcanopy',
       url: `${baseUrl()}/mcp`,

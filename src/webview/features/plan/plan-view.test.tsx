@@ -1,51 +1,67 @@
 // @vitest-environment jsdom
-import { fireEvent, screen, waitFor, within } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PlanContent, PlanDoc, PlanUserDecision } from '../../../shared';
+import { fireEvent, screen, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { PlanDoc, PlanUserDecision } from '../../../shared';
 import {
-  convId,
+  assistantMessage,
+  autoOffered,
   makeActive,
+  makeConfigChange,
   makePlanContent,
   makePlanDoc,
   makePlanVersion,
   makeState,
   makeTurn,
   planId,
+  userMessage,
 } from '../../test-support/fixtures';
 import { renderWithHost } from '../../test-support/harness';
-import { resetMermaidForTests } from '../diagram/mermaid-render';
-import { PlanView } from './PlanView';
-import { diagramLabel, formatTime, stageDiagramSource } from './plan-model';
-
-const mermaid = vi.hoisted(() => ({ initialize: vi.fn(), render: vi.fn() }));
-vi.mock('mermaid', () => ({ default: mermaid }));
-
-beforeEach(() => {
-  resetMermaidForTests();
-  mermaid.initialize.mockReset();
-  mermaid.render.mockReset();
-  mermaid.render.mockResolvedValue({
-    svg: '<svg xmlns="http://www.w3.org/2000/svg"><text>drawn</text></svg>',
-  });
-});
-afterEach(() => {
-  delete document.body.dataset.viewKind;
-});
+import { MessageList } from '../chat/MessageList';
+import { registerPartRenderer } from '../chat/registry';
+import { PlanUpdateCard } from './PlanUpdateCard';
+import { formatTime } from './plan-model';
 
 const PLAN = planId('plan1');
 
-function stateWith(
+let off: () => void;
+beforeEach(() => {
+  off = registerPartRenderer('plan-update', PlanUpdateCard);
+});
+afterEach(() => {
+  off();
+});
+
+const part = (version: number, id = PLAN) => ({
+  kind: 'plan-update' as const,
+  planId: id,
+  version,
+});
+
+/** A chat with one assistant message per plan-update part version, the way plans arrive. */
+function chat(
   plan: PlanDoc | null,
+  partVersions: number[],
   extra: Parameters<typeof makeActive>[1] = {},
-  locked = false,
+  configChanges = 0,
 ) {
   return makeState({
-    active: makeActive('c1', { plan, meta: { planLocked: locked }, ...extra }),
+    active: makeActive('c1', {
+      plan,
+      messages: [
+        userMessage('u0', 'plan it', { mode: 'plan' }),
+        ...partVersions.map((v) => assistantMessage(`a${String(v)}`, [part(v)])),
+      ],
+      ...extra,
+    }),
+    review: {
+      entries: [],
+      configChanges: Array.from({ length: configChanges }, (_, i) =>
+        makeConfigChange(`k${String(i)}`),
+      ),
+      busy: false,
+    },
   });
 }
-
-const renderPlan = (plan: PlanDoc, extra: Parameters<typeof makeActive>[1] = {}, locked = false) =>
-  renderWithHost(<PlanView />, stateWith(plan, extra, locked));
 
 const decision = (over: Partial<PlanUserDecision> & Pick<PlanUserDecision, 'targetId' | 'kind'>) =>
   ({ values: ['x'], decidedAt: 1_700_000_500_000, ...over }) satisfies PlanUserDecision;
@@ -63,392 +79,237 @@ const twoVersions = () =>
     ],
   });
 
-describe('PlanView without a plan', () => {
-  it('says there is no plan', () => {
-    renderWithHost(<PlanView />, stateWith(null));
-    expect(screen.getByText(/no plan yet/)).toBeTruthy();
+const threeVersions = () =>
+  makePlanDoc({
+    versions: [
+      makePlanVersion(1, { content: makePlanContent({ title: 'Title one' }) }),
+      makePlanVersion(2, { content: makePlanContent({ title: 'Title two' }) }),
+      makePlanVersion(3, { content: makePlanContent({ title: 'Title three' }) }),
+    ],
   });
-});
 
-describe('PlanView sections', () => {
-  it('shows the title as h1 and every section of a maximal plan as an h2, in order', () => {
-    renderPlan(
-      makePlanDoc({
-        decisions: [decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] })],
-      }),
+const answeredAll = [
+  decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] }),
+  decision({ targetId: 'size', kind: 'open-question', values: ['small'] }),
+  decision({ targetId: 'keys', kind: 'open-question', values: ['user'] }),
+  decision({ targetId: 'notes', kind: 'open-question', values: ['x'] }),
+];
+
+const current = () => document.querySelector<HTMLElement>('.plan-card--current') as HTMLElement;
+const approve = () =>
+  screen.getByRole<HTMLButtonElement>('button', { name: 'Approve and Execute' });
+const describedBy = (el: HTMLElement) =>
+  (el.getAttribute('aria-describedby') ?? '')
+    .split(' ')
+    .filter((id) => id !== '')
+    .map((id) => document.getElementById(id)?.textContent ?? '');
+
+describe('the current plan card', () => {
+  it('names the plan, the real version in words and the change summary', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [2]));
+    const card = screen.getByRole('region', { name: 'New title' });
+    expect(within(card).getByRole('heading', { level: 2 }).textContent).toBe(
+      'New title, open version 2',
     );
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Add caching');
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
-      'Objective',
-      'Requirements',
-      'Analysis',
-      'Architecture',
-      'Relevant files',
-      'Stages',
-      'Dependencies',
-      'Diagrams',
-      'Alternatives considered',
-      'Decisions to make',
-      'Open questions',
-      'Testing strategy',
-      'Acceptance criteria',
-      'Your decisions',
-    ]);
+    expect(within(card).getByText('Version 2')).toBeTruthy();
+    expect(within(card).getByText('Added caching.')).toBeTruthy();
+    expect(within(card).queryByText(/restored/)).toBeNull();
   });
 
-  it('puts every h2 in a named region and keeps h3 under their h2', () => {
-    renderPlan(makePlanDoc());
-    for (const section of document.querySelectorAll('section.plan-section')) {
-      const heading = section.querySelector('h2');
-      expect(heading).not.toBeNull();
-      expect(section.getAttribute('aria-labelledby')).toBe(heading?.id);
-    }
-    const levels = Array.from(document.querySelectorAll('h1, h2, h3')).map((h) =>
-      Number(h.tagName.slice(1)),
-    );
-    expect(levels[0]).toBe(1);
-    levels.forEach((level, i) => {
-      if (i > 0) expect(level - (levels[i - 1] as number)).toBeLessThanOrEqual(1);
-    });
-    expect(screen.getAllByRole('heading', { level: 3 }).length).toBeGreaterThan(0);
+  it('leaves out an empty change summary', () => {
+    renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
+    expect(document.querySelector('.plan-update-summary')).toBeNull();
   });
 
-  it('shows the content of each section', () => {
-    renderPlan(makePlanDoc());
-    expect(screen.getByText('reads').tagName).toBe('STRONG');
-    expect(screen.getByText('Keep the API')).toBeTruthy();
-    expect(screen.getByText('A small cache in front of the store.')).toBeTruthy();
-    expect(screen.getByText('lru-cache')).toBeTruthy();
-    expect(screen.getByText('Unit tests and a soak test.')).toBeTruthy();
-    expect(screen.getByText('Reads are 2x faster')).toBeTruthy();
-    expect(screen.getByText('Use Redis')).toBeTruthy();
-    expect(screen.getByText('Followed by the plan')).toBeTruthy();
-    expect(screen.getByText('New service')).toBeTruthy();
+  it('opens the latest version from the title button', () => {
+    const { host } = renderWithHost(<MessageList />, chat(twoVersions(), [2]));
+    fireEvent.click(screen.getByRole('button', { name: 'New title, open version 2' }));
+    expect(host.postedOf('plan.open')).toEqual([{ type: 'plan.open', planId: PLAN, version: 2 }]);
   });
 
-  it('omits every empty section', () => {
-    const empty: Partial<PlanContent> = {
-      requirements: [],
-      analysis: '',
-      architecture: '',
-      relevantFiles: [],
-      dependencies: [],
-      diagrams: [],
-      alternatives: [],
-      decisionPoints: [],
-      openQuestions: [],
-      testingStrategy: '',
-      acceptanceCriteria: [],
-    };
-    renderPlan(
-      makePlanDoc({ versions: [makePlanVersion(1, { content: makePlanContent(empty) })] }),
-    );
-    expect(screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)).toEqual([
-      'Objective',
-      'Stages',
-    ]);
+  it('follows the state when the plan changes under it', () => {
+    const { init } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
+    expect(screen.getByRole('button', { name: 'Add caching, open version 1' })).toBeTruthy();
+    init(chat(twoVersions(), [1]), 1);
+    expect(screen.getByRole('button', { name: 'New title, open version 2' })).toBeTruthy();
+    expect(screen.getByText('Version 2')).toBeTruthy();
   });
 
-  it('shows the relevant files as a table whose paths open the file', () => {
-    const { host } = renderPlan(makePlanDoc());
-    const table = screen.getByRole('table');
-    expect(
-      within(table)
-        .getAllByRole('columnheader')
-        .map((c) => c.textContent),
-    ).toEqual(['Path', 'Action', 'Role']);
-    expect(within(table).getByText('Create')).toBeTruthy();
-    fireEvent.click(within(table).getByRole('link', { name: 'src/store.ts' }));
-    expect(host.postedOf('open.file')).toEqual([{ type: 'open.file', path: 'src/store.ts' }]);
+  it('offers neither View changes nor Revert for version 1', () => {
+    renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
+    expect(screen.queryByRole('button', { name: /^View changes/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Revert/ })).toBeNull();
   });
 
-  it('collapses a section, remembers it per plan and restores it after a reload', () => {
-    const first = renderPlan(makePlanDoc());
-    const toggle = screen.getByRole('button', { name: 'Requirements' });
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    fireEvent.click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(screen.queryByText('Keep the API')).toBeNull();
-    expect(first.services.ui.getSnapshot().planClosed).toEqual({ plan1: { requirements: true } });
-    first.services.ui.flush();
-    const saved = first.host.saved;
-    first.unmount();
-
-    renderWithHost(<PlanView />, stateWith(makePlanDoc()), saved);
-    expect(screen.getByRole('button', { name: 'Requirements' }).getAttribute('aria-expanded')).toBe(
-      'false',
-    );
-    expect(screen.getByRole('button', { name: 'Objective' }).getAttribute('aria-expanded')).toBe(
-      'true',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Requirements' }));
-    expect(screen.getByText('Keep the API')).toBeTruthy();
-  });
-});
-
-describe('PlanView stages', () => {
-  it('lists the stages in order with dependencies as chips, files as links and acceptance', () => {
-    const { host } = renderPlan(makePlanDoc());
-    const items = screen
-      .getAllByRole('listitem')
-      .filter((li) => li.classList.contains('plan-stage'));
-    expect(items.map((li) => li.querySelector('h3')?.textContent)).toEqual([
-      'Build the cache',
-      'Wire it in',
-    ]);
-    const second = items[1] as HTMLElement;
-    expect(within(second).getByText('Depends on')).toBeTruthy();
-    const chips = within(second).getByRole('list', {
-      name: 'Stages that Wire it in depends on',
-    });
-    expect(within(chips).getByText('Build the cache')).toBeTruthy();
-    expect(within(second).getByText('Reads hit the cache')).toBeTruthy();
-    fireEvent.click(within(second).getByRole('link', { name: 'src/store.ts' }));
-    expect(host.postedOf('open.file')).toEqual([{ type: 'open.file', path: 'src/store.ts' }]);
-    expect(within(items[0] as HTMLElement).queryByText('Depends on')).toBeNull();
-  });
-
-  it('draws a dependency diagram above the list, with the list as its text alternative', async () => {
-    renderPlan(
-      makePlanDoc({
-        versions: [makePlanVersion(1, { content: makePlanContent({ diagrams: [] }) })],
-      }),
-    );
-    const picture = await screen.findByRole('img', { name: 'Stage dependencies' });
-    const list = document.getElementById(picture.getAttribute('aria-describedby') ?? '');
-    expect(list?.tagName).toBe('OL');
-    expect(list?.classList.contains('plan-stages')).toBe(true);
-    expect(
-      picture.compareDocumentPosition(list as Node) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
-    expect(mermaid.render).toHaveBeenCalledTimes(1);
-    expect(mermaid.render.mock.calls[0]?.[1]).toBe(
-      ['flowchart TD', '  s1["Build the cache"]', '  s2["Wire it in"]', '  s1 --> s2'].join('\n'),
-    );
-  });
-
-  it('draws no dependency diagram when no stage depends on another', async () => {
-    const stages = makePlanContent().stages.map((s) => ({ ...s, dependsOn: [] }));
-    renderPlan(
-      makePlanDoc({
-        versions: [makePlanVersion(1, { content: makePlanContent({ stages, diagrams: [] }) })],
-      }),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    expect(mermaid.render).not.toHaveBeenCalled();
-    expect(screen.queryByRole('img')).toBeNull();
-  });
-
-  it('draws the diagrams of the plan with their titles', async () => {
-    renderPlan(makePlanDoc());
-    expect(await screen.findByRole('img', { name: 'Read flow' })).toBeTruthy();
-    expect(screen.getByRole('heading', { level: 3, name: 'Read flow' })).toBeTruthy();
-  });
-});
-
-describe('stage diagram source', () => {
-  const nodeLine = /^\s+s\d+\["[^"[\]{}<>|`]*"\]$/;
-  const edgeLine = /^\s+s\d+ --> s\d+$/;
-
-  it('turns titles full of special characters into safe node lines', () => {
-    const nasty = [
-      'Plain',
-      'Back`tick `code`',
-      'Brackets [a] {b} <c> |d|',
-      'Quote "x" and "y"',
-      'Line\nbreak\r\nagain',
-      'x'.repeat(200),
-      '"]\n  s9 --> s1\n  s1["injected',
-      '`[]{}<>|`',
-    ];
-    const stages = nasty.map((title, i) => ({
-      id: `st${String(i)}`,
-      title,
-      description: '',
-      files: [],
-      dependsOn: i > 0 ? [`st${String(i - 1)}`, 'unknown'] : [],
-      acceptance: [],
-    }));
-    const lines = stageDiagramSource(stages).split('\n');
-    expect(lines[0]).toBe('flowchart TD');
-    const body = lines.slice(1);
-    expect(body).toHaveLength(nasty.length * 2 - 1);
-    for (const line of body) expect(nodeLine.test(line) || edgeLine.test(line), line).toBe(true);
-    expect(body.filter((l) => nodeLine.test(l))).toHaveLength(nasty.length);
-    expect(body.filter((l) => edgeLine.test(l))).toHaveLength(nasty.length - 1);
-  });
-
-  it('sanitises a label exactly as specified', () => {
-    expect(diagramLabel('a`b[c]d{e}f<g>h|i\nj"k"')).toBe("abcdefghi j'k'");
-    expect(diagramLabel('y'.repeat(100))).toHaveLength(60);
-  });
-
-  it('names a stage whose title is only special characters', () => {
-    const [, node] = stageDiagramSource([
-      { id: 'a', title: '[]', description: '', files: [], dependsOn: [], acceptance: [] },
-    ]).split('\n');
-    expect(node).toBe('  s1["Stage 1"]');
-  });
-});
-
-describe('PlanView versions', () => {
-  const picker = () => screen.getByRole<HTMLSelectElement>('combobox', { name: 'Version' });
-
-  it('shows the latest version, and lists all with author and time', () => {
-    renderPlan(twoVersions());
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('New title');
-    expect(picker().value).toBe('2');
-    const labels = Array.from(picker().options).map((o) => o.textContent);
-    expect(labels).toEqual([
-      `Version 2 (You, ${formatTime(1_700_000_120_000)})`,
-      `Version 1 (Agent, ${formatTime(1_700_000_060_000)})`,
-    ]);
-    expect(screen.queryByRole('note')).toBeNull();
-  });
-
-  it('shows an older version with a notice, and can come back', () => {
-    renderPlan(twoVersions());
-    fireEvent.change(picker(), { target: { value: '1' } });
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Old title');
-    expect(screen.getByText('Old objective')).toBeTruthy();
-    expect(screen.getByRole('note').textContent).toBe(
-      'You are viewing version 1. The latest is version 2.',
-    );
-    fireEvent.change(picker(), { target: { value: '2' } });
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('New title');
-    expect(screen.queryByRole('note')).toBeNull();
-  });
-
-  it('notes where a version was restored from', () => {
-    renderPlan(
-      makePlanDoc({
-        versions: [makePlanVersion(1), makePlanVersion(2, { restoredFrom: 1 })],
-      }),
-    );
-    expect(Array.from(picker().options)[0]?.textContent).toContain('restored from 1');
-  });
-
-  it('follows the host when a newer version arrives while the latest is shown', () => {
-    const h = renderPlan(makePlanDoc());
-    h.init(stateWith(twoVersions()), 1);
-    expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('New title');
-  });
-
-  it('has no version-dependent controls for a single version', () => {
-    renderPlan(makePlanDoc());
-    expect(screen.queryByRole('combobox', { name: 'Compare with…' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Revert to this version' })).toBeNull();
-  });
-});
-
-describe('PlanView header actions', () => {
-  it('compares another version with the shown one', () => {
-    const { host } = renderPlan(twoVersions());
-    const compare = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Compare with…' });
-    expect(Array.from(compare.options).map((o) => o.textContent)).toEqual([
-      'Compare with…',
-      'Version 1',
-    ]);
-    fireEvent.change(compare, { target: { value: '1' } });
+  it('compares with the previous version', () => {
+    const { host } = renderWithHost(<MessageList />, chat(threeVersions(), [3]));
+    fireEvent.click(within(current()).getByRole('button', { name: /^View changes/ }));
     expect(host.postedOf('plan.compare')).toEqual([
-      { type: 'plan.compare', planId: PLAN, left: 1, right: 2 },
-    ]);
-    // The select goes back to its prompt, so the same version can be chosen again.
-    expect(screen.getByRole<HTMLSelectElement>('combobox', { name: 'Compare with…' }).value).toBe(
-      '',
-    );
-  });
-
-  it('compares with the version being viewed as the right side', () => {
-    const { host } = renderPlan(twoVersions());
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    fireEvent.change(screen.getByRole('combobox', { name: 'Compare with…' }), {
-      target: { value: '2' },
-    });
-    expect(host.postedOf('plan.compare')).toEqual([
-      { type: 'plan.compare', planId: PLAN, left: 2, right: 1 },
+      { type: 'plan.compare', planId: PLAN, left: 2, right: 3 },
     ]);
   });
 
-  it('reverts only from an older version', () => {
-    const { host } = renderPlan(twoVersions());
-    expect(screen.queryByRole('button', { name: 'Revert to this version' })).toBeNull();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Revert to this version' }));
+  it('reverts to the previous version', () => {
+    const { host } = renderWithHost(<MessageList />, chat(threeVersions(), [3]));
+    fireEvent.click(screen.getByRole('button', { name: 'Revert to version 2' }));
     expect(host.postedOf('plan.revert')).toEqual([
-      { type: 'plan.revert', planId: PLAN, version: 1 },
+      { type: 'plan.revert', planId: PLAN, version: 2 },
     ]);
   });
 
-  it('exports the version being shown', () => {
-    const { host } = renderPlan(twoVersions());
-    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
-    expect(host.postedOf('plan.export')).toEqual([
-      { type: 'plan.export', planId: PLAN, version: 2 },
-      { type: 'plan.export', planId: PLAN, version: 1 },
-    ]);
-  });
-
-  it('opens the plan in an editor, except in an editor panel', () => {
-    const first = renderPlan(makePlanDoc());
-    fireEvent.click(screen.getByRole('button', { name: 'Open in editor' }));
-    expect(first.host.postedOf('plan.openInEditor')).toEqual([
-      { type: 'plan.openInEditor', planId: PLAN },
-    ]);
-    first.unmount();
-    document.body.dataset.viewKind = 'panel';
-    renderPlan(makePlanDoc());
-    expect(screen.queryByRole('button', { name: 'Open in editor' })).toBeNull();
-  });
-
-  it('toggles the lock, with the explanation as tooltip and as text', () => {
-    const { host, init } = renderPlan(makePlanDoc());
-    const hint =
-      'While locked, the agent can answer questions about the plan but cannot change it.';
-    const toggle = screen.getByRole('button', { name: 'Locked' });
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    expect(toggle.getAttribute('title')).toBe(hint);
-    expect(screen.getByText(hint).tagName).toBe('P');
-    fireEvent.click(toggle);
-    expect(host.postedOf('plan.setLocked')).toEqual([
-      { type: 'plan.setLocked', conversationId: convId('c1'), locked: true },
-    ]);
-    // The host owns the state: the button follows it.
-    expect(toggle.getAttribute('aria-pressed')).toBe('false');
-    init(stateWith(makePlanDoc(), {}, true), 1);
-    expect(screen.getByRole('button', { name: 'Locked' }).getAttribute('aria-pressed')).toBe(
-      'true',
-    );
-    fireEvent.click(screen.getByRole('button', { name: 'Locked' }));
-    expect(host.postedOf('plan.setLocked')[1]).toEqual({
-      type: 'plan.setLocked',
-      conversationId: convId('c1'),
-      locked: false,
-    });
+  it('shows no export, editor or section controls any more', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [2]));
+    expect(screen.queryByRole('button', { name: /Export/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Open in editor/ })).toBeNull();
+    expect(screen.queryByRole('combobox')).toBeNull();
+    expect(document.querySelector('.plan-section-toggle')).toBeNull();
   });
 });
 
-describe('PlanView decision points', () => {
+describe('Your decisions', () => {
+  it('lists every decision with its question and values, orphans last and marked', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          decisions: [
+            decision({
+              targetId: 'eviction',
+              kind: 'decision-point',
+              values: ['lru'],
+              decidedAt: 1,
+            }),
+            decision({
+              targetId: 'gone-point',
+              kind: 'decision-point',
+              values: ['a'],
+              decidedAt: 2,
+            }),
+            decision({
+              targetId: 'keys',
+              kind: 'open-question',
+              values: ['user', 'org'],
+              decidedAt: 3,
+            }),
+            decision({
+              targetId: 'Which colour?',
+              kind: 'interactive-question',
+              values: ['Red'],
+              decidedAt: 4,
+            }),
+            decision({
+              targetId: 'gone-question',
+              kind: 'open-question',
+              values: ['free'],
+              decidedAt: 5,
+            }),
+          ],
+        }),
+        [1],
+      ),
+    );
+    const group = screen.getByRole('group', { name: 'Your decisions' });
+    const items = within(group).getAllByRole('listitem');
+    expect(items.map((li) => li.querySelector('.plan-question')?.textContent)).toEqual([
+      'Which eviction policy?',
+      'Which keys are cached?',
+      'Which colour?',
+      'gone-point',
+      'gone-question',
+    ]);
+    expect(items.map((li) => li.querySelector('.plan-decision-values')?.textContent)).toEqual([
+      'LRU',
+      'User, Org',
+      'Red',
+      'a',
+      'free',
+    ]);
+    expect(items.map((li) => within(li).queryByText('No longer in the plan') !== null)).toEqual([
+      false,
+      false,
+      false,
+      true,
+      true,
+    ]);
+    expect(within(items[0] as HTMLElement).getByText(formatTime(1), { exact: false })).toBeTruthy();
+  });
+
+  it('shows no orphan mark when everything is still in the plan, and no list without decisions', () => {
+    const first = renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          decisions: [decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] })],
+        }),
+        [1],
+      ),
+    );
+    expect(screen.queryByText('No longer in the plan')).toBeNull();
+    first.unmount();
+    renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
+    expect(screen.queryByRole('group', { name: 'Your decisions' })).toBeNull();
+  });
+
+  it('judges orphans against the latest version', () => {
+    const doc = twoVersions();
+    doc.versions[1] = makePlanVersion(2, {
+      content: makePlanContent({ decisionPoints: [], openQuestions: [] }),
+    });
+    doc.decisions = [decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] })];
+    renderWithHost(<MessageList />, chat(doc, [1, 2]));
+    expect(within(current()).getByText('No longer in the plan')).toBeTruthy();
+  });
+});
+
+describe('Still to decide', () => {
+  it('is headed with the number of unanswered questions', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc({ decisions: [answeredAll[0] as PlanUserDecision] }), [1]),
+    );
+    expect(screen.getByRole('group', { name: 'Still to decide (3)' })).toBeTruthy();
+    expect(screen.queryByText('Decision points')).toBeNull();
+  });
+
+  it('becomes "Decision points" once every question is answered, and keeps the answers', () => {
+    renderWithHost(<MessageList />, chat(makePlanDoc({ decisions: answeredAll }), [1]));
+    const group = screen.getByRole('group', { name: 'Decision points' });
+    expect(within(group).getByRole<HTMLInputElement>('radio', { name: 'LRU' }).checked).toBe(true);
+    expect(screen.queryByText(/Still to decide/)).toBeNull();
+  });
+
+  it('is absent when the plan carries no decision points or open questions', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          versions: [
+            makePlanVersion(1, {
+              content: makePlanContent({ decisionPoints: [], openQuestions: [] }),
+            }),
+          ],
+        }),
+        [1],
+      ),
+    );
+    expect(screen.queryByText(/Still to decide|Decision points/)).toBeNull();
+  });
+});
+
+describe('decision points', () => {
   const group = () => screen.getByRole('radiogroup', { name: 'Which eviction policy?' });
 
   it('shows option cards with description and a Recommended tag', () => {
-    renderPlan(makePlanDoc());
+    renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     const lru = within(group()).getByRole('radio', { name: 'LRU' });
     expect(lru.getAttribute('aria-describedby')).toBeTruthy();
     expect(within(group()).getByText('Least recently used')).toBeTruthy();
     expect(within(group()).getAllByText('Recommended')).toHaveLength(1);
     expect(within(group()).queryByText('Your choice')).toBeNull();
-    expect(
-      within(group())
-        .getAllByRole('radio')
-        .every((r) => !(r as HTMLInputElement).checked),
-    ).toBe(true);
   });
 
   it('posts the chosen option id', () => {
-    const { host } = renderPlan(makePlanDoc());
+    const { host } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     fireEvent.click(within(group()).getByRole('radio', { name: 'TTL' }));
     expect(host.postedOf('plan.decide')).toEqual([
       {
@@ -461,13 +322,14 @@ describe('PlanView decision points', () => {
     ]);
   });
 
-  it('shows the recorded choice as Your choice and checks it', () => {
-    const { init } = renderPlan(makePlanDoc());
+  it('shows the recorded choice as Your choice, and it can be changed', () => {
+    const { init, host } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     init(
-      stateWith(
+      chat(
         makePlanDoc({
           decisions: [decision({ targetId: 'eviction', kind: 'decision-point', values: ['ttl'] })],
         }),
+        [1],
       ),
       1,
     );
@@ -479,16 +341,32 @@ describe('PlanView decision points', () => {
     expect(
       within(group()).getByRole('radio', { name: 'TTL' }).getAttribute('aria-describedby'),
     ).toContain(chosen.id);
+    fireEvent.click(within(group()).getByRole('radio', { name: 'LRU' }));
+    expect(host.postedOf('plan.decide')[0]?.values).toEqual(['lru']);
   });
 
   it('uses the newest answer when several are recorded', () => {
-    renderPlan(
-      makePlanDoc({
-        decisions: [
-          decision({ targetId: 'eviction', kind: 'decision-point', values: ['ttl'], decidedAt: 5 }),
-          decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'], decidedAt: 9 }),
-        ],
-      }),
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          decisions: [
+            decision({
+              targetId: 'eviction',
+              kind: 'decision-point',
+              values: ['ttl'],
+              decidedAt: 5,
+            }),
+            decision({
+              targetId: 'eviction',
+              kind: 'decision-point',
+              values: ['lru'],
+              decidedAt: 9,
+            }),
+          ],
+        }),
+        [1],
+      ),
     );
     expect(within(group()).getByRole<HTMLInputElement>('radio', { name: 'LRU' }).checked).toBe(
       true,
@@ -496,10 +374,14 @@ describe('PlanView decision points', () => {
   });
 
   it('does not mix up a decision point and an open question with the same id', () => {
-    renderPlan(
-      makePlanDoc({
-        decisions: [decision({ targetId: 'eviction', kind: 'open-question', values: ['lru'] })],
-      }),
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          decisions: [decision({ targetId: 'eviction', kind: 'open-question', values: ['lru'] })],
+        }),
+        [1],
+      ),
     );
     expect(within(group()).getByRole<HTMLInputElement>('radio', { name: 'LRU' }).checked).toBe(
       false,
@@ -507,9 +389,9 @@ describe('PlanView decision points', () => {
   });
 });
 
-describe('PlanView open questions', () => {
+describe('open questions', () => {
   it('single choice posts the option id', () => {
-    const { host } = renderPlan(makePlanDoc());
+    const { host } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     const group = screen.getByRole('radiogroup', { name: 'How big can the cache be?' });
     fireEvent.click(within(group).getByRole('radio', { name: 'Large' }));
     expect(host.postedOf('plan.decide')).toEqual([
@@ -524,7 +406,7 @@ describe('PlanView open questions', () => {
   });
 
   it('multiple choice posts the ticked options in option order after Save', () => {
-    const { host } = renderPlan(makePlanDoc());
+    const { host } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     const group = screen.getByRole('group', { name: 'Which keys are cached?' });
     const save = screen.getByRole<HTMLButtonElement>('button', {
       name: 'Save answer: Which keys are cached?',
@@ -549,7 +431,7 @@ describe('PlanView open questions', () => {
   });
 
   it('text posts the trimmed text after Save, and not an empty one', () => {
-    const { host } = renderPlan(makePlanDoc());
+    const { host } = renderWithHost(<MessageList />, chat(makePlanDoc(), [1]));
     const field = screen.getByRole('textbox', { name: 'Your answer to: Anything else?' });
     const save = screen.getByRole<HTMLButtonElement>('button', {
       name: 'Save answer: Anything else?',
@@ -570,20 +452,24 @@ describe('PlanView open questions', () => {
     ]);
   });
 
-  it('shows the recorded answers and when they were given', () => {
-    renderPlan(
-      makePlanDoc({
-        decisions: [
-          decision({
-            targetId: 'size',
-            kind: 'open-question',
-            values: ['small'],
-            decidedAt: 1_700_000_300_000,
-          }),
-          decision({ targetId: 'keys', kind: 'open-question', values: ['org', 'repo'] }),
-          decision({ targetId: 'notes', kind: 'open-question', values: ['Mind the memory.'] }),
-        ],
-      }),
+  it('shows the recorded answers and when they were given, and they can be changed', () => {
+    const { host } = renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          decisions: [
+            decision({
+              targetId: 'size',
+              kind: 'open-question',
+              values: ['small'],
+              decidedAt: 1_700_000_300_000,
+            }),
+            decision({ targetId: 'keys', kind: 'open-question', values: ['org', 'repo'] }),
+            decision({ targetId: 'notes', kind: 'open-question', values: ['Mind the memory.'] }),
+          ],
+        }),
+        [1],
+      ),
     );
     expect(screen.getByRole<HTMLInputElement>('radio', { name: 'Small' }).checked).toBe(true);
     expect(screen.getByRole<HTMLInputElement>('checkbox', { name: 'Org' }).checked).toBe(true);
@@ -592,147 +478,120 @@ describe('PlanView open questions', () => {
       screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Your answer to: Anything else?' })
         .value,
     ).toBe('Mind the memory.');
-    expect(screen.getAllByText(`Answered ${formatTime(1_700_000_300_000)}`)).toHaveLength(1);
     expect(document.querySelectorAll('.plan-recorded')).toHaveLength(3);
-  });
-
-  it('is read-only on an older version', () => {
-    const doc = twoVersions();
-    const { host } = renderPlan(doc);
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-      '.plan-decision input, .plan-decision textarea',
-    )) {
-      expect(input.disabled).toBe(true);
-    }
-    expect(screen.queryByRole('button', { name: /^Save answer/ })).toBeNull();
+    expect(
+      within(current()).getAllByText(`Answered ${formatTime(1_700_000_300_000)}`),
+    ).toHaveLength(1);
     fireEvent.click(screen.getByRole('radio', { name: 'Large' }));
-    fireEvent.click(screen.getByRole('radio', { name: 'TTL' }));
-    expect(host.postedOf('plan.decide')).toEqual([]);
+    expect(host.postedOf('plan.decide')[0]?.values).toEqual(['large']);
   });
 });
 
-describe('PlanView Your decisions', () => {
-  it('lists every decision with its question and values, and the orphans separately', () => {
-    renderPlan(
-      makePlanDoc({
-        decisions: [
-          decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'], decidedAt: 1 }),
-          decision({
-            targetId: 'keys',
-            kind: 'open-question',
-            values: ['user', 'org'],
-            decidedAt: 2,
-          }),
-          decision({
-            targetId: 'Which colour?',
-            kind: 'interactive-question',
-            values: ['Red'],
-            decidedAt: 3,
-          }),
-          decision({ targetId: 'gone-point', kind: 'decision-point', values: ['a'], decidedAt: 4 }),
-          decision({
-            targetId: 'gone-question',
-            kind: 'open-question',
-            values: ['free'],
-            decidedAt: 5,
-          }),
-        ],
-      }),
-    );
-    const section = screen.getByRole('region', { name: 'Your decisions' });
-    const items = within(section).getAllByRole('listitem');
-    expect(items.map((li) => li.querySelector('.plan-question')?.textContent)).toEqual([
-      'Which eviction policy?',
-      'Which keys are cached?',
-      'Which colour?',
-      'gone-point',
-      'gone-question',
-    ]);
-    expect(items.map((li) => li.querySelector('.plan-decision-values')?.textContent)).toEqual([
-      'LRU',
-      'User, Org',
-      'Red',
-      'a',
-      'free',
-    ]);
-    const orphanHeading = within(section).getByRole('heading', {
-      level: 3,
-      name: 'No longer in the plan',
-    });
-    const orphanList = orphanHeading.nextElementSibling as HTMLElement;
-    expect(within(orphanList).getAllByRole('listitem')).toHaveLength(2);
-    expect(within(orphanList).getByText('gone-point')).toBeTruthy();
-  });
-
-  it('shows no orphan group when everything is still in the plan, and no section without decisions', () => {
-    const first = renderPlan(
-      makePlanDoc({
-        decisions: [decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] })],
-      }),
-    );
-    expect(screen.queryByText('No longer in the plan')).toBeNull();
-    first.unmount();
-    renderPlan(makePlanDoc());
-    expect(screen.queryByRole('region', { name: 'Your decisions' })).toBeNull();
-  });
-
-  it('judges orphans against the latest version, also while an older one is shown', () => {
-    const doc = twoVersions();
-    doc.versions[1] = makePlanVersion(2, {
-      content: makePlanContent({ decisionPoints: [], openQuestions: [] }),
-    });
-    doc.decisions = [decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] })];
-    renderPlan(doc);
-    expect(screen.getByText('No longer in the plan')).toBeTruthy();
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    expect(screen.getByText('No longer in the plan')).toBeTruthy();
-  });
-});
-
-describe('PlanView approval', () => {
-  const approve = () =>
-    screen.getByRole<HTMLButtonElement>('button', { name: /^Approve and execute version/ });
-  const answeredAll = [
-    decision({ targetId: 'eviction', kind: 'decision-point', values: ['lru'] }),
-    decision({ targetId: 'size', kind: 'open-question', values: ['small'] }),
-    decision({ targetId: 'keys', kind: 'open-question', values: ['user'] }),
-    decision({ targetId: 'notes', kind: 'open-question', values: ['x'] }),
-  ];
-
-  it('posts the version and its content hash', () => {
-    const { host } = renderPlan(twoVersions());
-    expect(approve().textContent).toBe('Approve and execute version 2');
+describe('Approve and Execute', () => {
+  it('posts the latest version and its content hash', () => {
+    const { host } = renderWithHost(<MessageList />, chat(twoVersions(), [2]));
     fireEvent.click(approve());
     expect(host.postedOf('plan.approve')).toEqual([
       { type: 'plan.approve', planId: PLAN, version: 2, contentHash: 'hash-v2' },
     ]);
   });
 
-  it('is absent while an older version is shown', () => {
-    renderPlan(twoVersions());
-    fireEvent.change(screen.getByRole('combobox', { name: 'Version' }), { target: { value: '1' } });
-    expect(screen.queryByRole('button', { name: /Approve and execute/ })).toBeNull();
-  });
-
-  it('is disabled with an explanation while a turn runs', () => {
-    const { host } = renderPlan(makePlanDoc(), { turns: [makeTurn({ status: 'running' })] });
+  it('is disabled with a hint while a turn runs, and posts nothing', () => {
+    const { host } = renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc(), [1], { turns: [makeTurn({ status: 'running' })] }),
+    );
     expect(approve().disabled).toBe(true);
-    const ids = (approve().getAttribute('aria-describedby') ?? '').split(' ');
-    const texts = ids.map((id) => document.getElementById(id)?.textContent ?? '');
-    expect(texts.join(' ')).toMatch(/A turn is running/);
+    expect(describedBy(approve())).toContain('Wait for the current turn to finish.');
     fireEvent.click(approve());
     expect(host.postedOf('plan.approve')).toEqual([]);
   });
 
-  it('is enabled when the last turn is over', () => {
-    renderPlan(makePlanDoc({ decisions: answeredAll }), { turns: [makeTurn()] });
+  it('is disabled with a hint while a turn is preparing', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc(), [1], { turns: [makeTurn({ status: 'preparing' })] }),
+    );
+    expect(approve().disabled).toBe(true);
+  });
+
+  it('is disabled with a hint while configuration changes are pending', () => {
+    const { host } = renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc({ decisions: answeredAll }), [1], { turns: [makeTurn()] }, 1),
+    );
+    expect(approve().disabled).toBe(true);
+    expect(describedBy(approve())).toEqual([
+      'Keep or revert the configuration changes in the changes card below the chat first.',
+    ]);
+    fireEvent.click(approve());
+    expect(host.postedOf('plan.approve')).toEqual([]);
+  });
+
+  it('is disabled with a hint while an Agent turn of another conversation holds the folder', () => {
+    const { host } = renderWithHost(<MessageList />, {
+      ...chat(makePlanDoc({ decisions: answeredAll }), [1], { turns: [makeTurn()] }),
+      review: { entries: [], configChanges: [], busy: true },
+    });
+    expect(approve().disabled).toBe(true);
+    expect(describedBy(approve())).toEqual(['Another agent turn is running in this folder.']);
+    fireEvent.click(approve());
+    expect(host.postedOf('plan.approve')).toEqual([]);
+  });
+
+  it('shows only the running hint while this conversation runs, even with the folder busy', () => {
+    renderWithHost(<MessageList />, {
+      ...chat(makePlanDoc({ decisions: answeredAll }), [1], {
+        turns: [makeTurn({ status: 'running' })],
+      }),
+      review: { entries: [], configChanges: [], busy: true },
+    });
+    expect(approve().disabled).toBe(true);
+    expect(describedBy(approve())).toEqual(['Wait for the current turn to finish.']);
+    expect(screen.queryByText('Another agent turn is running in this folder.')).toBeNull();
+  });
+
+  it('gives both reasons when both apply', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({ decisions: answeredAll }),
+        [1],
+        { turns: [makeTurn({ status: 'running' })] },
+        2,
+      ),
+    );
+    expect(describedBy(approve())).toEqual([
+      'Wait for the current turn to finish.',
+      'Keep or revert the configuration changes in the changes card below the chat first.',
+    ]);
+  });
+
+  it('is enabled and has no hint when the last turn is over and nothing is pending', () => {
+    const { init } = renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc({ decisions: answeredAll }), [1], { turns: [makeTurn()] }),
+    );
     expect(approve().disabled).toBe(false);
+    expect(approve().getAttribute('aria-describedby')).toBeNull();
     expect(screen.queryByText(/have no answer yet|has no answer yet/)).toBeNull();
+    // It follows the state when a turn starts and when it ends.
+    init(
+      chat(makePlanDoc({ decisions: answeredAll }), [1], {
+        turns: [makeTurn({ status: 'running' })],
+      }),
+      1,
+    );
+    expect(approve().disabled).toBe(true);
+    init(chat(makePlanDoc({ decisions: answeredAll }), [1], { turns: [makeTurn()] }), 2);
+    expect(approve().disabled).toBe(false);
   });
 
   it('warns about unanswered questions and decisions but stays enabled', () => {
-    const { host } = renderPlan(makePlanDoc({ decisions: [answeredAll[0] as PlanUserDecision] }));
+    const { host } = renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc({ decisions: [answeredAll[0] as PlanUserDecision] }), [1]),
+    );
     const warning = screen.getByText('3 questions or decisions have no answer yet');
     expect(approve().disabled).toBe(false);
     expect(approve().getAttribute('aria-describedby')).toContain(warning.closest('p')?.id ?? '?');
@@ -741,20 +600,24 @@ describe('PlanView approval', () => {
   });
 
   it('says "1 question or decision has no answer yet" for one', () => {
-    renderPlan(makePlanDoc({ decisions: answeredAll.slice(0, 3) }));
+    renderWithHost(<MessageList />, chat(makePlanDoc({ decisions: answeredAll.slice(0, 3) }), [1]));
     expect(screen.getByText('1 question or decision has no answer yet')).toBeTruthy();
   });
 
-  it('lists the approvals recorded for the shown version', () => {
-    renderPlan(
-      makePlanDoc({
-        versions: [makePlanVersion(1), makePlanVersion(2)],
-        approvals: [
-          { version: 2, contentHash: 'hash-v2', approvedAt: 1_700_000_900_000 },
-          { version: 2, contentHash: 'hash-v2', approvedAt: 1_700_001_000_000 },
-          { version: 1, contentHash: 'hash-v1', approvedAt: 1_600_000_000_000 },
-        ],
-      }),
+  it('lists the approvals recorded for the latest version only', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(
+        makePlanDoc({
+          versions: [makePlanVersion(1), makePlanVersion(2)],
+          approvals: [
+            { version: 2, contentHash: 'hash-v2', approvedAt: 1_700_000_900_000 },
+            { version: 2, contentHash: 'hash-v2', approvedAt: 1_700_001_000_000 },
+            { version: 1, contentHash: 'hash-v1', approvedAt: 1_600_000_000_000 },
+          ],
+        }),
+        [2],
+      ),
     );
     expect(screen.getAllByText(/^Approved on /).map((li) => li.textContent)).toEqual([
       `Approved on ${formatTime(1_700_000_900_000)}`,
@@ -763,9 +626,229 @@ describe('PlanView approval', () => {
   });
 });
 
-describe('PlanView accessibility', () => {
-  it('gives every button and control an accessible name', () => {
-    renderPlan(makePlanDoc({ versions: [makePlanVersion(1), makePlanVersion(2)] }));
+describe('the current rule', () => {
+  it('makes the part with the highest version the current card, with two parts', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [1, 2]));
+    expect(document.querySelectorAll('.plan-card')).toHaveLength(2);
+    expect(document.querySelectorAll('.plan-card--current')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Approve and Execute' })).toHaveLength(1);
+    const [first, second] = Array.from(document.querySelectorAll('.plan-card'));
+    expect(first?.classList.contains('plan-card--older')).toBe(true);
+    expect(second?.classList.contains('plan-card--current')).toBe(true);
+    expect(
+      within(current()).getByRole('button', { name: 'New title, open version 2' }),
+    ).toBeTruthy();
+  });
+
+  it('keeps one current card and two older ones with three parts', () => {
+    renderWithHost(<MessageList />, chat(threeVersions(), [1, 2, 3]));
+    expect(document.querySelectorAll('.plan-card--older')).toHaveLength(2);
+    expect(document.querySelectorAll('.plan-card--current')).toHaveLength(1);
+    expect(within(current()).getByText('Version 3')).toBeTruthy();
+  });
+
+  it('does not depend on the order of the messages', () => {
+    renderWithHost(<MessageList />, chat(threeVersions(), [3, 1, 2]));
+    expect(within(current()).getByText('Version 3')).toBeTruthy();
+    expect(document.querySelectorAll('.plan-card--older')).toHaveLength(2);
+  });
+
+  it('turns the current card into an older one when a newer part arrives', () => {
+    const { init } = renderWithHost(<MessageList />, chat(twoVersions(), [1, 2]));
+    init(chat(threeVersions(), [1, 2, 3]), 1);
+    expect(document.querySelectorAll('.plan-card--older')).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Approve and Execute' })).toHaveLength(1);
+    expect(within(current()).getByText('Version 3')).toBeTruthy();
+  });
+
+  it('acts on the latest version after the user reverted, when the latest has no part', () => {
+    // Version 3 is a copy of version 1 made by the user: no message mentions it.
+    const doc = makePlanDoc({
+      versions: [
+        makePlanVersion(1, { content: makePlanContent({ title: 'Title one' }) }),
+        makePlanVersion(2, { content: makePlanContent({ title: 'Title two' }) }),
+        makePlanVersion(3, {
+          author: 'user',
+          restoredFrom: 1,
+          contentHash: 'hash-v1',
+          content: makePlanContent({ title: 'Title one' }),
+        }),
+      ],
+    });
+    const { host } = renderWithHost(<MessageList />, chat(doc, [1, 2]));
+    // The card of part 2 is the current one and shows and acts on version 3.
+    const card = current();
+    expect(within(card).getByText('Version 3, restored by you from version 1')).toBeTruthy();
+    expect(document.querySelectorAll('.plan-card')).toHaveLength(2);
+    fireEvent.click(within(card).getByRole('button', { name: 'Title one, open version 3' }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Approve and Execute' }));
+    fireEvent.click(within(card).getByRole('button', { name: /^View changes/ }));
+    fireEvent.click(within(card).getByRole('button', { name: 'Revert to version 2' }));
+    expect(host.postedOf('plan.open')).toEqual([{ type: 'plan.open', planId: PLAN, version: 3 }]);
+    expect(host.postedOf('plan.approve')).toEqual([
+      { type: 'plan.approve', planId: PLAN, version: 3, contentHash: 'hash-v1' },
+    ]);
+    expect(host.postedOf('plan.compare')).toEqual([
+      { type: 'plan.compare', planId: PLAN, left: 2, right: 3 },
+    ]);
+    expect(host.postedOf('plan.revert')).toEqual([
+      { type: 'plan.revert', planId: PLAN, version: 2 },
+    ]);
+  });
+
+  it('shows a part of another plan as the one-line stand-in', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        active: makeActive('c1', {
+          plan: makePlanDoc(),
+          messages: [assistantMessage('a1', [part(2, planId('other'))])],
+        }),
+      }),
+    );
+    expect(screen.getByText('Plan updated to version 2')).toBeTruthy();
+    expect(document.querySelector('.part-line button')).toBeNull();
+  });
+
+  it('shows just the line when the plan is not in the state', () => {
+    renderWithHost(<MessageList />, chat(null, [2]));
+    expect(screen.getByText('Plan updated to version 2')).toBeTruthy();
+    expect(document.querySelector('.plan-card')).toBeNull();
+  });
+});
+
+describe('older cards', () => {
+  const olderCards = () => Array.from(document.querySelectorAll<HTMLElement>('.plan-card--older'));
+
+  it('are compact and read-only: a label, the title, View changes and Restore', () => {
+    const { host } = renderWithHost(<MessageList />, chat(threeVersions(), [1, 2, 3]));
+    const [one, two] = olderCards() as [HTMLElement, HTMLElement];
+    expect(one.getAttribute('aria-label')).toBe('Plan version 1');
+    expect(within(one).getByText('Plan version 1')).toBeTruthy();
+    expect(within(two).getByText('Plan version 2')).toBeTruthy();
+    for (const card of [one, two]) {
+      expect(within(card).queryByRole('button', { name: 'Approve and Execute' })).toBeNull();
+      expect(card.querySelector('input, textarea')).toBeNull();
+      expect(within(card).queryByText(/^Revert to version/)).toBeNull();
+    }
+
+    fireEvent.click(within(two).getByRole('button', { name: 'Title two, open version 2' }));
+    fireEvent.click(within(two).getByRole('button', { name: /^View changes/ }));
+    fireEvent.click(within(two).getByRole('button', { name: /^Restore this version/ }));
+    expect(host.postedOf('plan.open')).toEqual([{ type: 'plan.open', planId: PLAN, version: 2 }]);
+    expect(host.postedOf('plan.compare')).toEqual([
+      { type: 'plan.compare', planId: PLAN, left: 1, right: 2 },
+    ]);
+    expect(host.postedOf('plan.revert')).toEqual([
+      { type: 'plan.revert', planId: PLAN, version: 2 },
+    ]);
+  });
+
+  it('has no View changes for version 1', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [1, 2]));
+    const [one] = olderCards() as [HTMLElement];
+    expect(within(one).queryByRole('button', { name: /^View changes/ })).toBeNull();
+    expect(within(one).getByRole('button', { name: /^Restore this version/ })).toBeTruthy();
+  });
+
+  it('hides Restore this version when its content equals the latest', () => {
+    const doc = makePlanDoc({
+      versions: [
+        makePlanVersion(1, { contentHash: 'same' }),
+        makePlanVersion(2, { contentHash: 'other' }),
+        makePlanVersion(3, { contentHash: 'same', restoredFrom: 1 }),
+      ],
+    });
+    renderWithHost(<MessageList />, chat(doc, [1, 2, 3]));
+    const [one, two] = olderCards() as [HTMLElement, HTMLElement];
+    expect(within(one).queryByRole('button', { name: /^Restore/ })).toBeNull();
+    expect(within(two).getByRole('button', { name: /^Restore this version/ })).toBeTruthy();
+  });
+
+  it('shows just the line for a version the plan does not have', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [7, 8]));
+    // Part 7 is older and its version is not in the plan; part 8 is the current card.
+    expect(screen.getAllByText(/^Plan updated to version/).map((el) => el.textContent)).toEqual([
+      'Plan updated to version 7',
+    ]);
+    expect(olderCards()).toHaveLength(0);
+    expect(document.querySelectorAll('.plan-card--current')).toHaveLength(1);
+  });
+});
+
+describe('the synthetic card', () => {
+  it('ends the log with one current card when no message has a part for the plan', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(twoVersions(), [], {
+        messages: [userMessage('u0', 'plan it', { mode: 'plan' }), assistantMessage('a1', [])],
+      }),
+    );
+    expect(document.querySelectorAll('.plan-card')).toHaveLength(1);
+    expect(current().classList.contains('plan-card--current')).toBe(true);
+    expect(within(current()).getByText('Version 2')).toBeTruthy();
+    const column = current().parentElement as HTMLElement;
+    expect(column.lastElementChild).toBe(current());
+    expect(current().previousElementSibling?.tagName).toBe('ARTICLE');
+  });
+
+  it('is placed after the last message and before the failure notice', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(twoVersions(), [], {
+        messages: [userMessage('u0', 'plan it')],
+        turns: [makeTurn({ status: 'error', error: 'It broke.' })],
+      }),
+    );
+    const column = current().parentElement as HTMLElement;
+    const kids = Array.from(column.children);
+    expect(kids.indexOf(current())).toBeLessThan(kids.findIndex((k) => k.matches('.notice')));
+  });
+
+  it('acts like the current card', () => {
+    const { host } = renderWithHost(<MessageList />, chat(twoVersions(), []));
+    fireEvent.click(approve());
+    expect(host.postedOf('plan.approve')).toEqual([
+      { type: 'plan.approve', planId: PLAN, version: 2, contentHash: 'hash-v2' },
+    ]);
+  });
+
+  it('is not drawn once a message has a plan-update part for the plan', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [1]));
+    expect(document.querySelectorAll('.plan-card')).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Approve and Execute' })).toHaveLength(1);
+  });
+
+  it('is drawn when the only parts belong to another plan', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        active: makeActive('c1', {
+          plan: makePlanDoc(),
+          messages: [assistantMessage('a1', [part(1, planId('other'))])],
+        }),
+      }),
+    );
+    expect(document.querySelectorAll('.plan-card--current')).toHaveLength(1);
+  });
+
+  it('is not drawn without a plan', () => {
+    renderWithHost(<MessageList />, chat(null, []));
+    expect(document.querySelector('.plan-card')).toBeNull();
+  });
+
+  it('appears when a plan arrives for a conversation without parts, and goes with the plan', () => {
+    const { init } = renderWithHost(<MessageList />, chat(null, []));
+    init(chat(makePlanDoc(), []), 1);
+    expect(document.querySelectorAll('.plan-card--current')).toHaveLength(1);
+    init(chat(null, []), 2);
+    expect(document.querySelector('.plan-card')).toBeNull();
+  });
+});
+
+describe('plan card accessibility', () => {
+  it('names every control and group of a card with questions', () => {
+    renderWithHost(<MessageList />, chat(twoVersions(), [1, 2], {}, 1));
     const nameOf = (el: HTMLElement) => {
       const label = el.getAttribute('aria-label');
       if (label) return label;
@@ -778,31 +861,112 @@ describe('PlanView accessibility', () => {
       }
       return el.closest('label')?.textContent ?? el.textContent ?? '';
     };
-    for (const el of document.querySelectorAll<HTMLElement>('button, input, select, textarea')) {
+    for (const el of document.querySelectorAll<HTMLElement>(
+      '.plan-card button, .plan-card input, .plan-card textarea',
+    )) {
       expect(nameOf(el).trim(), el.outerHTML).not.toBe('');
+    }
+    for (const group of document.querySelectorAll(
+      '.plan-card [role="group"], .plan-card section',
+    )) {
+      expect(
+        group.getAttribute('aria-labelledby') ?? group.getAttribute('aria-label'),
+      ).toBeTruthy();
     }
     for (const group of screen.getAllByRole('radiogroup')) {
       expect(group.getAttribute('aria-labelledby')).toBeTruthy();
     }
-    for (const group of document.querySelectorAll('.plan-decision [role="group"]')) {
-      expect(group.getAttribute('aria-labelledby')).toBeTruthy();
-    }
   });
 
-  it('exposes the collapsible headings as buttons with aria-expanded and aria-controls', () => {
-    renderPlan(makePlanDoc());
-    for (const heading of screen.getAllByRole('heading', { level: 2 })) {
-      const button = within(heading).getByRole('button');
-      expect(button.getAttribute('aria-expanded')).toBe('true');
-      expect(document.getElementById(button.getAttribute('aria-controls') ?? '')).not.toBeNull();
-    }
+  it('says what each button of an older card acts on', () => {
+    renderWithHost(<MessageList />, chat(threeVersions(), [1, 2, 3]));
+    expect(
+      screen.getAllByRole('button', { name: 'View changes between version 1 and 2' }),
+    ).toHaveLength(1);
+    expect(
+      screen.getAllByRole('button', { name: 'Restore this version (version 2)' }),
+    ).toHaveLength(1);
   });
 
-  it('waits for diagrams without blocking the rest of the view', async () => {
-    renderPlan(makePlanDoc());
-    expect(screen.getByRole('heading', { level: 1 })).toBeTruthy();
-    await waitFor(() => {
-      expect(screen.getAllByRole('img')).toHaveLength(2);
+  it('says which version each title button opens', () => {
+    renderWithHost(<MessageList />, chat(threeVersions(), [1, 2, 3]));
+    const names = Array.from(
+      document.querySelectorAll<HTMLElement>('.plan-card-open'),
+      (el) => el.textContent,
+    );
+    expect(names).toEqual([
+      'Title one, open version 1',
+      'Title two, open version 2',
+      'Title three, open version 3',
+    ]);
+    const one = document.querySelector('.plan-card--older') as HTMLElement;
+    expect(within(one).getByRole('button', { name: 'Title one, open version 1' })).toBeTruthy();
+    expect(
+      within(current()).getByRole('button', { name: 'Title three, open version 3' }),
+    ).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Title three' })).toBe(current());
+  });
+
+  it('starts headings at level 2 and does not skip a level', () => {
+    renderWithHost(
+      <MessageList />,
+      chat(makePlanDoc({ decisions: [answeredAll[0] as PlanUserDecision] }), [1]),
+    );
+    const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)));
+    expect(levels).toEqual([2, 3, 3]);
+  });
+});
+
+describe('the Auto line of the current plan card', () => {
+  const ON = 'Runs with Auto: commands and edits run without asking.';
+  const ON_NO_COMMANDS = 'Runs with Auto: edits run without asking. Commands still ask.';
+  const withAuto = (
+    auto: boolean | undefined,
+    over: { offered?: boolean; commands?: boolean } = {},
+  ) => {
+    const base = chat(makePlanDoc(), [1]);
+    return {
+      ...base,
+      ...(over.offered === false ? {} : autoOffered(over.commands ?? true)),
+      active: {
+        ...base.active!,
+        meta: { ...base.active!.meta, ...(auto === undefined ? {} : { agentAuto: auto }) },
+      },
+    };
+  };
+
+  it('says commands and edits run without asking, next to Approve and Execute', () => {
+    renderWithHost(<MessageList />, withAuto(true));
+    const line = within(current()).getByText(ON);
+    expect(line.closest('p')?.previousElementSibling?.classList.contains('plan-approve')).toBe(
+      true,
+    );
+    expect(current().textContent).toContain(ON);
+  });
+
+  it('says commands still ask when the settings keep them asking', () => {
+    renderWithHost(<MessageList />, withAuto(true, { commands: false }));
+    expect(within(current()).getByText(ON_NO_COMMANDS)).toBeTruthy();
+    expect(screen.queryByText(ON)).toBeNull();
+  });
+
+  it.each([
+    ['Auto is off', withAuto(false)],
+    ['the flag is absent', withAuto(undefined)],
+    ['the setting does not offer Auto', withAuto(true, { offered: false })],
+  ] as const)('is absent when %s', (_name, state) => {
+    renderWithHost(<MessageList />, state);
+    expect(screen.queryByText(/Runs with Auto/)).toBeNull();
+  });
+
+  it('is not on an older card', () => {
+    const base = chat(twoVersions(), [1, 2]);
+    renderWithHost(<MessageList />, {
+      ...base,
+      ...autoOffered(),
+      active: { ...base.active!, meta: { ...base.active!.meta, agentAuto: true } },
     });
+    expect(screen.getAllByText(ON)).toHaveLength(1);
+    expect(current().textContent).toContain(ON);
   });
 });

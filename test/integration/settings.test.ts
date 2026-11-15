@@ -30,6 +30,14 @@ suite('settings', () => {
     assert.strictEqual(readSettings().defaultMode, 'agent');
   });
 
+  test("Agent mode's Auto settings are read from their keys", async () => {
+    await change('agent.auto.enabled', false);
+    await change('agent.auto.webTools', true);
+    const settings = readSettings();
+    assert.strictEqual(settings.agentAuto, false);
+    assert.strictEqual(settings.agentAutoWebTools, true);
+  });
+
   test('megabytes become bytes', async () => {
     await change('snapshots.maxFileSizeMB', 2);
     await change('snapshots.maxTotalSizeMB', 64);

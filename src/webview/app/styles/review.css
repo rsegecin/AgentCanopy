@@ -1,19 +1,45 @@
-.review-view {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  min-height: 0;
+/* The changes card between the chat log and the composer. */
+.changes-dock {
+  flex: none;
+  border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
 }
-.review-scroll {
-  flex: 1;
-  min-height: 0;
-  padding: 8px;
+.changes-dock-heading {
+  margin: 0;
+  font-size: 1em;
+}
+.changes-dock-toggle {
+  flex-wrap: wrap;
+  gap: 2px 6px;
+}
+.changes-dock-toggle--plain {
+  display: flex;
+  align-items: center;
+  padding: 4px 8px;
+  font-weight: 600;
+}
+.changes-dock-summary {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+.changes-dock-body {
+  max-height: min(40vh, 320px);
+  padding: 2px 8px 8px;
   overflow-y: auto;
 }
-.review-scroll > .column {
+.changes-dock-content {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.review-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
 }
 .review-heading {
   margin: 0 0 4px;
@@ -38,7 +64,6 @@
 .review-summary.muted {
   font-weight: 400;
 }
-.review-hint,
 .review-note {
   font-size: 0.9em;
   overflow-wrap: anywhere;
@@ -58,6 +83,20 @@
 }
 .review-entry--accepted {
   border-style: dashed;
+}
+.review-entry--config {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2px 8px;
+}
+.review-entry--config .review-entry-actions {
+  margin-top: 0;
+}
+.review-entry--config .review-note {
+  flex-basis: 100%;
+  margin: 0;
 }
 .review-entry-head {
   display: flex;
@@ -116,39 +155,6 @@
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 4px;
-}
-.review-entry-body {
-  margin-top: 4px;
-}
-.review-hunks {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-.review-hunk-head {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 4px 8px;
-}
-.review-hunk-actions {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-  margin-left: auto;
-}
-.review-hunk-lines {
-  padding: 4px 0;
-  white-space: normal;
-}
-.review-no-eol {
-  flex: none;
-  font-size: 0.8em;
-  font-style: italic;
-  color: var(--vscode-descriptionForeground);
 }
 .review-snapshot progress {
   width: 100%;

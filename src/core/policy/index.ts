@@ -14,6 +14,16 @@ export function createModePolicy(policies: {
 }
 
 export { createAgentPolicy, createRuleStore } from './agent';
+export {
+  checkDirectoryToGrant,
+  createGrantStore,
+  type DirectoryRefusal,
+  createSavedPermissions,
+  type FolderGrants,
+  type Grant,
+  type GrantStore,
+  type SavedPermissions,
+} from './grants';
 export { createReadOnlyPolicy, createReadOnlyTripwire } from './readonly';
 export {
   createProjectConfigDecisions,

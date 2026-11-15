@@ -55,39 +55,33 @@ describe('UiState question drafts', () => {
   });
 });
 
-describe('UiState plan sections', () => {
-  it('remembers collapsed sections per plan and forgets them when reopened', () => {
-    const ui = new UiState(new FakeHost());
-    ui.setPlanSectionOpen('plan1', 'analysis', false);
-    ui.setPlanSectionOpen('plan1', 'stages', false);
-    ui.setPlanSectionOpen('plan2', 'analysis', false);
-    expect(ui.getSnapshot().planClosed).toEqual({
-      plan1: { analysis: true, stages: true },
-      plan2: { analysis: true },
-    });
-    ui.setPlanSectionOpen('plan1', 'analysis', true);
-    ui.setPlanSectionOpen('plan2', 'analysis', true);
-    expect(ui.getSnapshot().planClosed).toEqual({ plan1: { stages: true } });
+describe('UiState removed tabs and plan sections', () => {
+  it('falls back to the chat tab for the removed plan tab', () => {
+    expect(new UiState(new FakeHost({ tab: 'plan' })).getSnapshot().tab).toBe('chat');
+    expect(new UiState(new FakeHost({ tab: 'history' })).getSnapshot().tab).toBe('history');
   });
 
-  it('persists them and ignores saved data of the wrong shape', () => {
+  it('keeps the permissions tab across a reload', () => {
     const host = new FakeHost();
     const ui = new UiState(host);
-    ui.setPlanSectionOpen('plan1', 'analysis', false);
+    ui.setTab('permissions');
     ui.flush();
-    expect(new UiState(new FakeHost(host.saved)).getSnapshot().planClosed).toEqual({
-      plan1: { analysis: true },
-    });
-    expect(new UiState(new FakeHost({ planClosed: [1] })).getSnapshot().planClosed).toEqual({});
+    expect(host.saved).toMatchObject({ tab: 'permissions' });
+    expect(new UiState(new FakeHost(host.saved)).getSnapshot().tab).toBe('permissions');
   });
 
-  it('accepts the plan tab as the saved tab', () => {
-    expect(new UiState(new FakeHost({ tab: 'plan' })).getSnapshot().tab).toBe('plan');
+  it('loads data that still has the removed planClosed key, and does not write it back', () => {
+    const host = new FakeHost({ tab: 'chat', planClosed: { plan1: { analysis: true } } });
+    const ui = new UiState(host);
+    expect(ui.getSnapshot()).not.toHaveProperty('planClosed');
+    ui.flush();
+    expect(host.saved).not.toHaveProperty('planClosed');
+    expect(new UiState(new FakeHost({ planClosed: [1] })).getSnapshot().tab).toBe('chat');
   });
 });
 
 describe('UiState review ticks', () => {
-  it('ticks and unticks paths, persists them and accepts the review tab', () => {
+  it('ticks and unticks paths, persists them', () => {
     const host = new FakeHost();
     const ui = new UiState(host);
     ui.setReviewInclude('a.ts', true);
@@ -101,7 +95,38 @@ describe('UiState review ticks', () => {
     expect(new UiState(new FakeHost({ reviewInclude: 'x' })).getSnapshot().reviewInclude).toEqual(
       {},
     );
-    expect(new UiState(new FakeHost({ tab: 'review' })).getSnapshot().tab).toBe('review');
+  });
+
+  it('prunes ticks of paths that are not listed, and does nothing when all are listed', () => {
+    const host = new FakeHost();
+    const ui = new UiState(host);
+    ui.setReviewInclude('a.ts', true);
+    ui.setReviewInclude('b.ts', true);
+    ui.pruneReviewInclude(['b.ts', 'c.ts']);
+    expect(ui.getSnapshot().reviewInclude).toEqual({ 'b.ts': true });
+    const before = ui.getSnapshot();
+    let notified = 0;
+    ui.subscribe(() => notified++);
+    ui.pruneReviewInclude(['b.ts']);
+    expect(notified).toBe(0);
+    expect(ui.getSnapshot()).toBe(before);
+    ui.pruneReviewInclude([]);
+    expect(ui.getSnapshot().reviewInclude).toEqual({});
+  });
+
+  it('falls back to the chat tab for the removed review tab', () => {
+    expect(new UiState(new FakeHost({ tab: 'review' })).getSnapshot().tab).toBe('chat');
+    expect(new UiState(new FakeHost({ tab: 'checkpoints' })).getSnapshot().tab).toBe('checkpoints');
+  });
+
+  it('keeps the changes card collapsed state in the expanded map', () => {
+    const host = new FakeHost();
+    const ui = new UiState(host);
+    ui.setExpanded('changes-dock-collapsed', true);
+    ui.flush();
+    expect(
+      new UiState(new FakeHost(host.saved)).getSnapshot().expanded['changes-dock-collapsed'],
+    ).toBe(true);
   });
 });
 

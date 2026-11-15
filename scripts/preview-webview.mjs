@@ -1,6 +1,6 @@
 // Serves the built webview in a plain browser with sample state, under the same Content Security
 // Policy the extension uses. It exists to look at the UI and to check that it really renders
-// (Markdown, code, Mermaid, cards, plan view) without starting VS Code.
+// (Markdown, code, Mermaid, cards, plan cards) without starting VS Code.
 //
 //   node scripts/preview-webview.mjs            serve on http://127.0.0.1:<port> until Ctrl+C
 //   node scripts/preview-webview.mjs --check    render in headless Chrome, write screenshots and a
@@ -47,7 +47,7 @@ const plan = {
     createdAt: now - (2 - version) * 60000,
     contentHash: `hash${version}`,
     content: shared.PlanContentSchema.parse({
-      title: 'Add rate limiting to the public API',
+      title: version === 1 ? 'Rate limiting for the API' : 'Add rate limiting to the public API',
       objective: 'Protect the API from bursts without affecting normal clients.',
       requirements: ['Limit by API key', 'Return 429 with a Retry-After header'],
       analysis:
@@ -126,14 +126,27 @@ const plan = {
   })),
   decisions: [
     {
+      targetId: 'Which clients need a higher limit?',
+      kind: 'interactive-question',
+      values: ['Internal services'],
+      decidedAt: now - 55000,
+    },
+    {
       targetId: 'q-store',
       kind: 'decision-point',
       values: ['redis'],
-      decidedAt: now,
+      decidedAt: now - 40000,
+      planVersion: 2,
+    },
+    {
+      targetId: 'q-limit',
+      kind: 'open-question',
+      values: ['600 requests per minute'],
+      decidedAt: now - 38000,
       planVersion: 2,
     },
   ],
-  approvals: [],
+  approvals: [{ version: 2, contentHash: 'hash2', approvedAt: now - 30000, executionTurnId: 't3' }],
 };
 
 const tool = (id, name, input, extra = {}) => ({
@@ -209,6 +222,7 @@ const state = {
     { id: 'haiku', label: 'Haiku', custom: false },
   ],
   defaults: { mode: 'ask', model: 'default' },
+  agentAuto: { offered: false, commands: false },
   conversations: [
     { ...meta, preview: 'Here is how requests flow today…', running: true, pendingPrompts: 1 },
     {
@@ -234,7 +248,15 @@ const state = {
         endedAt: now - 100000,
         status: 'completed',
       },
-      { id: 't2', mode: 'plan', model: 'sonnet', startedAt: now - 60000, status: 'running' },
+      {
+        id: 't2',
+        mode: 'plan',
+        model: 'sonnet',
+        startedAt: now - 60000,
+        endedAt: now - 31000,
+        status: 'completed',
+      },
+      { id: 't3', mode: 'agent', model: 'sonnet', startedAt: now - 30000, status: 'running' },
     ],
     messages: [
       {
@@ -244,7 +266,15 @@ const state = {
         createdAt: now - 120000,
         text: 'How do requests reach the handlers?',
         mode: 'ask',
-        attachments: [{ kind: 'file', path: 'src/server/router.ts' }],
+        attachments: [
+          { kind: 'file', path: 'src/server/router.ts' },
+          {
+            kind: 'image',
+            id: '3f2a9c71d0b84e5a96c1f7e2a4d8b03c5e6f1a2b7c9d0e8f4a3b2c1d0e9f8a7b',
+            mediaType: 'image/png',
+            bytes: 123456,
+          },
+        ],
       },
       {
         role: 'assistant',
@@ -286,19 +316,61 @@ const state = {
         turnId: 't2',
         createdAt: now - 50000,
         parts: [
-          { kind: 'plan-update', planId: 'p1', version: 2 },
           {
             kind: 'notice',
             level: 'warning',
             text: "A Claude Code plugin is loaded (example). Plugins run outside AgentCanopy's read-only guarantee.",
           },
+          tool('toolu_p1', 'Read', { file_path: 'src/server/rate-limit.ts' }),
           tool(
             'toolu_3',
             'AskUserQuestion',
-            { questions: [] },
-            { status: 'awaiting-approval', approval: undefined, endedAt: undefined },
+            {
+              questions: [
+                {
+                  question: 'Which clients need a higher limit?',
+                  header: 'Clients',
+                  multiSelect: false,
+                  options: [{ label: 'Internal services' }, { label: 'Partners' }],
+                },
+              ],
+            },
+            { approval: 'user', resultPreview: 'Internal services' },
           ),
           { kind: 'prompt', promptId: 'pr1' },
+          tool('toolu_p2', 'Grep', { pattern: 'rateLimit', path: 'src' }),
+          tool('toolu_s1', 'mcp__agentcanopy__submit_plan', { plan: '# Plan' }),
+          { kind: 'plan-update', planId: 'p1', version: 1 },
+          { kind: 'text', text: 'Thanks. I added a Redis stage and wrote the choices down.' },
+          tool('toolu_s2', 'mcp__agentcanopy__submit_plan', { plan: '# Plan' }),
+          { kind: 'plan-update', planId: 'p1', version: 2 },
+        ],
+      },
+      {
+        role: 'user',
+        id: 'm5',
+        turnId: 't3',
+        createdAt: now - 30000,
+        text: 'Execute plan version 2',
+        mode: 'agent',
+        attachments: [],
+      },
+      {
+        role: 'assistant',
+        id: 'm6',
+        turnId: 't3',
+        createdAt: now - 25000,
+        parts: [
+          tool(
+            'toolu_e1',
+            'Edit',
+            {
+              file_path: 'src/server/rate-limit.ts',
+              old_string: 'const LIMIT = 60;',
+              new_string: 'const LIMIT = 600;',
+            },
+            { approval: 'policy' },
+          ),
           tool(
             'toolu_4',
             'Read',
@@ -315,15 +387,16 @@ const state = {
         conversationId: conv,
         turnId: 't2',
         toolCallId: 'toolu_3',
-        createdAt: now,
-        state: 'pending',
+        createdAt: now - 56000,
+        state: 'answered',
+        answered: { 'Which clients need a higher limit?': 'Internal services' },
         displayHash: 'h1',
         kind: 'question',
         questions: [
           {
             question: 'Which clients need a higher limit?',
             header: 'Clients',
-            multiSelect: true,
+            multiSelect: false,
             options: [
               { label: 'Internal services', description: 'Calls from our own backends' },
               { label: 'Partners', description: 'Keys issued to partners' },
@@ -334,7 +407,7 @@ const state = {
       {
         id: 'pr2',
         conversationId: conv,
-        turnId: 't2',
+        turnId: 't3',
         toolCallId: 'toolu_4',
         createdAt: now,
         state: 'pending',
@@ -350,6 +423,8 @@ const state = {
     ],
     plan,
     activity: 'Working…',
+    queued: null,
+    asides: [],
   },
   checkpoints: [
     {
@@ -365,6 +440,7 @@ const state = {
     { operationId: 'op-1', kind: 'reject', at: now - 7200000, filesChanged: 1, interrupted: false },
   ],
   draftAttachments: [{ kind: 'folder', path: 'src/server' }],
+  draftAgentAuto: false,
   review: {
     entries: [
       {
@@ -452,30 +528,10 @@ const state = {
         operationIds: [],
       },
     ],
-    hunks: {
-      'src/cache.ts': [
-        {
-          id: 'h0',
-          index: 0,
-          baselineStart: 4,
-          baselineLines: ['const cache = new Map();\r\n', 'export function get(key) {\r\n'],
-          currentStart: 4,
-          currentLines: [
-            'const cache = new Map<string, Value>();\r\n',
-            'const MAX = 500;\r\n',
-            'export function get(key: string) {\r\n',
-          ],
-        },
-        {
-          id: 'h1',
-          index: 1,
-          baselineStart: 40,
-          baselineLines: ['module.exports = { get };\n'],
-          currentStart: 41,
-          currentLines: ['export { get };'],
-        },
-      ],
-    },
+    // The sample's turn t3 is a running Agent turn, so the host reports the folder busy: the changes
+    // card shows the configuration changes but hides its Files section. Variants without a running Agent
+    // turn set this to false.
+    busy: true,
     configChanges: [
       {
         id: 'cfg-1',
@@ -500,10 +556,110 @@ const state = {
     note: '3 files are tracked without their content, so changes a command makes to them can be detected but not undone.',
   },
 
+  // The folder's permissions: one switch on and one saved entry of each kind. The boot script empties
+  // them unless ?tab=permissions or ?permissions=1, so the other screens do not grow a tab.
+  permissions: {
+    folder: 'f1',
+    switches: ['read-outside'],
+    saved: [
+      { id: 'sp-dir', kind: 'read-directory', text: '/opt/shared/docs' },
+      { id: 'sp-site', kind: 'web-site', text: 'docs.example.com' },
+      { id: 'sp-bash', kind: 'command', text: 'npm test', shell: 'bash', runsProjectCode: true },
+      {
+        id: 'sp-ps',
+        kind: 'command',
+        text: 'Get-ChildItem src',
+        shell: 'powershell',
+        runsProjectCode: false,
+      },
+      { id: 'sp-mcp', kind: 'mcp-tool', text: 'mcp__docs__search' },
+    ],
+  },
+  policySettings: {
+    editApproval: 'auto',
+    alwaysAskCommands: false,
+    askWebTools: false,
+    autoOffered: true,
+    autoWebTools: false,
+    sandbox: true,
+  },
   banners: [
     { id: 'b1', level: 'info', text: 'This is a preview with sample data.', dismissible: true },
   ],
 };
+
+// Side questions of the running Agent turn: asked while it was writing its last message (m6), after
+// its first part. `streaming` is mid-answer; `done` has finished. Used by ?aside=running|done.
+const asideAnchor = { messageId: 'm6', afterParts: 1 };
+const asideSamples = {
+  streaming: shared.AsideSchema.parse({
+    conversationId: 'c-aside-1',
+    anchor: asideAnchor,
+    question: 'Which header does the limiter key on today?',
+    parts: [
+      tool(
+        'toolu_a1',
+        'Grep',
+        { pattern: 'x-api-key', path: 'src' },
+        { resultPreview: 'src/server/rate-limit.ts:31' },
+      ),
+      {
+        kind: 'text',
+        text: 'It keys on the `x-api-key` header, falling back to the client IP when that is missing. The lookup is in `src/server/rate-limit.ts:31`, and the',
+      },
+    ],
+    prompts: [],
+    status: 'running',
+  }),
+  done: shared.AsideSchema.parse({
+    conversationId: 'c-aside-1',
+    anchor: asideAnchor,
+    question: 'Which header does the limiter key on today?',
+    parts: [
+      tool(
+        'toolu_a1',
+        'Grep',
+        { pattern: 'x-api-key', path: 'src' },
+        { resultPreview: 'src/server/rate-limit.ts:31' },
+      ),
+      {
+        kind: 'text',
+        text: 'It keys on the `x-api-key` header, falling back to the client IP when that is missing. The lookup is in `src/server/rate-limit.ts:31`.\n\n- Keys are hashed before they are stored.\n- Anonymous clients share one bucket per IP.',
+      },
+    ],
+    prompts: [],
+    status: 'completed',
+  }),
+};
+// Side questions in History: one under its parent, one whose parent is gone.
+const asideSummaries = [
+  shared.ConversationSummarySchema.parse({
+    ...meta,
+    id: 'c-aside-1',
+    title: 'Which header does the limiter key on today?',
+    mode: 'ask',
+    updatedAt: now - 20000,
+    preview: 'It keys on the x-api-key header…',
+    running: false,
+    pendingPrompts: 0,
+    planId: undefined,
+    fork: { parentId: conv, atMessageId: 'm5', exactness: 'reconstructed', lost: [] },
+    aside: { parentId: conv, anchor: asideAnchor },
+  }),
+  shared.ConversationSummarySchema.parse({
+    ...meta,
+    id: 'c-aside-2',
+    title: 'Is the build cache shared between branches?',
+    mode: 'ask',
+    updatedAt: now - 95000000,
+    preview: 'No, each branch has its own cache.',
+    running: false,
+    pendingPrompts: 0,
+    planId: undefined,
+    fork: { parentId: 'c-deleted', atMessageId: 'm1', exactness: 'reconstructed', lost: [] },
+    aside: { parentId: 'c-deleted', anchor: { messageId: 'm1', afterParts: 0 } },
+  }),
+];
 
 const restorePreview = shared.RestorePreviewSchema.parse({
   token: 'preview-token-1',
@@ -669,6 +825,10 @@ function page(origin, query) {
   const theme = query.get('theme') === 'light' ? 'light' : 'dark';
   const kind = query.get('kind') === 'panel' ? 'panel' : 'sidebar';
   const tab = query.get('tab') ?? 'chat';
+  // ?width=260: lay the page out in a column of that width (headless Chrome will not open a window narrower than about 500px).
+  const width = Number.parseInt(query.get('width') ?? '', 10);
+  const widthCss =
+    width >= 200 && width <= 2000 ? `html,body{width:${width}px;overflow-x:hidden}` : '';
   // Same policy as src/vscode/host/html.ts, with this server's origin in place of the webview source.
   const csp = `default-src 'none'; script-src 'nonce-${nonce}' ${origin}; style-src ${origin} 'unsafe-inline'; font-src ${origin}; img-src ${origin} data:`;
   const boot = `
@@ -679,9 +839,234 @@ function page(origin, query) {
     window.addEventListener('unhandledrejection', (e) => diag.push('REJECTION ' + String(e.reason)));
     const state = ${JSON.stringify(parsed.data).replace(/</g, '\\u003c')};
     if (new URLSearchParams(location.search).get('restore') === '1') state.restorePreview = ${JSON.stringify(restorePreview)};
+    const params = new URLSearchParams(location.search);
+    // ?empty=1: no conversation is open, one configuration change is pending, and the composer is in Agent mode.
+    if (params.get('empty') === '1') {
+      state.active = null;
+      state.review = { entries: [], configChanges: state.review.configChanges.slice(0, 1), busy: false };
+      state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
+      state.defaults = { ...state.defaults, mode: 'agent' };
+    }
+    // ?plan=pending: the plan was just submitted, its questions are open and no turn runs, while the
+    // configuration changes are still pending, so Approve and Execute is disabled for that reason.
+    // ?plan=ready: the same, and the configuration changes are settled too, so Approve and Execute is enabled.
+    const planVariant = params.get('plan');
+    if ((planVariant === 'pending' || planVariant === 'ready') && state.active) {
+      const a = state.active;
+      a.messages = a.messages.filter((m) => m.turnId !== 't3');
+      a.turns = a.turns
+        .filter((t) => t.id !== 't3')
+        .map((t) => ({ ...t, status: 'completed', endedAt: t.endedAt ?? Date.now() }));
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      a.activity = null;
+      a.plan = {
+        ...a.plan,
+        approvals: [],
+        decisions: a.plan.decisions.filter((d) => d.kind === 'interactive-question'),
+      };
+      // No turn runs, so the folder is free.
+      state.review = {
+        ...state.review,
+        configChanges: planVariant === 'ready' ? [] : state.review.configChanges,
+        busy: false,
+      };
+    }
+    // ?queued=running: an Agent message waits behind the running turn (Stop and Send both show; the chip offers Send now).
+    // ?queued=stopped: the turn was stopped, so the message is held and the chip offers Send.
+    const queuedVariant = params.get('queued');
+    if ((queuedVariant === 'running' || queuedVariant === 'stopped') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'agent' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      // Running: the turn is an Agent turn, so the folder is busy. Stopped: nothing runs.
+      state.review = { ...state.review, configChanges: [], busy: queuedVariant === 'running' };
+      if (queuedVariant === 'stopped') {
+        a.turns = a.turns.map((t) => (t.id === 't3' ? { ...t, status: 'interrupted', endedAt: Date.now() } : t));
+        a.activity = null;
+      }
+      a.queued = {
+        text: 'Also add a test for the burst limit, and update the README section on rate limiting. Keep the existing public API as it is.',
+        mode: 'agent',
+        model: 'sonnet',
+        attachments: [{ kind: 'file', path: 'src/server/rate-limit.ts' }],
+        queuedAt: Date.now(),
+      };
+    }
+    // ?aside=running: a side question streams in the middle of the running turn's message, and the
+    // composer is in Ask mode: it shows the hint "A side question is already running" and Send is disabled.
+    // ?aside=done: the same, with the side question finished: the composer shows the note that a message
+    // in Ask mode is asked as a side question, and Send is enabled.
+    // ?aside=history: the conversations list has two side questions (use with ?tab=history).
+    const asideVariant = params.get('aside');
+    if ((asideVariant === 'running' || asideVariant === 'done') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'ask' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      // The parent's Agent turn still runs, so the folder is busy.
+      state.review = { ...state.review, configChanges: [], busy: true };
+      a.messages = a.messages.map((m) =>
+        m.id === 'm6'
+          ? {
+              ...m,
+              parts: [
+                m.parts[0],
+                { kind: 'text', text: 'The limit is raised. Now I am updating the tests that pinned the old value.' },
+                m.parts[1] && { ...m.parts[1], call: { ...m.parts[1].call, status: 'done', approval: 'policy', endedAt: Date.now() } },
+              ].filter(Boolean),
+            }
+          : m,
+      );
+      a.asides = [${JSON.stringify(asideSamples)}[asideVariant === 'running' ? 'streaming' : 'done']];
+    }
+    // ?auto=1: Auto is offered and on in the open conversation (Agent mode): an Agent message and the
+    // plan execution message were sent with it, its tool cards show "Auto-approved" next to the ones
+    // approved by the user and by the policy, the composer shows the switch on and its hint, and the
+    // plan card says it runs with Auto. A read outside the folder still waits for the user. Use
+    // ?tab=history to see the flag in History.
+    // ?auto=draft: no conversation is open, the composer is in Agent mode and the draft flag is on.
+    const autoVariant = params.get('auto');
+    if (autoVariant === '1' && state.active) {
+      const a = state.active;
+      state.agentAuto = { offered: true, commands: true };
+      a.meta = { ...a.meta, mode: 'agent', agentAuto: true };
+      state.conversations = state.conversations.map((c) => (c.id === a.meta.id ? { ...c, mode: 'agent', agentAuto: true } : c));
+      const at = (id, name, input, extra) => ({
+        kind: 'tool',
+        call: { id, name, input, inputTruncated: false, status: 'done', approval: 'auto', parentId: null, startedAt: Date.now(), endedAt: Date.now(), ...extra },
+      });
+      const before = a.messages.findIndex((m) => m.id === 'm5');
+      a.messages = [
+        ...a.messages.slice(0, before),
+        {
+          role: 'user',
+          id: 'm4a',
+          turnId: 't2b',
+          createdAt: Date.now() - 40000,
+          text: 'Run the existing tests first.',
+          mode: 'agent',
+          attachments: [],
+          auto: true,
+        },
+        {
+          role: 'assistant',
+          id: 'm4b',
+          turnId: 't2b',
+          createdAt: Date.now() - 38000,
+          parts: [
+            at('toolu_a1', 'Bash', { command: 'npm test', description: 'Run the unit tests' }, { resultPreview: 'Tests 120 passed' }),
+            at('toolu_a2', 'Bash', { command: 'git status --short', description: 'Show changed files' }),
+            at('toolu_a3', 'Edit', { file_path: 'src/server/router.ts', old_string: 'app.use(v1Router)', new_string: 'app.use(limit, v1Router)' }),
+            at('toolu_a4', 'Bash', { command: 'rm -rf build' }, { approval: 'user' }),
+            at('toolu_a5', 'Edit', { file_path: 'src/server/rate-limit.ts', old_string: 'a', new_string: 'b' }, { approval: 'policy' }),
+            { kind: 'text', text: 'The tests pass.' },
+          ],
+        },
+        ...a.messages.slice(before).map((m) => (m.id === 'm5' ? { ...m, auto: true } : m)),
+      ];
+      a.turns = [
+        ...a.turns.filter((t) => t.id !== 't3'),
+        { id: 't2b', mode: 'agent', model: 'sonnet', startedAt: Date.now() - 40000, endedAt: Date.now() - 35000, status: 'completed' },
+        ...a.turns.filter((t) => t.id === 't3'),
+      ];
+    }
+    if (autoVariant === 'draft') {
+      state.active = null;
+      state.review = { entries: [], configChanges: [], busy: false };
+      state.baseline = { state: 'idle', filesDone: 0, filesTotal: 0 };
+      state.defaults = { ...state.defaults, mode: 'agent' };
+      state.agentAuto = { offered: true, commands: true };
+      state.draftAgentAuto = true;
+    }
+    // ?changes=both: no turn runs and the folder is free, so the changes card shows one configuration
+    // change and the file changes together (the card's body scrolls past 320px, hence a single one).
+    if (params.get('changes') === 'both' && state.active) {
+      const a = state.active;
+      a.turns = a.turns.map((t) => ({ ...t, status: 'completed', endedAt: t.endedAt ?? Date.now() }));
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      a.activity = null;
+      state.review = { ...state.review, configChanges: state.review.configChanges.slice(0, 1), busy: false };
+    }
+    // ?sendMode=ask: the parent's turn runs in Agent mode and the user has switched the composer to Ask
+    // while it runs. No side question runs, so the composer shows the note "Asked as a side question: the
+    // agent keeps working and does not see it." The choice is view-local (in memory, not part of the
+    // state), so the boot script clicks the radio once the composer is on the page.
+    const sendMode = params.get('sendMode');
+    if ((sendMode === 'ask' || sendMode === 'plan') && state.active) {
+      const a = state.active;
+      a.meta = { ...a.meta, mode: 'agent' };
+      a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
+      state.review = { ...state.review, configChanges: [], busy: true };
+      const pick = setInterval(() => {
+        const radio = document.querySelector('input[type="radio"][value="' + sendMode + '"]');
+        if (!radio) return;
+        clearInterval(pick);
+        radio.click();
+      }, 50);
+    }
+    if (asideVariant === 'history') {
+      state.conversations = [...state.conversations, ...${JSON.stringify(asideSummaries)}];
+    }
+    // The Permissions tab and its sample entries show only with ?tab=permissions or ?permissions=1.
+    if (params.get('tab') !== 'permissions' && params.get('permissions') !== '1') {
+      state.permissions = { folder: 'f1', switches: [], saved: [] };
+    }
+    // ?permcards=1: two cards that offer "Always allow" with the new wording (a read outside the folder,
+    // a web fetch) replace the sample's read of /etc/hosts at the end of the running turn.
+    if (params.get('permcards') === '1' && state.active) {
+      const a = state.active;
+      a.prompts = a.prompts.filter((p) => p.id !== 'pr2');
+      const last = a.messages.length - 1;
+      const parts = a.messages[last].parts.filter((part) => !(part.kind === 'prompt' && part.promptId === 'pr2') && !(part.kind === 'tool' && part.call.id === 'toolu_4'));
+      const waiting = (id, name, input) => ({
+        kind: 'tool',
+        call: { id, name, input, inputTruncated: false, status: 'awaiting-approval', parentId: null, startedAt: Date.now() },
+      });
+      a.messages[last] = {
+        ...a.messages[last],
+        parts: [
+          ...parts,
+          waiting('toolu_r1', 'Read', { file_path: '/opt/shared/docs/guide.md' }),
+          { kind: 'prompt', promptId: 'pr3' },
+          waiting('toolu_w1', 'WebFetch', { url: 'https://docs.example.com/api/limits', prompt: 'Summarise' }),
+          { kind: 'prompt', promptId: 'pr4' },
+        ],
+      };
+      const card = (id, toolCallId, over) => ({
+        id,
+        conversationId: a.meta.id,
+        turnId: 't3',
+        toolCallId,
+        createdAt: Date.now(),
+        state: 'pending',
+        displayHash: 'h-' + id,
+        kind: 'permission',
+        choices: ['allow-once', 'allow-always', 'deny'],
+        ...over,
+      });
+      a.prompts = [
+        ...a.prompts,
+        card('pr3', 'toolu_r1', {
+          toolName: 'Read',
+          category: 'read-outside',
+          title: 'Read a file outside the workspace',
+          detail: '/opt/shared/docs/guide.md',
+          inputPreview: '{\\n  "file_path": "/opt/shared/docs/guide.md"\\n}',
+          alwaysRule: { kind: 'read-directory', rule: '/opt/shared/docs', runsProjectCode: false },
+        }),
+        card('pr4', 'toolu_w1', {
+          toolName: 'WebFetch',
+          category: 'network',
+          title: 'Fetch a web address',
+          detail: 'https://docs.example.com/api/limits',
+          inputPreview: '{\\n  "url": "https://docs.example.com/api/limits"\\n}',
+          alwaysRule: { kind: 'web-site', rule: 'docs.example.com', runsProjectCode: false },
+        }),
+      ];
+    }
     const sent = [];
     window.__sent = sent;
-    let saved;
+    // ?collapsed=1: the user has collapsed the changes card.
+    let saved = params.get('collapsed') === '1' ? { expanded: { 'changes-dock-collapsed': true } } : undefined;
     const deliver = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
@@ -707,7 +1092,7 @@ function page(origin, query) {
 <meta charset="UTF-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>${themeCss(THEMES[theme])}</style>
+<style>${themeCss(THEMES[theme])}${widthCss}</style>
 <link rel="stylesheet" href="/main.css">
 <title>AgentCanopy preview</title>
 </head>
@@ -740,7 +1125,9 @@ await new Promise((done) => server.listen(0, '127.0.0.1', done));
 const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
-  console.log(`Preview: ${base}/   (add ?tab=plan, ?theme=light, ?kind=panel)`);
+  console.log(
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft, ?tab=permissions, ?permissions=1, ?permcards=1, ?width=260)`,
+  );
 } else {
   const chrome =
     process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
@@ -769,17 +1156,43 @@ if (!process.argv.includes('--check')) {
       child.on('close', () => done(stdout));
     });
   const views = [
-    { name: 'chat-dark', query: '?tab=chat', size: '520,1900' },
-    { name: 'plan-dark', query: '?tab=plan', size: '520,3600' },
-    { name: 'plan-panel-light', query: '?tab=plan&theme=light&kind=panel', size: '1100,2600' },
+    { name: 'chat-dark', query: '?tab=chat', size: '520,3200' },
+    { name: 'chat-plan-pending-dark', query: '?tab=chat&plan=pending', size: '520,2600' },
+    { name: 'chat-plan-ready-dark', query: '?tab=chat&plan=ready', size: '520,2600' },
+    {
+      name: 'chat-plan-pending-panel-light',
+      query: '?tab=chat&plan=pending&theme=light&kind=panel',
+      size: '1100,1400',
+    },
+    { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
+    { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
+    { name: 'chat-changes-both-dark', query: '?tab=chat&changes=both', size: '520,1100' },
+    { name: 'chat-queued-running-dark', query: '?tab=chat&queued=running', size: '520,900' },
+    { name: 'chat-queued-stopped-dark', query: '?tab=chat&queued=stopped', size: '520,900' },
+    { name: 'chat-empty-config-dark', query: '?tab=chat&empty=1', size: '520,700' },
+    {
+      name: 'chat-panel-changes-light',
+      query: '?tab=chat&theme=light&kind=panel',
+      size: '1100,900',
+    },
+    { name: 'chat-aside-streaming-dark', query: '?tab=chat&aside=running', size: '520,1500' },
+    { name: 'chat-aside-switch-dark', query: '?tab=chat&sendMode=ask', size: '520,1500' },
+    { name: 'chat-aside-done-light', query: '?tab=chat&aside=done&theme=light', size: '520,1500' },
+    { name: 'chat-auto-dark', query: '?tab=chat&auto=1', size: '520,1800' },
+    { name: 'chat-auto-draft-dark', query: '?tab=chat&auto=draft', size: '520,700' },
+    { name: 'history-auto-dark', query: '?tab=history&auto=1', size: '520,700' },
     { name: 'history-light', query: '?tab=history&theme=light', size: '520,700' },
-    { name: 'review-dark', query: '?tab=review', size: '520,1500' },
+    { name: 'history-aside-dark', query: '?tab=history&aside=history', size: '520,700' },
     { name: 'checkpoints-dark', query: '?tab=checkpoints', size: '520,700' },
     {
       name: 'restore-preview-light',
       query: '?tab=checkpoints&restore=1&theme=light',
       size: '520,1100',
     },
+    { name: 'permissions-dark', query: '?tab=permissions', size: '520,1400' },
+    { name: 'permissions-light', query: '?tab=permissions&theme=light', size: '520,1400' },
+    { name: 'permissions-narrow-dark', query: '?tab=permissions&width=260', size: '520,2600' },
+    { name: 'chat-permission-cards-dark', query: '?tab=chat&permcards=1', size: '520,1700' },
   ];
   const report = [];
   for (const view of views) {

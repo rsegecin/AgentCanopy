@@ -41,11 +41,20 @@ Close the folder in the other window (or that window), then try again. If the ot
 ## Other reasons an Agent turn does not start
 
 - "Another agent turn is running in this folder. Stop it or wait for it to finish."
-- "The last turn changed tool or editor configuration. Review those changes before starting another turn." Open the Review tab and **Keep** or **Revert** each file. See [Reviewing changes](reviewing-changes.md#configuration-changes).
+- "The last turn changed tool or editor configuration. Keep or revert those changes in the changes card below the chat before starting another Agent turn." A turn in Agent mode changed Claude Code or editor configuration, such as a file under `.claude/agents`, and the changes await your decision. In Agent mode the message box already disables Send and says where to decide, and **Approve and Execute** on a plan is disabled with the same hint. Look under the chat for the **Changes** card, whose **Configuration changes** section lists each file. Open its diff from its path, then **Keep** or **Revert** each one. See [Reviewing changes](reviewing-changes.md#configuration-changes). Ask and Plan are not blocked.
+
+## A message is queued, or a side question will not start
+
+- "A turn is already running in this conversation." Only Agent and Plan messages can be sent while a turn runs; an Ask message becomes a side question. A side question opened as a conversation cannot start another one while it runs: wait for the answer or stop it.
+- "A message is already waiting for this turn. Edit or remove it first." One message can be queued per conversation. Use **Edit** or **Remove** on the chip above the message box, or **Send now**.
+- A queued message that is not sent when the turn ends. A message of any mode stays queued after a stop or an error, and the chip offers **Send**. A queued Agent message is also held back while configuration changes are undecided or an Agent turn runs in the same folder in another conversation: its **Send** is disabled and the chip says "Decide on the configuration changes, then press Send." or "Another agent turn is running in this folder. Press Send when it has ended." It is not sent by itself when the blocker clears: press **Send**. A queued Plan message is not held back by those two. A queued message is kept in memory only, so closing or reloading the window loses it.
+- "The side question could not be started." A warning in the chat view. The side question did not get going and leaves nothing behind. Send it again.
+- "A side question is already running. Wait for it or stop it." One side question runs at a time per conversation. Stop it with **Stop** on its card, or wait. See [Ask mode](ask-mode.md#ask-while-the-agent-works).
+- A side question that did not see something you did in the running turn. It knows the conversation up to the last finished turn only.
 
 ## An interrupted turn and "Recover now"
 
-If VS Code closes or crashes during an Agent turn, AgentCanopy notices at the next start. The turn is marked interrupted, and the files that changed are listed in the Review tab as "Changed around an interrupted turn", because AgentCanopy cannot tell which of them the agent made. A note says: "AgentCanopy was closed while this turn was running, so it cannot tell which of these changes the agent made."
+If VS Code closes or crashes during an Agent turn, AgentCanopy notices at the next start. The turn is marked interrupted, and the files that changed are listed in the Changes card as "Changed around an interrupted turn", because AgentCanopy cannot tell which of them the agent made. A note says: "AgentCanopy was closed while this turn was running, so it cannot tell which of these changes the agent made."
 
 Claude Code may still be running. AgentCanopy tries to stop the old process. When it cannot be sure the process has ended, a banner says "Claude Code from an interrupted turn may still be running (process N). Stop it, then choose Recover now." (or "is still running ... Stop it, then reload the window."). Stop the process yourself, then click **Recover now** on the banner and confirm "Recover the interrupted turn now?" Do this only after Claude Code has stopped; otherwise its later changes are not tracked. On Windows a process cannot be matched by its start time, so AgentCanopy cannot be sure it is the old one and shows this banner whenever a process with the recorded id is still alive.
 
@@ -74,17 +83,76 @@ Messages that start "Claude Code offered tools that are not allowed in a read-on
 
 ## A command asks even though it is harmless
 
-In Agent mode every terminal command asks, including `ls`, unless you chose **Always allow** for that exact command. This is deliberate. Reads inside the workspace do not ask, and reads outside it do. Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable.
+In Agent mode a terminal command asks, including `ls`, unless you chose **Always allow** for that exact command or [Auto](agent-mode.md#auto) is on for the conversation. This is deliberate. Reads inside the workspace do not ask, and reads outside it do, unless you allowed them for the folder (see [Permissions](agent-mode.md#permissions)). Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable, and for PowerShell for plain commands made of letters, digits, spaces and `_ . / \ : -`. For everything at once, see Auto.
+
+## Why did a command still ask with Auto on?
+
+Auto is on when the Auto switch is pressed and the setting `agentCanopy.agent.auto.enabled` is on. A command can still ask for these reasons:
+
+- `agentCanopy.agent.alwaysAskCommands` is on. It wins over Auto, and the composer hint says "Auto is on: edits in this folder run without asking. Commands still ask."
+- The command asks to run outside the sandbox (`dangerouslyDisableSandbox`). Auto never approves that. With Auto and `agentCanopy.agent.sandbox` on, a turn cannot leave the sandbox at all.
+- Auto was turned off, by you or because the setting `agentCanopy.agent.auto.enabled` was turned off. Turning it off takes effect at once, also in a running turn: the next request asks. Turning the setting off also clears Auto in every conversation on this machine, also in workspaces that are closed at the time, so turning the setting on again does not turn Auto back on. This is only noticed while AgentCanopy is running in some window; see [Limitations](../limitations.md).
+- A setting that narrows Auto was changed during the turn. Turning `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off takes effect at once, also in a running turn, and stays in effect for the rest of that turn even if you change it back: the next call asks. A setting that widens what runs, such as turning `alwaysAskCommands` off or `webTools` on, applies from the next turn.
+- The turn started before Auto was on. Whether a turn runs with Auto is decided when it is sent, and turning Auto on cannot change a turn that is already running.
+- The call is a side question. A side question is a branch and starts without Auto, and it is read-only anyway.
+- It is not a command. Protected files, edits outside the folder, other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search, unless `agentCanopy.agent.auto.webTools` is on or a switch or saved site of the folder covers them.
+
+## Auto messages
+
+These appear as warnings in the chat view.
+
+| Message | What to do |
+| :- | :- |
+| Auto is turned off in the settings (agentCanopy.agent.auto.enabled). | Turn the setting on, then use the Auto switch |
+| Wait for the current turn to finish before turning on Auto. | Auto can only be turned on between turns. Wait for the turn to end or stop it |
+| The dialog to turn on Auto is already open. | Answer the dialog that is open first |
+| Open the conversation to turn Auto on. | Auto can only be turned on for the conversation the view shows. Open the conversation, then use the Auto switch |
+| Auto can be turned on for a new conversation only before its first message. | The conversation was created or is being created, so the switch no longer belongs to a draft. Turn Auto on in the conversation that is open |
+| Auto was not turned on: the conversation changed while the dialog was open. | A turn started, the conversation or its folder changed, or one of the settings the dialog names (`alwaysAskCommands`, `agentCanopy.agent.auto.webTools`, `agentCanopy.agent.sandbox`) changed while you read it. Nothing was turned on. Turn Auto on again and read the new dialog |
+| Auto could not be turned on. The AgentCanopy log has the details. | The conversation could not be written to storage. Auto is off. Check the log and try again |
+| Auto is off for now, but that could not be saved: after a reload it may be on again. Turn it off again later. | You turned Auto off and storage failed. It is off in this window until it reloads, and the next save of the conversation retries it. Check the Auto switch after a reload and the log for the reason |
+| Auto is off in this window, but that could not be saved for other workspaces on this machine. AgentCanopy will try again. | You turned `agentCanopy.agent.auto.enabled` off and the machine-wide reset could not be written. Do nothing in this window. If the warning persists, check that VS Code's global storage folder is writable, and turn Auto off by hand in the conversations of other workspaces |
+
+The workspace and folder warnings of any other action also apply to Auto: an untrusted workspace, a closed folder or a conversation that is gone refuses it with the usual message.
 
 ## An always-allow rule was not saved
 
 If you chose **Always allow** for a command and the rule could not be written, you see: "The command was allowed this once, but the rule to always allow it could not be saved." The command ran, and the next one asks again. Check the log for the reason. A folder can hold at most 200 saved rules.
 
+For a folder or a web site the message is "It was allowed this once, but the permission to always allow it could not be saved."; a PowerShell command gets the message above, like a Bash command. The call ran and the next one asks again. Check the log for the reason. A workspace folder can hold at most 200 saved folders, sites and PowerShell commands together; remove some in the Permissions tab.
+
+## Permissions messages
+
+These appear as warnings in the chat view. They come from the Permissions tab and from **Always allow** on a card. See [Agent mode](agent-mode.md#permissions) for how the tab works.
+
+| Message | What to do |
+| :- | :- |
+| A permissions dialog is already open. | Answer the dialog that is open first. Turning a switch on and **Allow a folder...** each open one, and only one can be open at a time |
+| The folder or the trust of the workspace changed while the dialog was open, so nothing was changed. | The view moved to a conversation of another folder, or the workspace stopped being trusted, while you read the dialog. Nothing was turned on or saved. Do it again from the folder you mean |
+| The permission could not be removed. | The entry is still saved and still allows its calls. Try **Remove** again, and check the log for the reason |
+| The switch could not be changed. | The switch kept its old state, also when you meant to turn it off. Check what it shows, try again, and check the log for the reason |
+| That folder could not be read. | The folder you picked does not exist, is not a folder or could not be opened. Pick another |
+| That folder is inside the workspace folder, where reads never ask. | There is nothing to allow: reads inside the workspace folder never ask |
+| That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask. | These are never saved. Read the file once with **Allow once** when the agent asks |
+| That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location. | Pick the folder that holds the files you mean, not one above it |
+| That folder is already inside a saved folder. | It already counts. The saved folder is listed under Saved permissions |
+
+Turning a switch on or choosing **Allow a folder...** also does nothing in an untrusted workspace or in a window with no folder: the tab disables its controls and says why.
+
+## A read or a web call asks although I allowed it
+
+- The target is a credential location, AgentCanopy's own storage, on Windows a network path, a search that starts at your home folder or above it, or on Windows the temp folder. These always ask, whatever is on or saved. See [limitations](../limitations.md#saved-permissions-and-switches).
+- The path is written in a form AgentCanopy cannot judge (whitespace at either end, or on Windows a path rooted without a drive, a drive letter without a separator, or a segment that ends in a dot or a space), or a pattern has `..` after a wildcard or an alternative in braces that starts at a root.
+- The permission belongs to another workspace folder. Another project, or another folder of the same window, has its own.
+- A saved site matches the exact host: `a.docs.example.com`, `example.com` and `docs.example.com:8443` are not `docs.example.com`. An address with a user name or password is never matched by a saved site.
+- In Ask and Plan, web tools stay off while `agentCanopy.ask.webTools` is off, whatever is saved. The call is refused and does not ask.
+- You removed the permission or turned the switch off. That applies to the next request, also in a running turn.
+
 ## Delete stored file contents and change history
 
 AgentCanopy keeps captured file contents, the list of agent changes and the checkpoint history for each folder. To remove them for one folder, run **AgentCanopy: Delete Stored File Contents and Change History for This Folder**. In a window with several folders it asks which one unless the active file settles it.
 
-A native dialog asks you to confirm. It deletes the captured file contents, the list of pending agent changes (and accepted ones) and the checkpoint history, and the journal of an interrupted turn. It leaves your files, your conversations and plans and your always-allow rules alone. It cannot be undone. Afterwards AgentCanopy starts capturing the folder again.
+A native dialog asks you to confirm. It deletes the captured file contents, the list of pending agent changes (and accepted ones) and the checkpoint history, and the journal of an interrupted turn. It leaves your files, your conversations and plans, your always-allow rules and your saved permissions alone. It cannot be undone. Afterwards AgentCanopy starts capturing the folder again.
 
 The command refuses while an Agent turn is running in the folder ("An agent turn is running in this folder. Wait for it to finish.") and while a configuration change waits for your decision ("A configuration change is waiting for your decision. Keep or revert it first."). Do what the message says and run it again.
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { Message } from '../../shared';
+import type { Attachment, Message } from '../../shared';
 import { reconstructContext } from './reconstruct';
 import { assistantMessage, text, toolPart, userMessage } from './test-support';
 
@@ -203,6 +203,36 @@ describe('reconstructContext', () => {
     expect(small.text.length).toBeLessThanOrEqual(200);
     expect(small.text).not.toContain('Attached:');
     expect(small.lost).toEqual(['Files and selections attached to messages', '1 earlier message']);
+  });
+
+  it('names an image by its type, without bytes, and lists the images as lost last', () => {
+    const image = (id: string, mediaType: 'image/png' | 'image/webp'): Attachment => ({
+      kind: 'image',
+      id: id.repeat(64),
+      mediaType,
+      bytes: 9,
+    });
+    const messages: Message[] = [
+      userMessage('u1', 't1', 'see', {
+        attachments: [image('a', 'image/png'), { kind: 'file', path: 'a.ts' }],
+      }),
+      assistantMessage('a1', 't1', [text('ok')]),
+      userMessage('u2', 't2', '', { attachments: [image('b', 'image/webp')] }),
+    ];
+    const { text: out, lost } = reconstructContext(messages);
+    expect(out).toContain('User:\nsee\nAttached: image (png), a.ts\n\nAssistant:');
+    expect(out).toContain('User:\nAttached: image (webp)\n</prior-conversation>');
+    expect(out).not.toContain('a'.repeat(64));
+    expect(lost).toEqual([
+      'Files and selections attached to messages',
+      'Images attached to messages',
+    ]);
+
+    const only = reconstructContext([messages[2]!]).lost;
+    expect(only).toEqual(['Images attached to messages']);
+
+    const small = reconstructContext(messages, { maxChars: 120 }).lost;
+    expect(small.at(-1)).toBe('Images attached to messages');
   });
 
   it('does not report attachments when no message has any', () => {

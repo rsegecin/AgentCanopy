@@ -4,17 +4,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PlanDoc, Prompt, ReviewEntry, ViewState } from '../../shared';
 import { CheckpointsView } from '../features/checkpoints/CheckpointsView';
 import { Composer } from '../features/chat/Composer';
+import { QueuedMessage } from '../features/chat/QueuedMessage';
 import { MessageList } from '../features/chat/MessageList';
 import { PromptPart } from '../features/chat/PromptCards';
 import { registerPartRenderer } from '../features/chat/registry';
+import { PermissionsView } from '../features/permissions/PermissionsView';
+import { PlanUpdateCard } from '../features/plan/PlanUpdateCard';
 import { HistoryList } from '../features/history/HistoryList';
-import { PlanView } from '../features/plan/PlanView';
-import { ReviewView, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ReviewView';
+import { ChangesDock, SNAPSHOT_ANNOUNCE_MS } from '../features/review/ChangesDock';
 import {
   assistantMessage,
+  autoOffered,
   makeActive,
+  makeAside,
   makeCheckpoint,
+  makeConfigChange,
+  makeFolderPermissions,
   makePermissionPrompt,
+  makePlanContent,
   makePlanDoc,
   makePlanVersion,
   makeProvider,
@@ -22,10 +29,12 @@ import {
   makeRestoreItem,
   makeRestorePreview,
   makeReviewEntry,
+  makeSavedPermission,
   makeState,
   makeSummary,
   makeToolCall,
   makeTurn,
+  msgId,
   promptId,
   userMessage,
 } from '../test-support/fixtures';
@@ -95,6 +104,120 @@ describe('live regions', () => {
     expect(quiet(container).textContent).toBe('The agent is waiting for 2 answers.');
   });
 
+  it('does not announce the streaming answer of a side question, and puts no live region in its card', () => {
+    const withAside = (status: 'running' | 'completed', text: string) =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            parts: text === '' ? [] : [{ kind: 'text', text }],
+          }),
+        ],
+      });
+    const { container, init, host } = renderWithHost(<MessageList />, withAside('running', ''));
+    const before = quiet(container).textContent;
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    // The only live element is the status line, and it carries no answer text.
+    expect(card.querySelectorAll('[aria-live], [role="status"], [role="alert"]')).toHaveLength(1);
+    expect(card.querySelector('[role="status"]')?.textContent).toBe('Answering…');
+    init(withAside('running', 'first words'), 1);
+    host.emit({
+      type: 'patch',
+      seq: 2,
+      ops: [{ op: 'appendText', path: ['active', 'asides', 0, 'parts', 0, 'text'], text: ' more' }],
+    });
+    expect(quiet(container).textContent).toBe(before);
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    expect(screen.getByRole('log').closest('[aria-live="polite"]')).toBeNull();
+    expect(card.closest('[aria-live]')?.getAttribute('aria-live')).toBe('off');
+  });
+
+  it('announces a question that waits inside a side question, like any other', () => {
+    const withAside = (prompts: ReturnType<typeof makeQuestionPrompt>[]) =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', { question: 'Why?', parts: [{ kind: 'text', text: 'hm' }], prompts }),
+        ],
+      });
+    const { container, init } = renderWithHost(<MessageList />, withAside([]));
+    expect(quiet(container).textContent).toBe('');
+    init(withAside([makeQuestionPrompt('q1')]), 1);
+    expect(quiet(container).textContent).toBe('The agent is waiting for your answer.');
+    // One in the conversation and one in the side question: two answers are waited for.
+    init(
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        prompts: [makeQuestionPrompt('q0')],
+        asides: [makeAside('b1', { prompts: [makeQuestionPrompt('q1')] })],
+      }),
+      2,
+    );
+    expect(quiet(container).textContent).toBe('The agent is waiting for 2 answers.');
+  });
+
+  it('says "Answered." once when a side question completes, and again changes nothing', () => {
+    const withStatus = (status: 'running' | 'completed', extra = '') =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            parts: [{ kind: 'text', text: `because${extra}` }],
+          }),
+        ],
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    expect(card.querySelector('[role="status"]')).toBeNull();
+    init(withStatus('completed'), 1);
+    const line = card.querySelector('[role="status"]');
+    expect(line?.textContent).toBe('Answered.');
+    // Later renders leave the line as it is: it is not announced again.
+    init(withStatus('completed', ' and more'), 2);
+    expect(card.querySelector('[role="status"]')).toBe(line);
+    expect(line?.textContent).toBe('Answered.');
+    expect(card.querySelectorAll('[role="status"], [role="alert"]')).toHaveLength(1);
+  });
+
+  it('reports a side question that fails while shown as an alert, not a status', () => {
+    const withStatus = (status: 'running' | 'error') =>
+      chat({
+        turns: [makeTurn({ status: 'running' })],
+        asides: [
+          makeAside('b1', {
+            question: 'Why?',
+            status,
+            ...(status === 'error' ? { error: 'The model is overloaded.' } : {}),
+          }),
+        ],
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    init(withStatus('error'), 1);
+    const alert = within(card).getByRole('alert');
+    expect(alert.textContent).toBe('The model is overloaded.');
+    expect(card.querySelector('[role="status"]')).toBeNull();
+  });
+
+  it('does not announce a side question that had already failed when the conversation was opened', () => {
+    const { container } = renderWithHost(
+      <MessageList />,
+      chat({
+        asides: [
+          makeAside('b1', { question: 'Why?', status: 'error', error: 'The model is overloaded.' }),
+        ],
+      }),
+    );
+    const card = screen.getByRole('region', { name: 'Side question: Why?' });
+    expect(within(card).getByText('The model is overloaded.')).toBeTruthy();
+    expect(container.querySelectorAll('[role="alert"]')).toHaveLength(0);
+    expect(card.querySelector('[role="status"]')).toBeNull();
+  });
+
   it('does not announce streaming text', () => {
     const { container, host } = renderWithHost(
       <MessageList />,
@@ -118,9 +241,9 @@ describe('live regions', () => {
     vi.useFakeTimers();
     const state = (done: number) =>
       makeState({ baseline: { state: 'capturing', filesDone: done, filesTotal: 100 } });
-    const { init, container } = renderWithHost(<ReviewView />, {
+    const { init, container } = renderWithHost(<ChangesDock />, {
       ...state(1),
-      review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+      review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
     });
     const live = () => container.querySelector('.review-snapshot [role="status"]') as HTMLElement;
     expect(live().textContent).toBe('Preparing the workspace snapshot: 1 of 100 files');
@@ -128,7 +251,7 @@ describe('live regions', () => {
       init(
         {
           ...state(done),
-          review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+          review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         },
         done,
       );
@@ -164,15 +287,23 @@ describe('live regions', () => {
 
 function reviewState(entries: ReviewEntry[], running = false): ViewState {
   return makeState({
-    review: { entries, hunks: {}, configChanges: [] },
+    review: { entries, configChanges: [], busy: false },
     ...(running ? { active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }) } : {}),
   });
 }
 
 describe('focus after the focused control goes away', () => {
+  const withComposer = (state: ViewState) =>
+    renderWithHost(
+      <>
+        <ChangesDock />
+        <Composer />
+      </>,
+      state,
+    );
+
   it('moves to the next file when a review entry is accepted', () => {
-    const { init } = renderWithHost(
-      <ReviewView />,
+    const { init } = withComposer(
       reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts'), makeReviewEntry('c.ts')]),
     );
     screen.getByRole('button', { name: 'Accept b.ts' }).focus();
@@ -183,22 +314,26 @@ describe('focus after the focused control goes away', () => {
     );
   });
 
-  it('moves to the summary when the last pending entry is accepted', () => {
-    const { init } = renderWithHost(<ReviewView />, reviewState([makeReviewEntry('a.ts')]));
+  it('moves to the composer when the last pending entry is accepted', () => {
+    const { init } = withComposer(reviewState([makeReviewEntry('a.ts')]));
     screen.getByRole('button', { name: 'Accept a.ts' }).focus();
     init(reviewState([makeReviewEntry('a.ts', { status: 'accepted' })]), 1);
-    expect(document.activeElement?.textContent).toBe('No pending changes');
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
+  });
+
+  it('moves to the card itself when there is no composer to take focus', () => {
+    const { init } = renderWithHost(<ChangesDock />, reviewState([makeReviewEntry('a.ts')]));
+    screen.getByRole('button', { name: 'Accept a.ts' }).focus();
+    init(reviewState([makeReviewEntry('a.ts', { status: 'accepted' })]), 1);
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Changes' }));
   });
 
   it('leaves focus alone when it is somewhere that still exists', () => {
-    const { init } = renderWithHost(
-      <ReviewView />,
-      reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts')]),
-    );
-    const stay = screen.getByRole('button', { name: 'Diff b.ts' });
+    const { init } = withComposer(reviewState([makeReviewEntry('a.ts'), makeReviewEntry('b.ts')]));
+    const stay = screen.getByRole('button', { name: 'Reject b.ts' });
     stay.focus();
     init(reviewState([makeReviewEntry('b.ts')]), 1);
-    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Diff b.ts' }));
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Reject b.ts' }));
   });
 
   it('moves to the card when a question is answered', () => {
@@ -263,19 +398,84 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement?.textContent).toBe('Checkpoint history');
   });
 
-  it('keeps focus in the composer when Send is replaced by Stop', () => {
-    const idle = makeState({ active: makeActive('c1', { turns: [makeTurn()] }) });
+  it('keeps focus in the composer when Send is disabled by a turn starting, and Stop appears next to it', () => {
+    // A side question that is still running blocks the next Ask send, but only while a turn runs.
+    const idle = makeState({
+      active: makeActive('c1', { turns: [makeTurn()], asides: [makeAside('b1')] }),
+    });
     const busy = makeState({
-      active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }),
+      active: makeActive('c1', {
+        turns: [makeTurn({ status: 'running' })],
+        asides: [makeAside('b1')],
+      }),
     });
     const { init } = renderWithHost(<Composer />, idle);
     fireEvent.change(composer(), { target: { value: 'hello' } });
     screen.getByRole('button', { name: 'Send' }).focus();
     init(busy, 1);
-    expect(screen.queryByRole('button', { name: 'Send' })).toBeNull();
-    // Stop takes the place of Send; either way focus is still in the composer, not on the page.
+    // Both buttons are there; Send is disabled and focus moves to the textarea.
+    expect(screen.getByRole('button', { name: 'Stop' })).toBeTruthy();
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Send' }).disabled).toBe(true);
     expect(document.activeElement).not.toBe(document.body);
-    expect(document.activeElement?.closest('form')).toBe(composer().closest('form'));
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('keeps focus on the side question card when its Stop goes away at the end of its answer', () => {
+    const withStatus = (status: 'running' | 'completed') =>
+      makeState({
+        active: makeActive('c1', {
+          messages: [userMessage('u1', 'go')],
+          turns: [makeTurn({ status: 'running' })],
+          asides: [
+            makeAside('b1', {
+              question: 'Why?',
+              anchor: { messageId: msgId('u1'), afterParts: 0 },
+              status,
+              parts: [{ kind: 'text', text: 'because' }],
+            }),
+          ],
+        }),
+      });
+    const { init } = renderWithHost(<MessageList />, withStatus('running'));
+    screen.getByRole('button', { name: 'Stop side question: Why?' }).focus();
+    init(withStatus('completed'), 1);
+    expect(screen.queryByRole('button', { name: 'Stop side question: Why?' })).toBeNull();
+    expect(document.activeElement).toBe(
+      screen.getByRole('region', { name: 'Side question: Why?' }),
+    );
+  });
+
+  it('keeps focus in the composer when the focused Stop goes away at the end of the turn', () => {
+    const busy = makeState({
+      active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }),
+    });
+    const { init } = renderWithHost(<Composer />, busy);
+    screen.getByRole('button', { name: 'Stop' }).focus();
+    init(makeState({ active: makeActive('c1', { turns: [makeTurn()] }) }), 1);
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('moves focus from the queued message to the composer when it is sent or removed', () => {
+    const withQueued = (queued: boolean) =>
+      makeState({
+        active: makeActive('c1', {
+          meta: { mode: 'agent' },
+          turns: [makeTurn({ status: 'running' })],
+          queued: queued
+            ? { text: 'next', mode: 'agent', model: 'default', attachments: [], queuedAt: 1 }
+            : null,
+        }),
+      });
+    const { init } = renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      withQueued(true),
+    );
+    screen.getByRole('button', { name: 'Send now, queued message' }).focus();
+    init(withQueued(false), 1);
+    expect(document.activeElement).toBe(composer());
   });
 
   it('keeps focus on an answer control of the plan when the host records the answer', () => {
@@ -293,7 +493,7 @@ describe('focus after the focused control goes away', () => {
             : doc,
         }),
       });
-    const { init } = renderWithHost(<PlanView />, withAnswer(false));
+    const { init } = renderWithHost(<MessageList />, withAnswer(false));
     const radio = screen.getByRole('radio', { name: 'Large' });
     radio.focus();
     fireEvent.click(radio);
@@ -312,7 +512,7 @@ describe('focus after the focused control goes away', () => {
       ],
     };
     const { init } = renderWithHost(
-      <PlanView />,
+      <MessageList />,
       makeState({ active: makeActive('c1', { plan: doc }) }),
     );
     const field = screen.getByRole('textbox', { name: 'Your answer to: Anything else?' });
@@ -322,6 +522,85 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement).toBe(
       screen.getByRole('textbox', { name: 'Your answer to: Anything else?' }),
     );
+  });
+
+  describe('plan cards in the chat', () => {
+    let off: () => void;
+    beforeEach(() => {
+      off = registerPartRenderer('plan-update', PlanUpdateCard);
+    });
+    afterEach(() => {
+      off();
+    });
+
+    const part = (version: number) => ({
+      kind: 'plan-update' as const,
+      planId: 'plan1' as never,
+      version,
+    });
+    const version = (n: number, hash: string, extra: { restoredFrom?: number } = {}) =>
+      makePlanVersion(n, {
+        contentHash: hash,
+        content: makePlanContent({ title: `Title ${String(n)}` }),
+        ...extra,
+      });
+    const chat = (doc: PlanDoc, partVersions: number[]): ViewState =>
+      makeState({
+        active: makeActive('c1', {
+          plan: doc,
+          messages: partVersions.map((v) => assistantMessage(`a${String(v)}`, [part(v)])),
+        }),
+      });
+    const slots = () => Array.from(document.querySelectorAll<HTMLElement>('.plan-card-slot'));
+
+    it('keeps focus in the card slot when a newer part turns the current card into an older one', () => {
+      const { init } = renderWithHost(
+        <MessageList />,
+        chat(makePlanDoc({ versions: [version(1, 'a')] }), [1]),
+      );
+      screen.getByRole('button', { name: 'Title 1, open version 1' }).focus();
+      init(chat(makePlanDoc({ versions: [version(1, 'a'), version(2, 'b')] }), [1, 2]), 1);
+      expect(document.querySelectorAll('.plan-card--older')).toHaveLength(1);
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[0]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('keeps focus in an older card when Restore this version goes away', () => {
+      const before = makePlanDoc({ versions: [version(1, 'a'), version(2, 'b'), version(3, 'c')] });
+      const after = makePlanDoc({
+        versions: [...before.versions, version(4, 'b', { restoredFrom: 2 })],
+      });
+      const { init } = renderWithHost(<MessageList />, chat(before, [1, 2, 3]));
+      screen.getByRole('button', { name: 'Restore this version (version 2)' }).focus();
+      init(chat(after, [1, 2, 3]), 1);
+      expect(screen.queryByRole('button', { name: 'Restore this version (version 2)' })).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[1]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('keeps focus in the first older card when its whole actions row goes away', () => {
+      const before = makePlanDoc({ versions: [version(1, 'a'), version(2, 'b')] });
+      const after = makePlanDoc({
+        versions: [...before.versions, version(3, 'a', { restoredFrom: 1 })],
+      });
+      const { init } = renderWithHost(<MessageList />, chat(before, [1, 2]));
+      screen.getByRole('button', { name: 'Restore this version (version 1)' }).focus();
+      init(chat(after, [1, 2]), 1);
+      expect(document.querySelector('.plan-card--older .plan-card-actions')).toBeNull();
+      expect(document.activeElement).not.toBe(document.body);
+      expect(slots()[0]?.contains(document.activeElement)).toBe(true);
+    });
+
+    it('moves focus from the synthetic card to the current card when a part for the plan arrives', () => {
+      const doc = makePlanDoc({ versions: [version(1, 'a')] });
+      const { init } = renderWithHost(<MessageList />, chat(doc, []));
+      screen.getByRole('button', { name: 'Title 1, open version 1' }).focus();
+      expect(document.querySelectorAll('.plan-card-slot')).toHaveLength(0);
+      init(chat(doc, [1]), 1);
+      const title = document.querySelector('.plan-card--current .plan-card-open');
+      expect(title).not.toBeNull();
+      expect(document.activeElement).toBe(title);
+    });
   });
 
   it('returns focus to the composer when a toast is dismissed', () => {
@@ -375,19 +654,9 @@ describe('focus when the tab changes', () => {
       }),
     });
 
-  it('moves to the new panel when the button that opened it was removed with the old tab', () => {
-    renderWithHost(<App />, planState());
-    const open = screen.getByRole('button', { name: 'Open plan' });
-    open.focus();
-    fireEvent.click(open);
-    const panel = screen.getByRole('tabpanel', { name: 'Plan' });
-    expect(panel.hasAttribute('hidden')).toBe(false);
-    expect(document.activeElement).toBe(panel);
-  });
-
   it('does not move focus away from the tab the user pressed', () => {
     renderWithHost(<App />, planState());
-    const tab = screen.getByRole('tab', { name: 'Plan' });
+    const tab = screen.getByRole('tab', { name: 'History' });
     tab.focus();
     fireEvent.click(tab);
     expect(document.activeElement).toBe(tab);
@@ -451,11 +720,12 @@ describe('keyboard, names, roles and states', () => {
             ]),
           ],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
+        permissions: makeFolderPermissions({ saved: [makeSavedPermission('d1')] }),
       }),
     );
-    for (const tab of ['Plan', 'Review', 'Checkpoints', 'History', 'Chat']) {
+    for (const tab of ['Checkpoints', 'History', 'Permissions', 'Chat']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll('[tabindex]')) {
         expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(
@@ -468,17 +738,100 @@ describe('keyboard, names, roles and states', () => {
     }
   });
 
+  it('names each side question card and tells its buttons apart, and points the composer at its note', () => {
+    renderWithHost(
+      <>
+        <MessageList />
+        <Composer />
+      </>,
+      makeState({
+        active: makeActive('c1', {
+          messages: [
+            userMessage('u1', 'go'),
+            assistantMessage('a1', [{ kind: 'text', text: 'x' }]),
+          ],
+          turns: [makeTurn({ status: 'running' })],
+          asides: [
+            makeAside('b1', { question: 'First?', status: 'completed' }),
+            makeAside('b2', { question: 'Second?' }),
+          ],
+        }),
+      }),
+    );
+    const names = screen.getAllByRole('region').map((r) => r.getAttribute('aria-label'));
+    expect(names).toEqual(['Side question: First?', 'Side question: Second?']);
+    const second = within(screen.getByRole('region', { name: 'Side question: Second?' }));
+    expect(second.getByRole('button', { name: 'Stop side question: Second?' })).toBeTruthy();
+    expect(second.getByRole('button', { name: 'Open as conversation: Second?' })).toBeTruthy();
+    // A side question is running: the next Ask send is disabled, with its reason.
+    const send = screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
+    fireEvent.change(composer(), { target: { value: 'again' } });
+    expect(send.disabled).toBe(true);
+    expect(document.getElementById(send.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
+      'A side question is already running. Wait for it or stop it.',
+    );
+  });
+
+  it('points the composer at the side question note while an Ask send is allowed', () => {
+    renderWithHost(
+      <Composer />,
+      makeState({ active: makeActive('c1', { turns: [makeTurn({ status: 'running' })] }) }),
+    );
+    expect(
+      document.getElementById(composer().getAttribute('aria-describedby') ?? '')?.textContent,
+    ).toBe('Asked as a side question: the agent keeps working and does not see it.');
+  });
+
+  it('names the queued message region and its buttons, and points a disabled Send at its reason', () => {
+    renderWithHost(
+      <>
+        <QueuedMessage />
+        <Composer />
+      </>,
+      makeState({
+        active: makeActive('c1', {
+          meta: { mode: 'agent' },
+          turns: [makeTurn({ status: 'running' })],
+          queued: {
+            text: 'next',
+            mode: 'agent',
+            model: 'default',
+            attachments: [],
+            queuedAt: 1,
+          },
+        }),
+        review: { entries: [], configChanges: [makeConfigChange('k1')], busy: false },
+      }),
+    );
+    const chip = screen.getByRole('region', { name: 'Queued message' });
+    expect(within(chip).getByRole('button', { name: 'Edit queued message' })).toBeTruthy();
+    expect(within(chip).getByRole('button', { name: 'Remove queued message' })).toBeTruthy();
+    const now = within(chip).getByRole<HTMLButtonElement>('button', {
+      name: 'Send now, queued message',
+    });
+    expect(now.disabled).toBe(true);
+    expect(document.getElementById(now.getAttribute('aria-describedby') ?? '')?.textContent).toBe(
+      'Sent when the agent finishes if the configuration changes are decided by then. Otherwise press Send afterwards.',
+    );
+    // Stop and Send are both in the composer, and Send is disabled with its own reason.
+    const form = screen.getByRole('form', { name: 'Message composer' });
+    expect(within(form).getByRole('button', { name: 'Stop' })).toBeTruthy();
+    const send = within(form).getByRole<HTMLButtonElement>('button', { name: 'Send' });
+    expect(send.disabled).toBe(true);
+    expect(document.getElementById(send.getAttribute('aria-describedby') ?? '')).not.toBeNull();
+  });
+
   it('follows the tabs pattern: one tab in the tab order, each tab controls a panel', () => {
     renderWithHost(
       <App />,
       makeState({
         active: makeActive('c1', { plan: makePlanDoc() }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: { entries: [makeReviewEntry('a.ts')], configChanges: [], busy: false },
         checkpoints: [makeCheckpoint('op1')],
       }),
     );
     const tabs = screen.getAllByRole('tab');
-    expect(tabs).toHaveLength(5);
+    expect(tabs).toHaveLength(3);
     expect(tabs.filter((t) => t.getAttribute('tabindex') === '0')).toHaveLength(1);
     for (const tab of tabs) {
       const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
@@ -487,7 +840,7 @@ describe('keyboard, names, roles and states', () => {
     }
     // The arrow keys move through all of them.
     const chat = screen.getByRole('tab', { name: 'Chat' });
-    for (let i = 0; i < 5; i++) {
+    for (let i = 0; i < 3; i++) {
       fireEvent.keyDown(document.activeElement ?? chat, { key: 'ArrowRight' });
     }
     expect(screen.getByRole('tab', { name: 'Chat' }).getAttribute('aria-selected')).toBe('true');
@@ -582,14 +935,28 @@ describe('keyboard, names, roles and states', () => {
         active: makeActive('c1', {
           plan: makePlanDoc(),
           messages: [userMessage('u1', 'hi')],
+          asides: [
+            makeAside('b1', {
+              anchor: { messageId: msgId('u1'), afterParts: 0 },
+              question: 'Why?',
+            }),
+          ],
         }),
-        review: { entries: [makeReviewEntry('a.ts')], hunks: {}, configChanges: [] },
+        review: {
+          entries: [makeReviewEntry('a.ts')],
+          configChanges: [makeConfigChange('k1')],
+          busy: false,
+        },
         checkpoints: [makeCheckpoint('op1')],
         conversations: [makeSummary('c1')],
+        permissions: makeFolderPermissions({
+          switches: ['read-outside'],
+          saved: [makeSavedPermission('d1')],
+        }),
         banners: [{ id: 'b', level: 'info', text: 'FYI', dismissible: true }],
       }),
     );
-    for (const tab of ['Chat', 'Plan', 'Review', 'Checkpoints', 'History']) {
+    for (const tab of ['Chat', 'Checkpoints', 'History', 'Permissions']) {
       fireEvent.click(screen.getByRole('tab', { name: new RegExp(`^${tab}`) }));
       for (const el of document.querySelectorAll<HTMLElement>('button, input, select, textarea')) {
         const byIds = (el.getAttribute('aria-labelledby') ?? '')
@@ -612,7 +979,208 @@ describe('keyboard, names, roles and states', () => {
 
 /* ------------------------------------------------------------------ 8. text alternatives, scrollable boxes */
 
+describe('the Auto switch', () => {
+  const stateOf = (
+    over: { on?: boolean; running?: boolean; mode?: 'ask' | 'agent' } = {},
+    extra: Partial<ViewState> = {},
+  ) =>
+    makeState({
+      ...autoOffered(),
+      active: makeActive('c1', {
+        meta: { mode: over.mode ?? 'agent', agentAuto: over.on === true },
+        turns: [makeTurn({ status: over.running === true ? 'running' : 'completed' })],
+      }),
+      ...extra,
+    });
+  const auto = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Auto' });
+
+  it('has a name and a pressed state', () => {
+    const { init } = renderWithHost(<Composer />, stateOf());
+    expect(auto().getAttribute('aria-pressed')).toBe('false');
+    init(stateOf({ on: true }), 1);
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+    expect(auto().getAttribute('type')).toBe('button');
+  });
+
+  it('exposes why it cannot be turned on, with the real disabled attribute', () => {
+    renderWithHost(<Composer />, stateOf({ running: true }));
+    expect(auto().disabled).toBe(true);
+    const ids = (auto().getAttribute('aria-describedby') ?? '').split(' ');
+    expect(ids.map((id) => document.getElementById(id)?.textContent)).toEqual([
+      'Auto can be turned on when the turn ends.',
+    ]);
+  });
+
+  it('exposes the notice as the reason while the composer is blocked', () => {
+    renderWithHost(<Composer />, stateOf({}, { trusted: false }));
+    expect(auto().disabled).toBe(true);
+    const reason = document.getElementById(auto().getAttribute('aria-describedby') ?? '');
+    expect(reason?.textContent).toContain('not trusted');
+  });
+
+  it('does not convey the on state by colour alone', () => {
+    const { init } = renderWithHost(<Composer />, stateOf());
+    const off = auto().querySelector('.codicon')?.className;
+    init(stateOf({ on: true }), 1);
+    // The state is in the pressed attribute, the icon, and the hint line in words; the class adds
+    // weight and an outline (checked in styles.test.ts).
+    expect(auto().querySelector('.codicon')?.className).not.toBe(off);
+    expect(auto().querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+    expect(auto().getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByText(/^Auto is on:/)).toBeTruthy();
+  });
+
+  it('is turned off in every mode, so it is never stuck on', () => {
+    renderWithHost(<Composer />, stateOf({ on: true, mode: 'ask', running: true }));
+    expect(auto().disabled).toBe(false);
+  });
+
+  it('is flagged in History in words, not by the icon alone', () => {
+    renderWithHost(
+      <HistoryList onOpened={() => undefined} />,
+      makeState({
+        ...autoOffered(),
+        conversations: [makeSummary('a', { title: 'Talk', mode: 'agent', agentAuto: true })],
+      }),
+    );
+    const flag = document.querySelector('.history-flag') as HTMLElement;
+    expect(flag.textContent).toContain('Auto');
+    expect(flag.querySelector('.visually-hidden')?.textContent).toContain('Auto is on');
+    expect(flag.querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+  });
+});
+
+describe('the Permissions view', () => {
+  const full = makeFolderPermissions({
+    switches: ['read-outside'],
+    saved: [
+      makeSavedPermission('d1', { kind: 'read-directory', text: '/libs/shared' }),
+      makeSavedPermission('w1', { kind: 'web-site', text: 'docs.example.com' }),
+      makeSavedPermission('c1', {
+        kind: 'command',
+        text: 'npm test',
+        shell: 'bash',
+        runsProjectCode: true,
+      }),
+      makeSavedPermission('t1', { kind: 'mcp-tool', text: 'mcp__docs__search' }),
+    ],
+  });
+  const view = (over: Partial<ViewState> = {}) =>
+    renderWithHost(<PermissionsView />, makeState({ permissions: full, ...over }));
+
+  it('has headings in order, without skipped levels', () => {
+    view();
+    const levels = screen.getAllByRole('heading').map((h) => Number(h.tagName.slice(1)));
+    expect(levels[0]).toBe(2);
+    expect(levels.every((level) => level === 2 || level === 3)).toBe(true);
+    levels.forEach((level, i) => {
+      if (i > 0) expect(level - (levels[i - 1] ?? 0)).toBeLessThanOrEqual(1);
+    });
+    expect(levels.filter((l) => l === 2)).toHaveLength(4);
+  });
+
+  it('gives every control a name, and puts every list in a real list', () => {
+    view();
+    const controls = document.querySelectorAll<HTMLElement>('button, input, select, textarea');
+    expect(controls.length).toBeGreaterThan(8);
+    for (const el of controls) {
+      const byIds = (el.getAttribute('aria-labelledby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent ?? '')
+        .join('');
+      const name = el.getAttribute('aria-label') ?? (byIds !== '' ? byIds : (el.textContent ?? ''));
+      expect(name.trim(), el.outerHTML.slice(0, 100)).not.toBe('');
+    }
+    expect(screen.getAllByRole('list').length).toBeGreaterThanOrEqual(5);
+  });
+
+  it('gives every switch a role, a checked state and a name', () => {
+    view();
+    const switches = screen.getAllByRole('switch');
+    expect(switches).toHaveLength(3);
+    expect(switches.map((s) => s.getAttribute('aria-checked'))).toEqual(['true', 'false', 'false']);
+    for (const s of switches) {
+      expect(s.tagName).toBe('BUTTON');
+      expect(s.getAttribute('aria-pressed')).toBeNull();
+      expect(
+        document.getElementById(s.getAttribute('aria-labelledby') ?? '')?.textContent,
+      ).toBeTruthy();
+    }
+  });
+
+  it('uses no positive tabindex, and has one scroll container that script can focus', () => {
+    view();
+    for (const el of document.querySelectorAll('[tabindex]')) {
+      expect(Number(el.getAttribute('tabindex')), el.outerHTML.slice(0, 80)).toBeLessThanOrEqual(0);
+    }
+    expect(document.querySelector('.permissions-scroll')?.getAttribute('tabindex')).toBe('-1');
+  });
+
+  it('points every disabled control at its reason, which is on the page', () => {
+    view({ trusted: false });
+    const disabled = Array.from(document.querySelectorAll<HTMLButtonElement>('button:disabled'));
+    expect(disabled).toHaveLength(8);
+    for (const el of disabled) {
+      const reason = (el.getAttribute('aria-describedby') ?? '')
+        .split(' ')
+        .map((id) => document.getElementById(id)?.textContent)
+        .join(' ');
+      expect(reason, el.outerHTML.slice(0, 100)).toContain('not trusted');
+    }
+  });
+
+  it('names the warning for a command in words, with the icon hidden', () => {
+    view();
+    const row = screen.getByText('npm test').closest('li') as HTMLElement;
+    expect(row.querySelector('.visually-hidden')?.textContent).toBe('Warning: ');
+    expect(row.querySelector('.codicon')?.getAttribute('aria-hidden')).toBe('true');
+  });
+
+  it('keeps focus on the page when the pressed entry goes away', () => {
+    const { init } = view();
+    const remove = screen.getByRole('button', { name: 'Remove docs.example.com' });
+    remove.focus();
+    fireEvent.click(remove);
+    init(
+      makeState({
+        permissions: { ...full, saved: full.saved.filter((e) => e.id !== 'w1') },
+      }),
+      1,
+    );
+    expect(document.activeElement).not.toBe(document.body);
+    expect(document.querySelector('.permissions-scroll')?.contains(document.activeElement)).toBe(
+      true,
+    );
+  });
+});
+
 describe('scrollable boxes and text alternatives', () => {
+  it('gives the changes card a name, a toggle that states what it controls, and a reachable scroll box', () => {
+    renderWithHost(
+      <ChangesDock />,
+      makeState({
+        review: {
+          entries: [makeReviewEntry('a.ts')],
+          configChanges: [makeConfigChange('k1')],
+          busy: false,
+        },
+      }),
+    );
+    const card = screen.getByRole('region', { name: 'Changes' });
+    const toggle = within(card).getByRole('button', { name: /^Changes/ });
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    const region = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
+    const body = within(card).getByRole('group', { name: 'Changes details' });
+    expect(body.getAttribute('tabindex')).toBe('0');
+    expect(body.contains(region)).toBe(true);
+    // Collapsed, the files are hidden from everyone, not only from sight; the decision stays.
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(region?.hidden).toBe(true);
+    expect(within(card).queryByRole('button', { name: 'Accept All' })).toBeNull();
+    expect(within(card).getByRole('button', { name: /^Keep / })).toBeTruthy();
+  });
+
   it('lets the keyboard reach a scrolling diagram, table, code block and tool output', async () => {
     renderWithHost(
       <MessageList />,
@@ -650,27 +1218,5 @@ describe('scrollable boxes and text alternatives', () => {
     for (const name of ['Input', 'Result']) {
       expect(screen.getByRole('group', { name }).getAttribute('tabindex')).toBe('0');
     }
-  });
-
-  it('makes the relevant-files table of a plan a named, focusable region', () => {
-    renderWithHost(<PlanView />, makeState({ active: makeActive('c1', { plan: makePlanDoc() }) }));
-    const region = screen.getByRole('region', { name: 'Relevant files table' });
-    expect(region.getAttribute('tabindex')).toBe('0');
-    expect(within(region).getByRole('table')).toBeTruthy();
-  });
-
-  it('describes the stage diagram with the stage list', async () => {
-    renderWithHost(
-      <PlanView />,
-      makeState({
-        active: makeActive('c1', {
-          plan: makePlanDoc({ versions: [makePlanVersion(1)] }),
-        }),
-      }),
-    );
-    const picture = await screen.findByRole('img', { name: 'Stage dependencies' });
-    expect(document.getElementById(picture.getAttribute('aria-describedby') ?? '')?.tagName).toBe(
-      'OL',
-    );
   });
 });

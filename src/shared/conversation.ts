@@ -12,7 +12,27 @@ import {
 } from './ids';
 import { ModeSchema } from './modes';
 
-/** Context the user attached to a message. Paths are relative to the conversation's folder. */
+/** Image types the user can paste into a message. */
+export const ImageMediaTypeSchema = z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
+export type ImageMediaType = z.infer<typeof ImageMediaTypeSchema>;
+
+/** Largest pasted image, in bytes. */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Most images in one message. */
+export const MAX_IMAGES_PER_MESSAGE = 5;
+/** Combined size of the images in one message, in bytes (the largest size checked against the CLI). */
+export const MAX_IMAGE_BYTES_PER_MESSAGE = 5 * 1024 * 1024;
+/** Length of the base64 text for an image of `MAX_IMAGE_BYTES`. */
+export const MAX_IMAGE_BASE64_LENGTH = Math.ceil(MAX_IMAGE_BYTES / 3) * 4;
+
+/** Content hash of an image: lowercase hex SHA-256. */
+export const ImageIdSchema = z.string().regex(/^[0-9a-f]{64}$/);
+
+/**
+ * Context the user attached to a message. Paths are relative to the conversation's folder.
+ * An image is only a reference: its bytes stay in the extension host's memory until the turn that
+ * sends it has ended, and are never stored with the conversation.
+ */
 export const AttachmentSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('file'), path: RelPathSchema }),
   z.object({ kind: z.literal('folder'), path: RelPathSchema }),
@@ -24,11 +44,20 @@ export const AttachmentSchema = z.discriminatedUnion('kind', [
     text: z.string().max(100_000),
   }),
   z.object({ kind: z.literal('diagnostics'), path: RelPathSchema, text: z.string().max(100_000) }),
+  z.object({
+    kind: z.literal('image'),
+    id: ImageIdSchema,
+    mediaType: ImageMediaTypeSchema,
+    bytes: z.number().int().positive().max(MAX_IMAGE_BYTES),
+  }),
 ]);
 export type Attachment = z.infer<typeof AttachmentSchema>;
 
-/** Who allowed a tool call. `provider` means the host was never asked. */
-export const ApprovalSourceSchema = z.enum(['user', 'policy', 'provider', 'unverified']);
+/**
+ * Who allowed a tool call. `policy`: AgentCanopy's standing rules. `auto`: AgentCanopy, because the
+ * conversation's Auto switch was on. `provider` means the host was never asked.
+ */
+export const ApprovalSourceSchema = z.enum(['user', 'policy', 'auto', 'provider', 'unverified']);
 export type ApprovalSource = z.infer<typeof ApprovalSourceSchema>;
 
 export const ToolCallStatusSchema = z.enum([
@@ -81,6 +110,8 @@ export const UserMessageSchema = z.object({
   text: z.string(),
   mode: ModeSchema,
   attachments: z.array(AttachmentSchema),
+  /** The turn started with the conversation's Auto switch on (Agent mode only). Absent means no. */
+  auto: z.boolean().optional(),
 });
 export type UserMessage = z.infer<typeof UserMessageSchema>;
 
@@ -149,6 +180,30 @@ export const ForkInfoSchema = z.object({
 });
 export type ForkInfo = z.infer<typeof ForkInfoSchema>;
 
+/** Where in the parent's transcript a side question was asked. */
+export const AsideAnchorSchema = z.object({
+  /**
+   * The parent's message it was asked under: the assistant message being written, or the user
+   * message of the running turn when nothing had been written yet.
+   */
+  messageId: MessageIdSchema,
+  /** How many parts that message had at that moment: the card sits after them. 0 for a user message. */
+  afterParts: z.number().int().nonnegative(),
+});
+export type AsideAnchor = z.infer<typeof AsideAnchorSchema>;
+
+/**
+ * Marks a branch that holds a side question: a question asked in Ask mode while a turn was running
+ * in the parent. It ran alongside that turn, in a branch of the turns that had finished.
+ */
+export const AsideInfoSchema = z.object({
+  parentId: ConversationIdSchema,
+  anchor: AsideAnchorSchema,
+  /** The turn of this branch that asks the question. Absent until that turn has started. */
+  turnId: TurnIdSchema.optional(),
+});
+export type AsideInfo = z.infer<typeof AsideInfoSchema>;
+
 export const ConversationMetaSchema = z.object({
   id: ConversationIdSchema,
   title: z.string().max(200),
@@ -161,8 +216,23 @@ export const ConversationMetaSchema = z.object({
   /** The provider's session id. Absent until the first turn starts. */
   sessionId: z.string().optional(),
   fork: ForkInfoSchema.optional(),
+  /** Set on a branch that holds a side question. Such a branch also has `fork`. */
+  aside: AsideInfoSchema.optional(),
   planId: PlanIdSchema.optional(),
   planLocked: z.boolean(),
+  /**
+   * Agent mode's Auto switch: terminal commands and edits inside the folder run without a prompt for
+   * each one. On only when exactly `true`; conversations stored before it existed do not have it.
+   * Only the user turns it on, through a native dialog. A new conversation, a branch and a side
+   * question start without it.
+   */
+  agentAuto: z.boolean().optional(),
+  /**
+   * When Auto was last turned on for this conversation. Auto counts as on only while this is later
+   * than the last time the setting that offers Auto was seen off on this machine, so turning that
+   * setting off and on again arms no conversation, also in a workspace that was closed meanwhile.
+   */
+  agentAutoSince: TimestampSchema.optional(),
 });
 export type ConversationMeta = z.infer<typeof ConversationMetaSchema>;
 

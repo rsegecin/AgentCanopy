@@ -1,7 +1,7 @@
 import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { ConversationId, Message, Turn } from '../../shared';
+import type { ConversationId, Message, MessageId, Turn } from '../../shared';
 import type { ConversationStore } from './store';
 import {
   FOLDER,
@@ -67,6 +67,37 @@ describe('create, list and load', () => {
     expect(store.list().map((m) => m.id)).toEqual([meta.id]);
   });
 
+  it('loads a prompt whose always rule was stored without a kind, and one with a kind', async () => {
+    const { store } = await open();
+    const { id } = await store.create(base);
+    const choices: ('allow-once' | 'allow-always' | 'deny')[] = [
+      'allow-once',
+      'allow-always',
+      'deny',
+    ];
+    // As conversations stored before the kind existed hold it: a command rule, nothing more.
+    const stored = {
+      ...permissionPrompt('p1', id, 't1'),
+      choices,
+      alwaysRule: { rule: 'Bash(ls)', runsProjectCode: false },
+    };
+    const directory = {
+      ...permissionPrompt('p2', id, 't1'),
+      toolName: 'Read',
+      category: 'read-outside' as const,
+      choices,
+      alwaysRule: { kind: 'read-directory' as const, rule: '/libs/shared', runsProjectCode: false },
+    };
+    await store.putPrompt(id, stored);
+    await store.putPrompt(id, directory);
+    await store.flush();
+
+    const { store: again } = await open();
+    const data = await again.load(id);
+    expect(data?.prompts).toEqual([stored, directory]);
+    expect(data?.prompts[0]).not.toHaveProperty('alwaysRule.kind');
+  });
+
   it('uses the default title and lists newest updatedAt first', async () => {
     const { store, clock } = await open();
     const first = await store.create(base);
@@ -111,6 +142,56 @@ describe('create, list and load', () => {
     };
     expect(index.conversations).toHaveLength(1);
     expect(index.conversations[0]?.updatedAt).toBe(1_100);
+  });
+});
+
+describe('agentAuto', () => {
+  it('is absent from a new conversation and from one stored before it existed', async () => {
+    const { store } = await open();
+    const meta = await store.create(base);
+    expect(meta).not.toHaveProperty('agentAuto');
+    await store.flush();
+    // Written by hand, as an older version would have: no agentAuto key at all.
+    const line = JSON.parse((await readLines(meta.id))[0] ?? '') as { t: string; meta: object };
+    expect(line.t).toBe('meta');
+    expect(line.meta).not.toHaveProperty('agentAuto');
+    const { store: again } = await open();
+    expect((await again.load(meta.id))?.meta).not.toHaveProperty('agentAuto');
+  });
+
+  it('a branch never inherits it, and the parent keeps it across a reload', async () => {
+    const { store } = await open();
+    const parent = await store.create(base);
+    await store.putMessage(parent.id, userMessage('m1', 't1', 'q'));
+    await store.putMessage(parent.id, assistantMessage('m2', 't1', [text('a')]));
+    await store.updateMeta(parent.id, { agentAuto: true });
+    const { meta } = await store.fork({ parentId: parent.id, atMessageId: 'm2' as MessageId });
+    expect(meta).not.toHaveProperty('agentAuto');
+    await store.flush();
+
+    const { store: again } = await open();
+    expect((await again.load(parent.id))?.meta.agentAuto).toBe(true);
+    expect((await again.load(meta.id))?.meta).not.toHaveProperty('agentAuto');
+  });
+
+  it('keeps when it was turned on, only together with it, and a branch does not inherit it', async () => {
+    const { store } = await open();
+    const created = await store.create({ ...base, agentAuto: true, agentAutoSince: 1_234 });
+    expect(created).toMatchObject({ agentAuto: true, agentAutoSince: 1_234 });
+    const without = await store.create({ ...base, agentAutoSince: 1_234 });
+    expect(without).not.toHaveProperty('agentAuto');
+    expect(without).not.toHaveProperty('agentAutoSince');
+    await store.putMessage(created.id, userMessage('m1', 't1', 'q'));
+    await store.putMessage(created.id, assistantMessage('m2', 't1', [text('a')]));
+    const { meta } = await store.fork({ parentId: created.id, atMessageId: 'm2' as MessageId });
+    expect(meta).not.toHaveProperty('agentAutoSince');
+    await store.flush();
+
+    const { store: again } = await open();
+    expect((await again.load(created.id))?.meta).toMatchObject({
+      agentAuto: true,
+      agentAutoSince: 1_234,
+    });
   });
 });
 

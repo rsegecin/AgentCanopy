@@ -30,6 +30,8 @@ function newView(flushMs = 10_000): { view: ViewRecord; posted: HostMessage[] } 
       prompts: [],
       plan: null,
       activity: 'a',
+      queued: null,
+      asides: [],
     },
   };
   const view = new ViewRecord(

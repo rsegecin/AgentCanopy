@@ -21,7 +21,15 @@ export interface ConvRuntime {
 /** The parts of the view state that are the same in every view. */
 export type GlobalFields = Pick<
   ViewState,
-  'trusted' | 'folders' | 'provider' | 'models' | 'defaults' | 'conversations' | 'banners'
+  | 'trusted'
+  | 'folders'
+  | 'provider'
+  | 'models'
+  | 'defaults'
+  | 'agentAuto'
+  | 'policySettings'
+  | 'conversations'
+  | 'banners'
 >;
 
 const MAX_PREVIEW = 300;
@@ -63,6 +71,9 @@ export class SessionState {
     private readonly listMetas: () => ConversationMeta[],
     /** Called when a view has moved to another conversation or to a draft. */
     private readonly onNavigate: (view: ViewRecord) => void = () => undefined,
+    /** Called after a loaded conversation has changed, with the operations that changed it. */
+    private readonly onMutated: (runtime: ConvRuntime, ops: readonly PatchOp[]) => void = () =>
+      undefined,
   ) {
     this.global = {
       trusted: EMPTY_VIEW_STATE.trusted,
@@ -70,6 +81,8 @@ export class SessionState {
       provider: EMPTY_VIEW_STATE.provider,
       models: EMPTY_VIEW_STATE.models,
       defaults: EMPTY_VIEW_STATE.defaults,
+      agentAuto: EMPTY_VIEW_STATE.agentAuto,
+      policySettings: EMPTY_VIEW_STATE.policySettings,
       conversations: EMPTY_VIEW_STATE.conversations,
       banners: EMPTY_VIEW_STATE.banners,
     };
@@ -127,13 +140,21 @@ export class SessionState {
     for (const view of this.views.values()) {
       if (view.activeId === runtime.id) view.apply(shown);
     }
+    this.onMutated(runtime, ops);
   }
 
-  /** Operations that empty the attachments queued in a view, when there are any. */
+  /**
+   * Operations that empty the attachments queued in a view, when there are any, and that end the
+   * Auto confirmed for its draft: a draft's Auto is never carried to another conversation or draft.
+   */
   private clearDraftOps(view: ViewRecord): PatchOp[] {
-    return view.state.draftAttachments.length > 0
-      ? [{ op: 'set', path: ['draftAttachments'], value: [] }]
-      : [];
+    const ops: PatchOp[] =
+      view.state.draftAttachments.length > 0
+        ? [{ op: 'set', path: ['draftAttachments'], value: [] }]
+        : [];
+    view.draftAuto = undefined;
+    if (view.state.draftAgentAuto) ops.push({ op: 'set', path: ['draftAgentAuto'], value: false });
+    return ops;
   }
 
   /** A different conversation starts with no attachments queued. */

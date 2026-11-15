@@ -5,7 +5,7 @@ import type { Mode } from '../../shared';
 import type { Host } from './host';
 import { useApp } from './context';
 
-export type Tab = 'chat' | 'history' | 'plan' | 'review' | 'checkpoints';
+export type Tab = 'chat' | 'history' | 'checkpoints' | 'permissions';
 
 /** Draft key used while no conversation is open. */
 export const NEW_CONVERSATION_KEY = '__new__';
@@ -27,14 +27,14 @@ export interface QuestionDraft {
 }
 
 const PersistedSchema = z.object({
-  tab: z.enum(['chat', 'history', 'plan', 'review', 'checkpoints']).catch('chat'),
+  // A tab that no longer exists ('plan', 'review') falls back to the chat.
+  tab: z.enum(['chat', 'history', 'checkpoints', 'permissions']).catch('chat'),
   drafts: z.record(z.string(), z.string()).catch({}),
   expanded: z.record(z.string(), z.boolean()).catch({}),
   scroll: z.record(z.string(), z.object({ top: z.number(), atBottom: z.boolean() })).catch({}),
   newMode: ModeSchema.optional().catch(undefined),
   newModel: z.string().optional().catch(undefined),
   questions: z.record(z.string(), z.array(QuestionDraftSchema)).catch({}),
-  planClosed: z.record(z.string(), z.record(z.string(), z.boolean())).catch({}),
   reviewInclude: z.record(z.string(), z.boolean()).catch({}),
   restoreSelection: z.record(z.string(), z.record(z.string(), z.boolean())).catch({}),
 });
@@ -48,10 +48,14 @@ export interface UiSnapshot {
   /** Mode and model picked while no conversation is open. */
   newMode: Mode | undefined;
   newModel: string | undefined;
+  /**
+   * The mode the user chose for the next send in a conversation while a turn runs there (the host
+   * refuses to change the conversation's mode then). In memory only: never saved, and not for a
+   * reload to restore.
+   */
+  sendMode: Readonly<Record<string, Mode>>;
   /** Selections in pending question prompts, per prompt id and then per question index. */
   questions: Readonly<Record<string, readonly QuestionDraft[]>>;
-  /** Plan sections the user collapsed, per plan id. */
-  planClosed: Readonly<Record<string, Readonly<Record<string, boolean>>>>;
   /** Pending review entries ticked "Include in Reject All", by path. */
   reviewInclude: Readonly<Record<string, boolean>>;
   /** Ticks the user changed in a restore preview, per preview token and then per path. */
@@ -66,7 +70,6 @@ interface ScrollPosition {
 const PERSIST_DELAY_MS = 300;
 const MAX_SCROLL_ENTRIES = 50;
 const MAX_QUESTION_DRAFTS = 30;
-const MAX_PLANS = 30;
 const MAX_REVIEW_INCLUDE = 1000;
 const MAX_RESTORE_SELECTIONS = 5;
 
@@ -90,8 +93,8 @@ export class UiState {
       expanded: parsed.expanded,
       newMode: parsed.newMode,
       newModel: parsed.newModel,
+      sendMode: {},
       questions: parsed.questions,
-      planClosed: parsed.planClosed,
       reviewInclude: parsed.reviewInclude,
       restoreSelection: parsed.restoreSelection,
     };
@@ -118,6 +121,15 @@ export class UiState {
     this.update({ drafts });
   }
 
+  /**
+   * Puts text the host sent in front of the draft, so nothing the user typed is lost: the text, a
+   * blank line, then the draft; just the text when the draft is blank.
+   */
+  prefillDraft(key: string, text: string): void {
+    const current = this.snapshot.drafts[key] ?? '';
+    this.setDraft(key, current.trim() === '' ? text : `${text}\n\n${current}`);
+  }
+
   setExpanded(id: string, expanded: boolean): void {
     const next = { ...this.snapshot.expanded };
     if (expanded) next[id] = true;
@@ -131,6 +143,19 @@ export class UiState {
 
   setNewModel(model: string): void {
     this.update({ newModel: model });
+  }
+
+  /** Sets the mode for the next send in one conversation, without changing the conversation's mode. */
+  setSendMode(conversationId: string, mode: Mode): void {
+    if (this.snapshot.sendMode[conversationId] === mode) return;
+    this.update({ sendMode: { ...this.snapshot.sendMode, [conversationId]: mode } });
+  }
+
+  clearSendMode(conversationId: string): void {
+    if (!(conversationId in this.snapshot.sendMode)) return;
+    const next = { ...this.snapshot.sendMode };
+    delete next[conversationId];
+    this.update({ sendMode: next });
   }
 
   /** Records the selection for one question of a prompt. Only the newest prompts are kept. */
@@ -149,21 +174,6 @@ export class UiState {
     this.update({ questions: next });
   }
 
-  /** Opens or collapses one section of a plan's view. */
-  setPlanSectionOpen(planId: string, section: string, open: boolean): void {
-    const closed = { ...(this.snapshot.planClosed[planId] ?? {}) };
-    if (open) delete closed[section];
-    else closed[section] = true;
-    const next: Record<string, Readonly<Record<string, boolean>>> = { ...this.snapshot.planClosed };
-    delete next[planId];
-    if (Object.keys(closed).length > 0) next[planId] = closed;
-    const keys = Object.keys(next);
-    if (keys.length > MAX_PLANS) {
-      for (const old of keys.slice(0, keys.length - MAX_PLANS)) delete next[old];
-    }
-    this.update({ planClosed: next });
-  }
-
   /** Ticks or unticks "Include in Reject All" for an entry of the review. */
   setReviewInclude(path: string, include: boolean): void {
     const next = { ...this.snapshot.reviewInclude };
@@ -173,6 +183,15 @@ export class UiState {
     if (keys.length > MAX_REVIEW_INCLUDE) {
       for (const old of keys.slice(0, keys.length - MAX_REVIEW_INCLUDE)) delete next[old];
     }
+    this.update({ reviewInclude: next });
+  }
+
+  /** Forgets ticks of paths that are not in `paths`, so a file that comes back later starts unticked. */
+  pruneReviewInclude(paths: readonly string[]): void {
+    const keep = new Set(paths);
+    const current = this.snapshot.reviewInclude;
+    const next = Object.fromEntries(Object.entries(current).filter(([path]) => keep.has(path)));
+    if (Object.keys(next).length === Object.keys(current).length) return;
     this.update({ reviewInclude: next });
   }
 
@@ -220,7 +239,6 @@ export class UiState {
       newMode: this.snapshot.newMode,
       newModel: this.snapshot.newModel,
       questions: this.snapshot.questions,
-      planClosed: this.snapshot.planClosed,
       reviewInclude: this.snapshot.reviewInclude,
       restoreSelection: this.snapshot.restoreSelection,
     });

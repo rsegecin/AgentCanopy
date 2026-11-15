@@ -1,22 +1,16 @@
-import { useEffect, useId, useRef } from 'react';
+import { useId } from 'react';
 import type { ReviewEntry } from '../../../shared';
 import { Icon, VisuallyHidden } from '../../app/components';
 import { useApp, usePost } from '../../app/context';
-import { useViewState } from '../../app/store';
 import { useUi } from '../../app/ui-state';
-import { HunkList } from './HunkList';
 import { ATTRIBUTION_NOTE, CHANGE_LABEL } from './review-model';
 
-/** One file of the review. Pending entries have actions; accepted ones are marked and can still be read. */
+/** One file of the changes card. Pending entries have actions; accepted ones are marked. */
 export function ReviewEntryRow({
   entry,
-  busy,
-  busyHintId,
   uncertain,
 }: {
   entry: ReviewEntry;
-  busy: boolean;
-  busyHintId: string;
   /** Show the explanation and the "Include in Reject All" checkbox. */
   uncertain: boolean;
 }) {
@@ -24,45 +18,15 @@ export function ReviewEntryRow({
   const post = usePost();
   const path = entry.path;
   const pending = entry.status === 'pending';
-  const expandedKey = `review:${path}`;
-  const expanded = useUi((s) => s.expanded[expandedKey] === true);
   const included = useUi((s) => s.reviewInclude[path] === true);
-  const hunks = useViewState((s) => s.review.hunks[path]);
-  const bodyId = useId();
   const noteId = useId();
-  const requested = useRef(false);
-
-  // Ask for the hunks the first time the entry is opened; the host keeps them up to date afterwards.
-  useEffect(() => {
-    if (expanded && hunks === undefined && !requested.current) {
-      requested.current = true;
-      post({ type: 'review.requestHunks', path });
-    }
-  }, [expanded, hunks, path, post]);
 
   const change = CHANGE_LABEL[entry.changeType];
   const hasCounts = entry.linesAdded !== undefined || entry.linesRemoved !== undefined;
-  const disabledProps = (): { disabled: boolean; 'aria-describedby'?: string } => ({
-    disabled: busy,
-    ...(busy ? { 'aria-describedby': busyHintId } : {}),
-  });
 
   return (
     <li className={`review-entry review-entry--${entry.status}`}>
       <div className="review-entry-head">
-        <button
-          type="button"
-          className="icon-button"
-          aria-expanded={expanded}
-          aria-controls={bodyId}
-          aria-label={`Changes in ${path}`}
-          title={`Changes in ${path}`}
-          onClick={() => {
-            ui.setExpanded(expandedKey, !expanded);
-          }}
-        >
-          <Icon name={expanded ? 'chevron-down' : 'chevron-right'} />
-        </button>
         <span className={`review-marker review-marker--${entry.changeType}`}>
           <Icon name={change.icon} />
           <span>{change.label}</span>
@@ -143,7 +107,6 @@ export function ReviewEntryRow({
             type="button"
             className="button button--secondary"
             aria-label={`Accept ${path}`}
-            {...disabledProps()}
             onClick={() => {
               post({ type: 'review.acceptFile', path });
             }}
@@ -154,38 +117,16 @@ export function ReviewEntryRow({
             type="button"
             className="button button--secondary"
             aria-label={`Reject ${path}`}
-            disabled={busy || !entry.restorable}
-            aria-describedby={busy ? busyHintId : !entry.restorable ? noteId : undefined}
+            disabled={!entry.restorable}
+            aria-describedby={!entry.restorable ? noteId : undefined}
             onClick={() => {
               post({ type: 'review.rejectFile', path });
             }}
           >
             Reject
           </button>
-          <button
-            type="button"
-            className="button button--secondary"
-            aria-label={`Diff ${path}`}
-            onClick={() => {
-              post({ type: 'review.openDiff', path });
-            }}
-          >
-            Diff
-          </button>
         </div>
       )}
-
-      <div id={bodyId} className="review-entry-body" hidden={!expanded}>
-        {expanded && (
-          <HunkList
-            path={path}
-            hunks={hunks}
-            actions={pending}
-            busy={busy}
-            busyHintId={busyHintId}
-          />
-        )}
-      </div>
     </li>
   );
 }
