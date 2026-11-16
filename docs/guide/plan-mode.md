@@ -47,21 +47,27 @@ Your answers are listed under **Your decisions**. They belong to you, not to the
 
 **Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running, while configuration changes from an earlier Agent turn await your decision in the Changes card, or while an Agent turn of another conversation runs in the same folder ("Another agent turn is running in this folder.").
 
-1. Click it. A native VS Code dialog, "Approve and execute this plan?", names the version and warns if questions or decisions are still unanswered. If [Auto](agent-mode.md#auto) is on for the conversation, it also says so: "Auto is on for this conversation: terminal commands and edits inside the folder will run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask.").
-2. Confirm with **Approve and Execute**. AgentCanopy records the approval for that exact version and content before anything starts. If the plan changed since you looked at it, you are asked to review it and approve again.
+1. Click it. A native VS Code dialog names the version and warns if questions or decisions are still unanswered. Which dialog it is depends on [Auto](agent-mode.md#auto):
+   - Auto is offered (`agentCanopy.agent.auto.enabled` is on) and off for the conversation: "Approve and execute this plan with Auto?". After the version paragraph and the warning it says "Approving also turns on Auto for this conversation.", then everything the dialog of the Auto switch says: the `Folder:` and `Conversation:` lines, what runs without asking, the sandbox, what still asks, what review and checkpoints do not undo, and "Auto stays on for this conversation, also for queued messages and approved plans, until you turn it off." The button reads **Approve and Execute with Auto**.
+   - Auto is already on: "Approve and execute this plan?", with the line "Auto is on for this conversation: terminal commands and edits inside the folder will run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask."). The button reads **Approve and Execute**.
+   - Auto is not offered: "Approve and execute this plan?" with no word about Auto.
+2. Confirm. AgentCanopy records the approval for that exact version and content before anything starts. If the plan changed since you looked at it, you are asked to review it and approve again.
 3. An [Agent mode](agent-mode.md) turn starts in the same conversation with the approved text embedded in the prompt. In the chat its message reads "Plan approved: executing version N" (in a branch, the copied turns show "Execute plan version N").
 
 From then on the usual Agent rules apply: edits are tracked, commands ask unless Auto is on, and you [review the changes](reviewing-changes.md) afterwards. The plan card shows the time of each approval.
 
 ### Auto and plan execution
 
-The execution turn runs with the conversation's [Auto](agent-mode.md#auto) as it is when you click **Approve and Execute**. If Auto is on:
+Approving a plan always turns [Auto](agent-mode.md#auto) on for the conversation, as if you had pressed the **Auto** switch, when Auto is offered and not already on. The approval dialog is the confirmation, which is why it says everything the Auto dialog says. The execution turn then runs with Auto: its commands and edits inside the folder run without asking, as [Agent mode](agent-mode.md#auto) describes, and the execution message "Plan approved: executing version N" carries an "Auto" mark.
 
-- The plan card shows a line: "Runs with Auto: commands and edits run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Runs with Auto: edits run without asking. Commands still ask.").
-- The approval dialog says so, as quoted above.
-- The execution message "Plan approved: executing version N" carries an "Auto" mark.
+- The plan card says what will happen. With Auto off: "Approving turns on Auto for this conversation: commands and edits run without asking." (with `agentCanopy.agent.alwaysAskCommands` on: "Approving turns on Auto for this conversation: edits run without asking. Commands still ask."). With Auto on: "Runs with Auto: commands and edits run without asking." (with `alwaysAskCommands` on: "Runs with Auto: edits run without asking. Commands still ask.").
+- With `alwaysAskCommands` on, Auto is turned on but commands still ask, and the dialog says so.
+- With `agentCanopy.agent.auto.enabled` off, nothing is turned on, the dialog and the plan card say nothing of Auto, and every command asks.
+- If you decline the dialog, nothing is approved and Auto stays as it was.
+- If anything the dialog depended on changes while it is open (the conversation, `alwaysAskCommands`, `agentCanopy.agent.auto.webTools`, `agentCanopy.agent.sandbox`, or `agentCanopy.agent.auto.enabled` turned off and on again), Auto is not turned on. A warning says "Auto was not turned on: the conversation changed while the dialog was open." The approval stays recorded and the execution turn runs without Auto, so its commands ask. If Auto could not be saved ("Auto could not be turned on. The AgentCanopy log has the details."), the same happens.
+- Auto stays on afterwards: later turns, queued messages and later approvals of this conversation run with it until you turn it off. The **Auto** switch stays visible in Plan mode while Auto is on. Turning it off needs no dialog and works at once, also in the middle of the execution turn: the next permission request asks again.
 
-The **Auto** switch stays visible in Plan mode while Auto is on, so you can turn it off before you approve. Turning it off needs no dialog. If you turn it off while the approval dialog is open, the turn runs without Auto. Turning Auto on is not possible while the approval dialog is open.
+Turning Auto on with the switch is not possible while the approval dialog is open.
 
 ## Switch modes freely
 

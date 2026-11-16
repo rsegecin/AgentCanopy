@@ -123,6 +123,9 @@ function CurrentPlanCard({
   const configPending = useViewState((s) => s.review.configChanges.length > 0);
   // An Agent turn of another conversation holds the folder (while this one runs, the running hint says it).
   const folderBusy = useViewState((s) => s.review.busy && !isTurnRunning(s.active?.turns));
+  // Auto offered: the hint says whether the execution runs with it (it is on) or whether approving
+  // turns it on (it is off, and the approval dialog says so in full).
+  const autoOffered = useViewState((s) => s.agentAuto.offered);
   const autoOn = useViewState((s) => s.agentAuto.offered && s.active?.meta.agentAuto === true);
   const autoCommands = useViewState((s) => s.agentAuto.commands);
   const titleId = useId();
@@ -242,13 +245,17 @@ function CurrentPlanCard({
           </p>
         )}
       </div>
-      {autoOn && (
+      {autoOffered && (
         <p className="plan-hint muted plan-auto">
-          <Icon name="pass-filled" />
+          <Icon name={autoOn ? 'pass-filled' : 'circle-large-outline'} />
           <span>
-            {autoCommands
-              ? 'Runs with Auto: commands and edits run without asking.'
-              : 'Runs with Auto: edits run without asking. Commands still ask.'}
+            {autoOn
+              ? autoCommands
+                ? 'Runs with Auto: commands and edits run without asking.'
+                : 'Runs with Auto: edits run without asking. Commands still ask.'
+              : autoCommands
+                ? 'Approving turns on Auto for this conversation: commands and edits run without asking.'
+                : 'Approving turns on Auto for this conversation: edits run without asking. Commands still ask.'}
           </span>
         </p>
       )}

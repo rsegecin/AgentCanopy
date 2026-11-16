@@ -134,6 +134,10 @@ const rejected = { decision: 'reject', source: 'user_reject' } as const;
 const AUTO_TITLE = 'Turn on Auto for this conversation?';
 const DRAFT_TITLE = 'Turn on Auto for the new conversation?';
 const APPROVAL_TITLE = 'Approve and execute this plan?';
+const APPROVAL_AUTO_TITLE = 'Approve and execute this plan with Auto?';
+const APPROVES_AUTO = 'Approving also turns on Auto for this conversation.';
+const PLAN_PARAGRAPH =
+  'Version 1 of "Make a file" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.';
 const AUTO_PARAGRAPH = 'This is Agent mode with Auto on.';
 const REVIEW_PARAGRAPH =
   'Review and checkpoints undo file changes inside the folder only. They do not undo what a command does outside it, to Git or over the network, and a command can change protected files without asking.';
@@ -621,9 +625,9 @@ describe('turning Auto on', () => {
     const h = await harness([submitPlanScenario()]);
     const view = h.attach();
     const plan = await planned(h, view);
-    const release = holdDialog(h, APPROVAL_TITLE);
+    const release = holdDialog(h, APPROVAL_AUTO_TITLE);
     approve(view, plan);
-    await until('the approval dialog', () => dialogs(h, APPROVAL_TITLE).length === 1);
+    await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
     setAuto(view, true, view.active().meta.id);
     await until('a toast', () => view.toasts.length === 1);
     expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.autoWaitForTurn });
@@ -726,7 +730,7 @@ describe('a turn with Auto', () => {
     const users = userMessages(view);
     expect(users[0]).not.toHaveProperty('auto');
     expect(users[1]?.auto).toBe(true);
-    expect((await h.record()).stdin).toContain(AUTO_PARAGRAPH);
+    expect((await h.record(1)).stdin).toContain(AUTO_PARAGRAPH);
     expect(await fs.readFile(join(h.workspace, 'made.txt'), 'utf8')).toBe('made by a command');
 
     // Recorded for review like any command's change, and rejecting it undoes it.
@@ -1273,16 +1277,181 @@ describe('the setting', () => {
 // ---- plans -----------------------------------------------------------------------------------------------
 
 describe('approving a plan', () => {
-  it('says nothing of Auto when it is off', async () => {
+  it('says that approving turns Auto on when it is off, in full, and changes nothing when declined', async () => {
     const h = await harness([submitPlanScenario()]);
     const view = h.attach();
     const plan = await planned(h, view);
+    const id = view.active().meta.id;
     h.ui.confirmAnswer = false;
     approve(view, plan);
-    await until('the approval dialog', () => dialogs(h, APPROVAL_TITLE).length === 1);
-    expect(dialogs(h, APPROVAL_TITLE)[0]?.detail).toBe(
-      'Version 1 of "Make a file" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
+    await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
+    await h.idle();
+    expect(dialogs(h, APPROVAL_TITLE)).toEqual([]);
+    const [dialog] = dialogs(h, APPROVAL_AUTO_TITLE);
+    expect(dialog?.confirmLabel).toBe('Approve and Execute with Auto');
+    const paragraphs = dialog?.detail.split('\n\n') ?? [];
+    expect(paragraphs[0]).toBe(PLAN_PARAGRAPH);
+    expect(paragraphs[1]).toBe(APPROVES_AUTO);
+    expect(paragraphs[2]).toBe(`${workLine(h)}\nConversation: plan it`);
+    expect(paragraphs).toContain(REVIEW_PARAGRAPH);
+    expect(paragraphs.at(-1)).toBe(STAYS_PARAGRAPH);
+    // The dialog is declined: Auto stays off, nothing is approved and no turn starts.
+    expect(view.active().meta).not.toHaveProperty('agentAuto');
+    expect(storedMeta(id)).not.toHaveProperty('agentAuto');
+    expect(view.active().plan?.approvals).toEqual([]);
+    expect(view.active().turns).toHaveLength(1);
+    expect(view.toasts).toEqual([]);
+  });
+
+  it('says nothing of Auto with the setting off, and the command asks', async () => {
+    const h = await harness([submitPlanScenario(), bashScenario()], {
+      settings: { agentAuto: false },
+    });
+    const view = h.attach();
+    const plan = await planned(h, view);
+    approve(view, plan);
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(dialogs(h, APPROVAL_AUTO_TITLE)).toEqual([]);
+    expect(dialogs(h, APPROVAL_TITLE)).toEqual([
+      { title: APPROVAL_TITLE, detail: PLAN_PARAGRAPH, confirmLabel: 'Approve and Execute' },
+    ]);
+    expect(view.active().meta).not.toHaveProperty('agentAuto');
+    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+    expect(view.toasts).toEqual([]);
+  });
+
+  it('turns Auto on for the conversation: the command runs without a prompt and Auto stays on', async () => {
+    const h = await harness([
+      submitPlanScenario(),
+      bashScenario(),
+      bashScenario('echo 2', 'two.txt'),
+    ]);
+    const view = h.attach();
+    const plan = await planned(h, view);
+    const id = view.active().meta.id;
+    approve(view, plan);
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    const turn = await finishedTurn(h, view);
+    expect(turn.mode).toBe('agent');
+    expect(dialogs(h, APPROVAL_AUTO_TITLE)).toHaveLength(1);
+    expect(dialogs(h, APPROVAL_TITLE)).toEqual([]);
+    expect(view.active().plan?.approvals).toHaveLength(1);
+    // The approval is the confirmation: no dialog of the Auto switch, and no toast.
+    expect(autoDialogs(h)).toEqual([]);
+    expect(view.toasts).toEqual([]);
+    expect(view.active().meta.agentAuto).toBe(true);
+    expect(storedMeta(id)?.agentAuto).toBe(true);
+    expect(typeof storedMeta(id)?.agentAutoSince).toBe('number');
+    expect(summaryAuto(view, id)).toBe(true);
+    expect(view.active().prompts).toEqual([]);
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'auto' }]);
+    expect(userMessages(view).at(-1)).toMatchObject({ mode: 'agent', auto: true });
+    expect((await h.record(1)).stdin).toContain(AUTO_PARAGRAPH);
+
+    // Auto stays on for later turns.
+    await agentTurn(h, view, 'next');
+    expect(userMessages(view).at(-1)).toMatchObject({ text: 'next', auto: true });
+    expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });
+    expect(view.active().prompts).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('with alwaysAskCommands, turns Auto on, says that commands still ask, and the command asks', async () => {
+    const h = await harness([submitPlanScenario(), bashScenario()], {
+      settings: { alwaysAskCommands: true },
+    });
+    const view = h.attach();
+    const plan = await planned(h, view);
+    approve(view, plan);
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    const [dialog] = dialogs(h, APPROVAL_AUTO_TITLE);
+    expect(dialog?.detail).toContain(
+      'Agent turns in this conversation run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.',
     );
+    expect(dialog?.detail).not.toContain('run terminal commands and edits');
+    expect(view.active().meta.agentAuto).toBe(true);
+    expect(userMessages(view).at(-1)).toMatchObject({ mode: 'agent', auto: true });
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+  });
+
+  it.each<[string, Partial<Settings>]>([
+    ['a setting the dialog names', { agentAutoWebTools: true }],
+    ['the sandbox setting', { sandbox: true }],
+  ])(
+    'changed while the dialog is open (%s): approved, but the turn runs without Auto',
+    async (_name, patch) => {
+      const h = await harness([submitPlanScenario(), bashScenario(), bashScenario()]);
+      const view = h.attach();
+      const plan = await planned(h, view);
+      const id = view.active().meta.id;
+      const release = holdDialog(h, APPROVAL_AUTO_TITLE);
+      approve(view, plan);
+      await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
+      changeSettings(h, patch);
+      release();
+      await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+      await answer(view, 'allow-once', 'command');
+      await finishedTurn(h, view);
+      expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.autoChangedDuringDialog }]);
+      expect(view.active().plan?.approvals).toHaveLength(1);
+      expect(view.active().meta.agentAuto).not.toBe(true);
+      expect(storedMeta(id)?.agentAuto).not.toBe(true);
+      expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+      expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+      expect((await h.record(1)).stdin).not.toContain(AUTO_PARAGRAPH);
+
+      // Nothing turned it on: the next turn asks too.
+      send(view, 'agent', 'next');
+      await answer(view, 'allow-once', 'command');
+      await finishedTurn(h, view);
+      expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'user' });
+    },
+  );
+
+  it('the Auto setting turned off and on again while the dialog is open: approved, but without Auto', async () => {
+    const h = await harness([submitPlanScenario(), bashScenario()]);
+    const view = h.attach();
+    const plan = await planned(h, view);
+    const id = view.active().meta.id;
+    const release = holdDialog(h, APPROVAL_AUTO_TITLE);
+    approve(view, plan);
+    await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
+    // Back to what the dialog said, but the reset in between is a change.
+    changeSettings(h, { agentAuto: false });
+    changeSettings(h, { agentAuto: true });
+    release();
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.autoChangedDuringDialog }]);
+    expect(view.active().plan?.approvals).toHaveLength(1);
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(storedMeta(id)?.agentAuto).not.toBe(true);
+    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
+  });
+
+  it('when Auto cannot be saved: approved, a toast says so and the turn runs without Auto', async () => {
+    const h = await harness([submitPlanScenario(), bashScenario()]);
+    const view = h.attach();
+    const plan = await planned(h, view);
+    const id = view.active().meta.id;
+    stores.failMeta = (patch) => patch['agentAuto'] === true;
+    approve(view, plan);
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await answer(view, 'allow-once', 'command');
+    await finishedTurn(h, view);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.autoNotSaved }]);
+    expect(view.active().plan?.approvals).toHaveLength(1);
+    expect(view.active().meta.agentAuto).not.toBe(true);
+    expect(storedMeta(id)?.agentAuto).not.toBe(true);
+    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
   });
 
   it('with alwaysAskCommands, says that commands still ask', async () => {
@@ -1485,7 +1654,7 @@ describe('Auto turned off while the store cannot save it', () => {
 // ---- decided once per send ------------------------------------------------------------------------------
 
 describe('Auto is decided once per send', () => {
-  it('an on still being written when a plan is approved: the execution has no Auto, the next turn has it', async () => {
+  it('an on still being written when a plan is approved: the dialog turns it on itself, so the execution has Auto', async () => {
     const h = await harness([submitPlanScenario(), bashScenario(), bashScenario()], {
       settings: { sandbox: true },
     });
@@ -1498,26 +1667,26 @@ describe('Auto is decided once per send', () => {
     await until('the store to say on', () => storedMeta(id)?.agentAuto === true);
     expect(view.active().meta.agentAuto).not.toBe(true);
 
+    // The meta does not say on yet, so the approval offers to turn it on and says so; its own write
+    // waits behind the held one, so the turn does not start before the write lands.
     approve(view, plan);
-    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
-    await answer(view, 'allow-once', 'command');
-    await finishedTurn(h, view);
-    expect(dialogs(h, APPROVAL_TITLE)[0]?.detail).toBe(
-      'Version 1 of "Make a file" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
-    );
-    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
-    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
-    expect(h.requests[1]?.profile).toMatchObject({ kind: 'agent', sandboxLocked: false });
-
+    await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
+    expect(dialogs(h, APPROVAL_AUTO_TITLE)[0]?.detail).toContain(APPROVES_AUTO);
     write.release();
-    await until('Auto to be on', () => view.active().meta.agentAuto === true);
+    await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await finishedTurn(h, view);
+    expect(view.active().meta.agentAuto).toBe(true);
+    expect(userMessages(view).at(-1)).toMatchObject({ mode: 'agent', auto: true });
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'auto' }]);
+    expect(h.requests[1]?.profile).toMatchObject({ kind: 'agent', sandboxLocked: true });
+
     await agentTurn(h, view, 'next');
     expect(userMessages(view).at(-1)).toMatchObject({ text: 'next', auto: true });
     expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });
     expect(h.requests[2]?.profile).toMatchObject({ kind: 'agent', sandboxLocked: true });
   });
 
-  it('an on that lands while the plan dialog is open: the dialog said nothing of it, so the execution has no Auto', async () => {
+  it('an on that lands while the plan dialog is open: the dialog already said it turns Auto on, so the execution has Auto', async () => {
     const h = await harness([submitPlanScenario(), bashScenario(), bashScenario()], {
       settings: { sandbox: true },
     });
@@ -1528,23 +1697,23 @@ describe('Auto is decided once per send', () => {
     stores.holdMeta = (patch) => (patch['agentAuto'] === true ? write.promise : undefined);
     setAuto(view, true, id);
     await until('the store to say on', () => storedMeta(id)?.agentAuto === true);
-    const release = holdDialog(h, APPROVAL_TITLE);
+    const release = holdDialog(h, APPROVAL_AUTO_TITLE);
     approve(view, plan);
-    await until('the approval dialog', () => dialogs(h, APPROVAL_TITLE).length === 1);
-    // The on lands now, after the profile and the dialog's text were built without it.
+    await until('the approval dialog', () => dialogs(h, APPROVAL_AUTO_TITLE).length === 1);
+    // The on lands now, after the profile and the dialog's text were built as for turning it on.
     write.release();
     await until('Auto to be on', () => view.active().meta.agentAuto === true);
     release();
     await until('the execution turn', () => (view.state?.active?.turns.length ?? 0) === 2);
-    await answer(view, 'allow-once', 'command');
     await finishedTurn(h, view);
-    expect(dialogs(h, APPROVAL_TITLE)[0]?.detail).not.toContain('Auto');
-    expect(userMessages(view).at(-1)).not.toHaveProperty('auto');
-    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'user' }]);
-    expect(h.requests[1]?.profile).toMatchObject({ kind: 'agent', sandboxLocked: false });
-    expect((await h.record(1)).stdin).not.toContain(AUTO_PARAGRAPH);
+    expect(dialogs(h, APPROVAL_AUTO_TITLE)[0]?.detail).toContain(APPROVES_AUTO);
+    expect(view.toasts).toEqual([]);
+    expect(userMessages(view).at(-1)).toMatchObject({ mode: 'agent', auto: true });
+    expect(toolCalls(view)).toMatchObject([{ name: 'Bash', approval: 'auto' }]);
+    expect(h.requests[1]?.profile).toMatchObject({ kind: 'agent', sandboxLocked: true });
+    expect((await h.record(1)).stdin).toContain(AUTO_PARAGRAPH);
 
-    // The next turn was decided with it.
+    // The next turn has it too.
     await agentTurn(h, view, 'next');
     expect(userMessages(view).at(-1)).toMatchObject({ text: 'next', auto: true });
     expect(toolCalls(view).at(-1)).toMatchObject({ name: 'Bash', approval: 'auto' });

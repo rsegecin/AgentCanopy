@@ -920,6 +920,10 @@ describe('plan card accessibility', () => {
 describe('the Auto line of the current plan card', () => {
   const ON = 'Runs with Auto: commands and edits run without asking.';
   const ON_NO_COMMANDS = 'Runs with Auto: edits run without asking. Commands still ask.';
+  const WILL_TURN_ON =
+    'Approving turns on Auto for this conversation: commands and edits run without asking.';
+  const WILL_TURN_ON_NO_COMMANDS =
+    'Approving turns on Auto for this conversation: edits run without asking. Commands still ask.';
   const withAuto = (
     auto: boolean | undefined,
     over: { offered?: boolean; commands?: boolean } = {},
@@ -953,10 +957,36 @@ describe('the Auto line of the current plan card', () => {
   it.each([
     ['Auto is off', withAuto(false)],
     ['the flag is absent', withAuto(undefined)],
-    ['the setting does not offer Auto', withAuto(true, { offered: false })],
-  ] as const)('is absent when %s', (_name, state) => {
-    renderWithHost(<MessageList />, state);
-    expect(screen.queryByText(/Runs with Auto/)).toBeNull();
+  ] as const)(
+    'says that approving turns Auto on when %s, next to Approve and Execute',
+    (_name, state) => {
+      renderWithHost(<MessageList />, state);
+      const line = within(current()).getByText(WILL_TURN_ON);
+      expect(line.closest('p')?.previousElementSibling?.classList.contains('plan-approve')).toBe(
+        true,
+      );
+      expect(line.closest('p')?.querySelector('.codicon-circle-large-outline')).not.toBeNull();
+      expect(screen.queryByText(/Runs with Auto/)).toBeNull();
+    },
+  );
+
+  it('says that approving turns Auto on with commands still asking when the settings keep them asking', () => {
+    renderWithHost(<MessageList />, withAuto(false, { commands: false }));
+    expect(within(current()).getByText(WILL_TURN_ON_NO_COMMANDS)).toBeTruthy();
+    expect(screen.queryByText(WILL_TURN_ON)).toBeNull();
+  });
+
+  it.each([[true], [false], [undefined]] as const)(
+    'says nothing of Auto when the setting does not offer it (flag %s)',
+    (auto) => {
+      renderWithHost(<MessageList />, withAuto(auto, { offered: false }));
+      expect(screen.queryByText(/Auto/)).toBeNull();
+    },
+  );
+
+  it('does not say that approving turns Auto on when it is on', () => {
+    renderWithHost(<MessageList />, withAuto(true));
+    expect(screen.queryByText(/Approving turns on Auto/)).toBeNull();
   });
 
   it('is not on an older card', () => {
@@ -968,5 +998,16 @@ describe('the Auto line of the current plan card', () => {
     });
     expect(screen.getAllByText(ON)).toHaveLength(1);
     expect(current().textContent).toContain(ON);
+  });
+
+  it('is not on an older card when Auto is off', () => {
+    const base = chat(twoVersions(), [1, 2]);
+    renderWithHost(<MessageList />, {
+      ...base,
+      ...autoOffered(),
+      active: { ...base.active!, meta: { ...base.active!.meta, agentAuto: false } },
+    });
+    expect(screen.getAllByText(WILL_TURN_ON)).toHaveLength(1);
+    expect(current().textContent).toContain(WILL_TURN_ON);
   });
 });

@@ -931,16 +931,22 @@ describe('approving a plan', () => {
 
     // The question is asked before anything is recorded or started.
     expect(atConfirm).toEqual({ approvals: [], requests: 1 });
+    // Auto is offered and off, so approving also turns it on and the dialog says so (auto.test.ts
+    // covers that in full); the plan and the open questions come first.
     expect(h.ui.callsOf('confirm')).toEqual([
       [
         {
-          title: 'Approve and execute this plan?',
-          detail:
-            'Version 1 of "Add caching" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.' +
-            '\n\n2 question(s) or decision(s) in this plan have no answer yet.',
-          confirmLabel: 'Approve and Execute',
+          title: 'Approve and execute this plan with Auto?',
+          detail: expect.stringMatching(/^Version 1 of "Add caching"/) as string,
+          confirmLabel: 'Approve and Execute with Auto',
         },
       ],
+    ]);
+    const detail = (h.ui.callsOf('confirm')[0]?.[0] as { detail: string }).detail;
+    expect(detail.split('\n\n').slice(0, 3)).toEqual([
+      'Version 1 of "Add caching" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
+      '2 question(s) or decision(s) in this plan have no answer yet.',
+      'Approving also turns on Auto for this conversation.',
     ]);
 
     // The approval was on disk when the provider was asked to start.
@@ -1033,9 +1039,11 @@ describe('approving a plan', () => {
     await until('the execution turn', () => view.active().turns.length === 2);
     await finishedTurn(h, view);
     const detail = (h.ui.callsOf('confirm')[0]?.[0] as { detail: string }).detail;
-    expect(detail).toBe(
+    expect(detail.split('\n\n').slice(0, 2)).toEqual([
       'Version 1 of "Rename things" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
-    );
+      'Approving also turns on Auto for this conversation.',
+    ]);
+    expect(detail).not.toContain('no answer yet');
     view.expectMirror();
   });
 

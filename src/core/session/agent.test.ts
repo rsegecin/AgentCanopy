@@ -208,13 +208,17 @@ function submitPlanScenario(): ScenarioSpec {
   };
 }
 
-const APPROVAL_TITLE = 'Approve and execute this plan?';
+// With Auto offered, approving a plan also turns Auto on and the dialog says so in its title.
+const APPROVAL_TITLES = [
+  'Approve and execute this plan?',
+  'Approve and execute this plan with Auto?',
+];
 
 /** The approval dialogs asked so far; other confirmations (reverting a change) do not count. */
 function approvalDialogs(h: Harness): unknown[][] {
   return h.ui
     .callsOf('confirm')
-    .filter((call) => (call[0] as { title?: string }).title === APPROVAL_TITLE);
+    .filter((call) => APPROVAL_TITLES.includes((call[0] as { title?: string }).title ?? ''));
 }
 
 /** Holds the approval dialog open until `release` is called. */
@@ -223,7 +227,7 @@ function holdApprovalDialog(h: Harness): () => void {
   const held = new Promise<void>((resolve) => {
     release = resolve;
   });
-  h.ui.onConfirm = (input) => (input.title === APPROVAL_TITLE ? held : undefined);
+  h.ui.onConfirm = (input) => (APPROVAL_TITLES.includes(input.title) ? held : undefined);
   return release;
 }
 

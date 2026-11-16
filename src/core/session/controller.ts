@@ -149,10 +149,28 @@ const ALLOWED_LINK_PROTOCOLS = new Set(['http:', 'https:', 'mailto:']);
 
 type SendMessage = Extract<WebviewMessage, { type: 'turn.send' }>;
 
+/** What `sendTurn` decided about Auto before its gate, and what the gate needs to turn it on. */
+interface AutoDecision {
+  auto: boolean;
+  turningOn: boolean;
+  /** Taken before the gate: a change of any of them during its dialog keeps Auto off. */
+  snapshot: { offs: number; resets: number; settings: string };
+}
+
 /** What differs when a turn is started by approving a plan instead of by the composer. */
 interface TurnOptions {
-  /** Runs after every check has passed and before anything is created. Returns the prompt, or false to stop. */
-  gate?: (decided: { auto: boolean }) => Promise<{ promptText: string } | false>;
+  /**
+   * Runs after every check has passed and before anything is created. Returns the prompt, or false to
+   * stop. `auto` is whether the turn may run with Auto; `turningOn` says that Auto is off for the
+   * conversation and the gate's own native dialog is what turns it on (`turnsOnAuto`).
+   */
+  gate?: (decided: AutoDecision) => Promise<{ promptText: string } | false>;
+  /**
+   * The gate's native dialog also turns Agent mode's Auto on for the conversation (a plan approval),
+   * when Auto is offered and the workspace is trusted. The gate does the turning on; until it has,
+   * the turn does not run with Auto.
+   */
+  turnsOnAuto?: boolean;
   /** Called once the turn exists and has been started. */
   onStarted?: (run: TurnRun) => void;
   /** The message does not take the view's queued attachments. */
@@ -1045,8 +1063,8 @@ class Controller implements AppController {
    * - turn Agent mode's Auto off, for a conversation or for its own draft, at any time and without a
    *   dialog (it only takes approvals away), and ask for the dialog that turns it on again and again;
    *   send turns and queue messages in a conversation where the user turned Auto on, which then run
-   *   commands and edits inside the folder without a prompt. It cannot turn Auto on: only the native
-   *   dialog does, between turns;
+   *   commands and edits inside the folder without a prompt. It cannot turn Auto on: only a native
+   *   dialog does, between turns (the Auto dialog, or a plan approval, which says so in full);
    * - remove any saved permission of the folder its view shows, and turn any of that folder's switches
    *   off, at any time and without a dialog (that only takes approvals away), and ask for the dialogs
    *   that add a permission again and again. It cannot add a permission or turn a switch on: only a
@@ -1523,11 +1541,21 @@ class Controller implements AppController {
       view.apply([{ op: 'set', path: ['draftAgentAuto'], value: true }]);
       return;
     }
+    await this.writeAutoOn(view, id, since);
+  }
+
+  /**
+   * Stores Auto on for a conversation, from `since` (a time `autoReset.stamp()` recorded after the
+   * user confirmed a native dialog that says so). On failure Auto is off for the host and the view is
+   * told. Resolves whether it is on.
+   */
+  private async writeAutoOn(view: ViewRecord, id: ConversationId, since: number): Promise<boolean> {
     const { store } = this;
-    if (!store) return;
+    if (!store) return false;
     try {
       // It counts until the setting is next seen off.
       await this.updateMeta(store, id, { agentAuto: true, agentAutoSince: since });
+      return true;
     } catch (error) {
       this.logger.warn('Auto could not be turned on', { error: redact(String(error)) });
       // Whatever the store kept (it may still say on), Auto is off for the host: the next meta
@@ -1536,6 +1564,7 @@ class Controller implements AppController {
       const current = this.state.runtimes.get(id);
       if (current) this.forceAutoOff(current);
       this.state.toast(view, 'warning', TEXT.autoNotSaved);
+      return false;
     }
   }
 
@@ -1589,7 +1618,11 @@ class Controller implements AppController {
 
   /** The text of the dialog that turns Auto on, from the settings and capabilities of this moment. */
   private autoDialogDetail(title: string | undefined, folder: FolderInfo): string {
-    const settings = this.deps.env.settings();
+    return [this.autoDialogWhere(title, folder), ...this.autoDisclosure()].join('\n\n');
+  }
+
+  /** The folder and conversation lines of a dialog that turns Auto on. */
+  private autoDialogWhere(title: string | undefined, folder: FolderInfo): string {
     // The folder's path first, on its own line, escaped rather than collapsed so that two paths
     // never look alike (the folder's name is not shown: a workspace file can set it to anything,
     // also to a fake path); the title (which the webview can set) comes after it, cut, on one line.
@@ -1601,7 +1634,15 @@ class Controller implements AppController {
           ? `${chars.slice(0, DIALOG_TITLE_LENGTH - 1).join('')}…`
           : title;
     const path = oneLineText(shownPath(folder.path, homeDirectory()));
-    const where = `Folder: ${path}\nConversation: ${oneLineText(named)}`;
+    return `Folder: ${path}\nConversation: ${oneLineText(named)}`;
+  }
+
+  /**
+   * What every dialog that turns Auto on says about it, from the settings and capabilities of this
+   * moment. The settings it names are those of `autoDialogSettings`.
+   */
+  private autoDisclosure(): string[] {
+    const settings = this.deps.env.settings();
     const what = settings.alwaysAskCommands
       ? 'Agent turns in this conversation run edits inside the folder without asking for each one. Terminal commands still ask, because agentCanopy.agent.alwaysAskCommands is on.'
       : 'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.';
@@ -1614,13 +1655,12 @@ class Controller implements AppController {
       ? 'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).'
       : 'Still asks: protected files, anything outside the folder, web access and other tools.';
     return [
-      where,
       what,
       sandbox,
       stillAsks,
       'Review and checkpoints undo file changes inside the folder only. They do not undo what a command does outside it, to Git or over the network, and a command can change protected files without asking.',
       'Auto stays on for this conversation, also for queued messages and approved plans, until you turn it off.',
-    ].join('\n\n');
+    ];
   }
 
   /**
@@ -2021,7 +2061,21 @@ class Controller implements AppController {
     }
     // Decided once, here, synchronously and before any gate: the profile (the sandbox lock), the plan
     // dialog and the turn all follow this value. Later it can only be taken away.
-    const autoWanted = message.mode === 'agent' && settings.agentAuto && this.autoOn(conversation);
+    const alreadyOn = this.autoOn(conversation);
+    // A plan approval's dialog turns Auto on: the profile is built for it now, and the turn runs
+    // with it only if the gate managed to turn it on (checked below).
+    const turningOn =
+      message.mode === 'agent' &&
+      options.turnsOnAuto === true &&
+      !alreadyOn &&
+      settings.agentAuto &&
+      existing !== undefined;
+    const autoWanted = message.mode === 'agent' && settings.agentAuto && (alreadyOn || turningOn);
+    const autoSnapshot = {
+      offs: this.autoOffs.get(conversation.id) ?? 0,
+      resets: this.autoResets,
+      settings: this.autoDialogSettings(),
+    };
     if (draftAuto && view) this.clearDraftAuto(view);
     const profile = policy.profile({
       mode: message.mode,
@@ -2049,7 +2103,7 @@ class Controller implements AppController {
       if (held !== undefined) this.reserved.add(held);
       let outcome: Awaited<ReturnType<NonNullable<TurnOptions['gate']>>>;
       try {
-        outcome = await options.gate({ auto: autoWanted });
+        outcome = await options.gate({ auto: autoWanted, turningOn, snapshot: autoSnapshot });
       } finally {
         if (held !== undefined) this.reserved.delete(held);
       }
@@ -3905,17 +3959,37 @@ class Controller implements AppController {
       },
       {
         noAttachments: true,
-        gate: async ({ auto }) => {
+        // Approving a plan is also the native confirmation that turns Auto on (owner's decision,
+        // 2026-11-16): the dialog says so in full, as the Auto dialog does.
+        turnsOnAuto: true,
+        gate: async ({ auto, turningOn, snapshot }) => {
           // Auto as `sendTurn` decided it for this turn (the profile has it too): the dialog says it
-          // is on exactly when the turn may run with it. It can only be turned off from here on.
-          const detail = this.planApprovalDetail(auto, version, stored.content.title, unanswered);
+          // is on, or will be turned on, exactly when the turn may run with it. From here on it can
+          // only be taken away.
+          const folder = this.deps.env.folders().find((candidate) => candidate.key === meta.folder);
+          const turnOn = turningOn && folder !== undefined;
+          const detail = this.planApprovalDetail(
+            auto && (turnOn || !turningOn),
+            version,
+            stored.content.title,
+            unanswered,
+            turnOn ? { title: meta.title, folder } : undefined,
+          );
           let confirmed = false;
           try {
-            confirmed = await this.deps.ui.confirm({
-              title: 'Approve and execute this plan?',
-              detail,
-              confirmLabel: 'Approve and Execute',
-            });
+            confirmed = await this.deps.ui.confirm(
+              turnOn
+                ? {
+                    title: 'Approve and execute this plan with Auto?',
+                    detail,
+                    confirmLabel: 'Approve and Execute with Auto',
+                  }
+                : {
+                    title: 'Approve and execute this plan?',
+                    detail,
+                    confirmLabel: 'Approve and Execute',
+                  },
+            );
           } catch (error) {
             this.logger.warn('the confirmation could not be shown', {
               error: redact(String(error)),
@@ -3946,6 +4020,7 @@ class Controller implements AppController {
             );
             return false;
           }
+          if (turnOn) await this.turnOnAutoForPlan(view, id, snapshot);
           this.showPlan(approval.plan);
           return { promptText: renderExecutionPrompt(approval.plan, version) };
         },
@@ -3956,12 +4031,62 @@ class Controller implements AppController {
     );
   }
 
-  /** The text of the plan approval dialog. It says so when the execution turn will run with Auto. */
+  /**
+   * After a confirmed plan approval: turns Auto on for the conversation, as the Auto dialog does,
+   * unless something its dialog depended on changed while it was open. Then the turn runs without
+   * Auto and the view is told. Never throws.
+   */
+  private async turnOnAutoForPlan(
+    view: ViewRecord,
+    id: ConversationId,
+    snapshot: AutoDecision['snapshot'],
+  ): Promise<void> {
+    const unchanged = (): boolean =>
+      !this.disposed &&
+      !view.disposed &&
+      this.deps.env.settings().agentAuto &&
+      this.deps.env.trusted() &&
+      this.autoDialogSettings() === snapshot.settings &&
+      this.autoResets === snapshot.resets &&
+      // Turned off from anywhere while the dialog was open: the user's off wins.
+      (this.autoOffs.get(id) ?? 0) === snapshot.offs;
+    if (!unchanged()) {
+      if (!this.disposed && !view.disposed) {
+        this.state.toast(view, 'warning', TEXT.autoChangedDuringDialog);
+      }
+      return;
+    }
+    let since: number | undefined;
+    try {
+      // Later than every reset on this machine, and recorded there before anything is on.
+      since = await this.autoReset.stamp();
+    } catch (error) {
+      this.logger.warn('Auto could not be turned on', { error: redact(String(error)) });
+      this.state.toast(view, 'warning', TEXT.autoNotSaved);
+      return;
+    } finally {
+      this.applyAutoReset();
+    }
+    // The stamp read the reset file again: another window may have reset Auto meanwhile.
+    if (!unchanged() || since <= this.autoReset.lastSeenOff()) {
+      if (!this.disposed && !view.disposed) {
+        this.state.toast(view, 'warning', TEXT.autoChangedDuringDialog);
+      }
+      return;
+    }
+    await this.writeAutoOn(view, id, since);
+  }
+
+  /**
+   * The text of the plan approval dialog. It says so when the execution turn will run with Auto, and
+   * when approving turns Auto on (`turnOn`) it says everything the Auto dialog says.
+   */
   private planApprovalDetail(
     auto: boolean,
     version: number,
     title: string,
     unanswered: number,
+    turnOn?: { title: string | undefined; folder: FolderInfo },
   ): string {
     const settings = this.deps.env.settings();
     const paragraphs = [
@@ -3971,7 +4096,13 @@ class Controller implements AppController {
     if (unanswered > 0) {
       paragraphs.push(`${unanswered} question(s) or decision(s) in this plan have no answer yet.`);
     }
-    if (auto) {
+    if (turnOn) {
+      paragraphs.push(
+        'Approving also turns on Auto for this conversation.',
+        this.autoDialogWhere(turnOn.title, turnOn.folder),
+        ...this.autoDisclosure(),
+      );
+    } else if (auto) {
       paragraphs.push(
         settings.alwaysAskCommands
           ? 'Auto is on for this conversation: edits inside the folder will run without asking. Terminal commands still ask.'

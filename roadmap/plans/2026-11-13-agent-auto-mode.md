@@ -44,7 +44,7 @@ Confirmed by the owner on 2026-11-14, with the changes recorded under Phase 10 i
 - New `ConversationMeta.agentAuto: boolean` (default false). New conversations and branches start with it off.
 - Composer (`src/webview/features/chat/Composer.tsx`): when the mode is Agent, an **Auto** switch next to the mode selector. It posts new `conversation.setAuto { conversationId, on }`.
 - Host (`changeConversation` path in `src/core/session/controller.ts`): turning it **on** opens a native `ui.confirm` that states what will run without asking, that commands run with the user's privileges, and whether the sandbox is active. Turning it off needs no dialog. Refused while a turn runs, like a mode change. The dialog is what keeps a compromised webview from enabling it (security comment at `controller.ts:788-807`, which gains this entry).
-- **Approve and Execute** on a plan runs in Agent mode with the conversation's current Auto state; the approval dialog says so when Auto is on.
+- **Approve and Execute** on a plan runs in Agent mode with the conversation's current Auto state; the approval dialog says so when Auto is on. Superseded on 2026-11-16 (Phase 12 in `docs/planning/2026-11-10-implementation-plan.md`): approving a plan turns Auto on for the conversation, and the approval dialog is its confirmation.
 
 ### Policy
 
