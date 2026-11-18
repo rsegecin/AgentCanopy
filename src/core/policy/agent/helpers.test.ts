@@ -54,6 +54,8 @@ describe('isProtectedPath', () => {
     'src/a.ts:stream',
     '.env.local.',
     '.github./workflows./ci.yml',
+    '.gitattributes',
+    'sub/.gitattributes',
   ])('%s is protected', (path) => {
     expect(isProtectedPath(path)).toBe(true);
   });
@@ -63,7 +65,7 @@ describe('isProtectedPath', () => {
     'src/index.ts',
     'README.md',
     '.gitignore',
-    '.gitattributes',
+    '.gitkeep',
     '.github/CODEOWNERS',
     '.github/ISSUE_TEMPLATE/bug.md',
     '.github',

@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { relative, sep } from 'node:path';
+import { isAbsolute, relative, sep } from 'node:path';
 import type { FolderKey, PermissionPrompt, PromptAnswer } from '../../../shared';
 import {
   HOST_SERVER_NAME,
@@ -24,6 +24,7 @@ import {
 } from '../readonly/decide';
 import { escapeForDisplay } from '../readonly/escape';
 import { sameFolder } from '../readonly/guard';
+import { isInside } from '../readonly/paths';
 import { realFolderPath, checkPath } from '../readonly/targets';
 import {
   exactCommandRule,
@@ -32,6 +33,7 @@ import {
   runsProjectCodePowerShell,
 } from './commands';
 import { isProtectedPath } from './protected';
+import { checkReadOnlyCommand } from './readonly-command';
 import { isValidRule, type RuleStore } from './rules';
 
 type Decision = PolicyDecision;
@@ -94,13 +96,61 @@ async function exists(path: string): Promise<boolean> {
 }
 
 /**
+ * True when the Bash input holds nothing but the command and its harmless companions. Any other key
+ * is a field this code does not know, which may change what runs; the two flags count only when off.
+ */
+function plainBashInput(input: Record<string, unknown>): boolean {
+  return Object.entries(input).every(([key, value]) => {
+    switch (key) {
+      case 'command':
+      case 'description':
+        return typeof value === 'string';
+      case 'timeout':
+        return typeof value === 'number';
+      case 'run_in_background':
+      case 'dangerouslyDisableSandbox':
+        return value === false;
+      default:
+        return false;
+    }
+  });
+}
+
+/** True when the platform compares file names without regard to case. */
+function foldsCase(): boolean {
+  return process.platform === 'win32' || process.platform === 'darwin';
+}
+
+/**
+ * True when the hook of this call reports a main-session call whose working directory is the
+ * folder. The command text says nothing about where it runs; only the hook does.
+ */
+async function runsInFolder(hook: PermissionRequest['hook'], folderPath: string): Promise<boolean> {
+  // No hook arrived: nothing confirms where the command runs.
+  if (hook === undefined) return false;
+  // A subagent may run in a worktree of its own, whatever its command says.
+  if (hook.agentId !== undefined) return false;
+  // A relative or missing directory is not one the host can compare.
+  if (typeof hook.cwd !== 'string' || !isAbsolute(hook.cwd)) return false;
+  // A network path is never the folder, and resolving it would contact that server.
+  if (hook.cwd.startsWith('\\\\') || hook.cwd.startsWith('//')) return false;
+  const fold = (path: string): string => (foldsCase() ? path.toLowerCase() : path);
+  const [cwd, folder] = await Promise.all([realFolderPath(hook.cwd), realFolderPath(folderPath)]);
+  // The same folder, through links and in any spelling of the drive letter: a subfolder, or a
+  // link into another folder, is not where the checks looked.
+  return isInside(fold(cwd), fold(folder)) && isInside(fold(folder), fold(cwd));
+}
+
+/**
  * The policy of Agent mode. Edits inside the folder go through (and are reviewed afterwards) except
  * protected files; everything with side effects outside the folder, commands, network and external
- * tools ask the user. Nothing is approved silently except what the user chose "always" for, and,
- * while Auto applies (`context.auto`, which the user turned on in a native dialog), commands, edits
- * inside the folder and, by setting, web tools. Auto never covers protected files, anything outside
- * the folder, MCP tools or any other tool. `context.auto` is live: every Auto approval reads it right
- * before it returns, never from a value kept across an await.
+ * tools ask the user. Nothing is approved silently except what the user chose "always" for, read-only
+ * Bash commands inside the folder (judged by `checkReadOnlyCommand` and confirmed by the hook of the
+ * same call: no subagent, working directory is the folder) and, while Auto applies (`context.auto`,
+ * which the user turned on in a native dialog), commands, edits inside the folder and, by setting,
+ * web tools. Auto never covers protected files, anything outside the folder, MCP tools or any other
+ * tool. `context.auto` is live: every Auto approval reads it right before it returns, never from a
+ * value kept across an await.
  *
  * With `grants`, the folder's switches and saved permissions (directories, sites, PowerShell
  * commands) also approve, and `sensitiveRoots` (AgentCanopy's storage directories) always ask. The
@@ -228,6 +278,13 @@ export function createAgentPolicy(options: {
     // Read here, with nothing awaited since: a command removed during the turn must ask again.
     if (exact !== undefined && isPowerShellStored(folder, exact)) return allow();
     if (context.auto && !alwaysAsk) return allowAuto();
+    if (
+      request.toolName === 'Bash' &&
+      !alwaysAsk &&
+      (await readOnlyAllowed(request, command, context))
+    ) {
+      return { response: { behavior: 'allow' }, approval: 'policy' };
+    }
 
     const powerShell =
       exact !== undefined && isValidGrant({ kind: 'powershell-command', command: exact })
@@ -261,6 +318,39 @@ export function createAgentPolicy(options: {
       await saveGrant(access, folder, { kind: 'powershell-command', command: powerShell });
     }
     return decision;
+  }
+
+  /**
+   * True when the Bash command may run without asking because it only reads inside the folder. Every
+   * condition is a way an injected command could otherwise get through; any doubt asks.
+   */
+  async function readOnlyAllowed(
+    request: PermissionRequest,
+    command: string,
+    context: PolicyContext,
+  ): Promise<boolean> {
+    // A field this code does not know may change what runs, or leave the sandbox, or detach it.
+    if (!plainBashInput(request.input)) return false;
+    // Project environment variables or hooks could change PATH or BASH_ENV, so "ls" runs anything.
+    if (
+      context.projectConfig?.settings === 'use' &&
+      context.projectConfig.settingsBeyondSafeSet === true
+    ) {
+      return false;
+    }
+    // The checks judge the command against the folder; only the hook says where it runs.
+    if (!(await runsInFolder(request.hook, context.folder.path))) return false;
+    const check = await checkReadOnlyCommand(command, {
+      folderPath: context.folder.path,
+      ...(access !== undefined ? { sensitiveRoots: access.sensitiveRoots } : {}),
+    });
+    if (!check.readOnly) {
+      // The reason only; the command text may hold secrets.
+      logger.debug('A command was not treated as read-only.', { reason: check.reason });
+      return false;
+    }
+    // The setting is live and may have been turned on while the checks were awaited.
+    return !context.settings.alwaysAskCommands;
   }
 
   /** True when the PowerShell command is saved for this folder right now. */

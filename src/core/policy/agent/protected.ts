@@ -1,11 +1,14 @@
 const PROTECTED_DIRECTORIES = new Set(['.git', '.vscode', '.claude', '.husky', '.devcontainer']);
-const PROTECTED_FILES = new Set(['.mcp.json', '.npmrc', '.netrc', '.env']);
+const PROTECTED_FILES = new Set(['.mcp.json', '.npmrc', '.netrc', '.env', '.gitattributes']);
 
 /**
  * True for files that configure the editor, Claude Code, git or the build, or that hold secrets:
- * a change to them can run code or approve things later, so every edit asks. `relPath` is relative
- * to the workspace folder and uses forward slashes (a backslash also separates). Case is ignored.
- * Directory names count at any depth, so `packages/x/.vscode/tasks.json` is protected too.
+ * a change to them can run code or approve things later, so every edit asks. `.gitattributes` is
+ * one: it selects diff and filter drivers that git's system configuration defines (Git for Windows
+ * defines `astextplain` and `git-lfs`), so an unprompted edit followed by an allowed read-only
+ * `git diff` would make git run them on files the agent chose. `relPath` is relative to the
+ * workspace folder and uses forward slashes (a backslash also separates). Case is ignored. Directory
+ * names count at any depth, so `packages/x/.vscode/tasks.json` is protected too.
  *
  * Windows ignores trailing dots and spaces in a name, so `.git./hooks` is `.git/hooks`: they are
  * removed before the check. A segment with a colon (an alternate data stream, a drive letter) is

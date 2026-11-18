@@ -9,7 +9,7 @@ import {
   type Settings,
 } from '../../../shared';
 import type { AgentEvent } from '../../../shared';
-import type { PermissionRequest, PolicyDecision } from '../../contracts';
+import type { PermissionRequest, PolicyContext, PolicyDecision } from '../../contracts';
 import type { GrantStore } from '../grants';
 import { projectSlug } from '../readonly/claude-memory';
 import {
@@ -579,6 +579,247 @@ describe('agent policy', () => {
           expect(prompts).toEqual([]);
         }
       }
+    });
+  });
+
+  describe('read-only commands', () => {
+    let restoreHome: () => void;
+    let restorePath: () => void;
+    let hooked: { cwd: string };
+
+    beforeEach(async () => {
+      await writeTree(folder, { '.git/HEAD': 'ref: refs/heads/main\n' });
+      await fs.mkdir(join(folder, '.git', 'objects'), { recursive: true });
+      await fs.mkdir(join(folder, '.git', 'refs'), { recursive: true });
+      const bin = join(root, 'bin');
+      await fs.mkdir(bin, { recursive: true });
+      // The temporary folder lies under AppData on Windows, a credential location: without a home of
+      // its own, every command would be refused as `sensitive-folder`.
+      const home = join(root, 'home');
+      await fs.mkdir(home, { recursive: true });
+      restoreHome = useHome(home);
+      // The check reads PATH. On Windows the variable may be spelled `Path`: keep every spelling.
+      const saved = Object.entries(process.env).filter(([name]) => /^path$/i.test(name));
+      for (const [name] of saved) delete process.env[name];
+      process.env['PATH'] = bin;
+      restorePath = () => {
+        delete process.env['PATH'];
+        for (const [name, value] of saved) {
+          if (value !== undefined) process.env[name] = value;
+        }
+      };
+      hooked = { cwd: folder };
+    });
+    afterEach(() => {
+      restorePath();
+      restoreHome();
+    });
+
+    function bashRequest(input: unknown, hook?: PermissionRequest['hook']): PermissionRequest {
+      return { ...request('Bash', input), ...(hook !== undefined ? { hook } : {}) };
+    }
+
+    async function allowed(input: unknown, hook?: PermissionRequest['hook']) {
+      const { policy, ask, prompts } = setup({ answer: DENY });
+      const decision = await policy.decide(bashRequest(input, hook), ask.context);
+      expect(prompts).toEqual([]);
+      return decision;
+    }
+
+    async function expectAsks(
+      input: unknown,
+      hook?: PermissionRequest['hook'],
+      options: Parameters<typeof setup>[0] = {},
+    ) {
+      const { policy, ask, prompts } = setup({ answer: DENY, ...options });
+      const decision = await policy.decide(bashRequest(input, hook), ask.context);
+      expect(prompts).toHaveLength(1);
+      expect(decision.response.behavior).toBe('deny');
+    }
+
+    it.each(['git status --short', 'ls src', 'cat src/a.ts | head -5'])(
+      '%s with the hook of the same call is allowed by the policy',
+      async (command) => {
+        expect(await allowed({ command }, hooked)).toEqual(allowPolicy);
+      },
+    );
+
+    it('is allowed when the hook spells the drive letter of the folder in the other case', async () => {
+      if (process.platform !== 'win32') return;
+      const swapped = folder.replace(/^[A-Za-z]/, (letter) =>
+        letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase(),
+      );
+      expect(swapped).not.toBe(folder);
+      expect(await allowed({ command: 'ls src' }, { cwd: swapped })).toEqual(allowPolicy);
+    });
+
+    it('asks without a hook', async () => {
+      await expectAsks({ command: 'ls src' });
+    });
+
+    it('asks for a call of a subagent', async () => {
+      await expectAsks({ command: 'ls src' }, { cwd: folder, agentId: 'a1' });
+    });
+
+    it('asks when the hook reports a directory outside the folder', async () => {
+      await expectAsks({ command: 'ls src' }, { cwd: outside });
+    });
+
+    it('asks when the hook reports a subfolder of the folder', async () => {
+      await expectAsks({ command: 'ls' }, { cwd: join(folder, 'src') });
+    });
+
+    it('asks when the hook has no directory', async () => {
+      await expectAsks({ command: 'ls src' }, {});
+    });
+
+    it('asks when the hook directory is relative', async () => {
+      await expectAsks({ command: 'ls src' }, { cwd: 'relative' });
+    });
+
+    it.each(['\\\\server\\share\\folder', '//server/share/folder'])(
+      'asks, without resolving it, when the hook directory is a network path: %s',
+      async (cwd) => {
+        await expectAsks({ command: 'ls src' }, { cwd });
+      },
+    );
+
+    it('asks with alwaysAskCommands on', async () => {
+      await expectAsks({ command: 'ls src' }, hooked, { settings: { alwaysAskCommands: true } });
+    });
+
+    it('asks when alwaysAskCommands turns on while the command is checked', async () => {
+      const { policy, ask, prompts } = setup({ answer: DENY });
+      let reads = 0;
+      const context: PolicyContext = {
+        ...ask.context,
+        // false on the first read, true on every later one: the read after the awaits sees true.
+        get settings(): Settings {
+          reads += 1;
+          return { ...DEFAULT_SETTINGS, alwaysAskCommands: reads > 1 };
+        },
+      };
+      const decision = await policy.decide(bashRequest({ command: 'ls src' }, hooked), context);
+      expect(reads).toBeGreaterThan(1);
+      expect(prompts).toHaveLength(1);
+      expect(decision.response.behavior).toBe('deny');
+    });
+
+    it('asks when the project settings used go beyond the safe set', async () => {
+      const { policy, ask, prompts } = setup({ answer: DENY });
+      const context: PolicyContext = {
+        ...ask.context,
+        projectConfig: { settings: 'use', mcp: 'use', settingsBeyondSafeSet: true },
+      };
+      const decision = await policy.decide(bashRequest({ command: 'ls src' }, hooked), context);
+      expect(prompts).toHaveLength(1);
+      expect(decision.response.behavior).toBe('deny');
+    });
+
+    it('is allowed when the project settings used stay within the safe set', async () => {
+      const { policy, ask, prompts } = setup({ answer: DENY });
+      const context: PolicyContext = {
+        ...ask.context,
+        projectConfig: { settings: 'use', mcp: 'use', settingsBeyondSafeSet: false },
+      };
+      expect(await policy.decide(bashRequest({ command: 'ls src' }, hooked), context)).toEqual(
+        allowPolicy,
+      );
+      expect(prompts).toEqual([]);
+    });
+
+    it('asks when the input has a key the policy does not know', async () => {
+      await expectAsks({ command: 'ls', foo: 1 }, hooked);
+    });
+
+    it('asks when the input has a field of the wrong type', async () => {
+      await expectAsks({ command: 'ls', timeout: '5' }, hooked);
+      await expectAsks({ command: 'ls', description: 5 }, hooked);
+    });
+
+    it('asks for a command that runs in the background', async () => {
+      await expectAsks({ command: 'ls', run_in_background: true }, hooked);
+    });
+
+    it('is still allowed with the flags off, a description and a timeout', async () => {
+      expect(await allowed({ command: 'ls', run_in_background: false }, hooked)).toEqual(
+        allowPolicy,
+      );
+      expect(
+        await allowed(
+          {
+            command: 'ls src',
+            description: 'List',
+            timeout: 5000,
+            run_in_background: false,
+            dangerouslyDisableSandbox: false,
+          },
+          hooked,
+        ),
+      ).toEqual(allowPolicy);
+    });
+
+    it('asks for a read outside the folder', async () => {
+      await expectAsks({ command: 'cat ../outside/x' }, hooked);
+    });
+
+    it('asks for a command that is not read-only', async () => {
+      await expectAsks({ command: 'npm test' }, hooked);
+    });
+
+    it('logs the reason of a refusal but never the command', async () => {
+      const entries: { message: string; context: unknown }[] = [];
+      const policy = createAgentPolicy({
+        rules: fakeRules().store,
+        logger: {
+          debug: (message, context) => void entries.push({ message, context }),
+          info: () => undefined,
+          warn: () => undefined,
+          error: () => undefined,
+        },
+      });
+      const ask = makeContext({ folderPath: folder, answer: DENY, mode: 'agent' });
+      await policy.decide(
+        bashRequest({ command: 'npm run secret-token-xyz' }, hooked),
+        ask.context,
+      );
+      expect(entries).toHaveLength(1);
+      expect(entries[0]?.message).toBe('A command was not treated as read-only.');
+      expect(JSON.stringify(entries)).not.toContain('secret-token-xyz');
+    });
+
+    it('a saved rule still wins and gives the approval of the user', async () => {
+      const { policy, ask, prompts } = setup({
+        answer: DENY,
+        rules: fakeRules({ 'folder-1': ['Bash(git status)'] }),
+      });
+      expect(
+        await policy.decide(bashRequest({ command: 'git status' }, hooked), ask.context),
+      ).toEqual(allowUser);
+      expect(prompts).toEqual([]);
+    });
+
+    it('Auto still gives the approval of Auto', async () => {
+      const { policy, ask, prompts } = setup({ answer: DENY, auto: true });
+      expect(await policy.decide(bashRequest({ command: 'ls src' }, hooked), ask.context)).toEqual({
+        response: { behavior: 'allow' },
+        approval: 'auto',
+      });
+      expect(prompts).toEqual([]);
+    });
+
+    it('a command that asks to leave the sandbox still asks', async () => {
+      await expectAsks({ command: 'ls src', dangerouslyDisableSandbox: true }, hooked);
+    });
+
+    it('PowerShell still asks', async () => {
+      const { policy, ask, prompts } = setup({ answer: DENY });
+      const decision = await policy.decide(
+        { ...request('PowerShell', { command: 'ls' }), hook: hooked },
+        ask.context,
+      );
+      expect(prompts).toHaveLength(1);
+      expect(decision.response.behavior).toBe('deny');
     });
   });
 
