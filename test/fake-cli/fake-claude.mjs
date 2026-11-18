@@ -277,6 +277,9 @@ async function main() {
           tool_input: h.input,
           tool_use_id: h.toolUseId,
         };
+        // A scenario may set what the hook reports about the working directory and the subagent.
+        if ('cwd' in h) body.cwd = h.cwd;
+        if ('agentId' in h) body.agent_id = h.agentId;
         if (h.phase === 'post') body.tool_response = {};
         if (h.phase === 'post-failure')
           Object.assign(body, { error: 'failed', is_interrupt: false, duration_ms: 1 });

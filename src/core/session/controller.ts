@@ -3335,7 +3335,12 @@ class Controller implements AppController {
         decision = 'ignore';
       }
     }
-    if (decision === 'use') return { choice: use };
+    if (decision === 'use') {
+      // Settings beyond the safe set (env, hooks, helpers, allow rules, directories) are in force.
+      return {
+        choice: found.needsSettingsDecision ? { ...use, settingsBeyondSafeSet: true } : use,
+      };
+    }
     const choice: ProjectConfigChoice = {
       settings: found.needsSettingsDecision ? 'ignore' : 'use',
       mcp: found.needsMcpDecision ? 'ignore' : 'use',

@@ -45,6 +45,9 @@ export const hookBodySchema = z.object({
   tool_name: z.string(),
   tool_use_id: z.string(),
   tool_input: z.unknown(),
+  // Checked by hand: a value of another type must not make the whole body malformed.
+  cwd: z.unknown().optional(),
+  agent_id: z.unknown().optional(),
 });
 
 export function isRecord(value: unknown): value is Record<string, unknown> {

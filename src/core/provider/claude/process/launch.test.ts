@@ -54,6 +54,18 @@ describe('buildChildEnv', () => {
     expect(ro.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS).toBe('1');
   });
 
+  it('keeps every Bash call of an Agent turn in the folder, whatever was inherited, and only then', () => {
+    const rw = buildChildEnv(base, false);
+    expect(rw.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR).toBe('1');
+    const overridden = buildChildEnv(
+      { ...base, CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '0' },
+      false,
+    );
+    expect(overridden.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR).toBe('1');
+    const ro = buildChildEnv(base, true);
+    expect(ro).not.toHaveProperty('CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR');
+  });
+
   it('does not modify the base environment', () => {
     const copy = { ...base };
     buildChildEnv(base, true);

@@ -49,6 +49,7 @@ import type {
   SessionRef,
   TurnContext,
   ToolHookEvent,
+  ToolHookFacts,
   TurnHandle,
   TurnImage,
   TurnObserver,
@@ -75,6 +76,8 @@ import { TEXT, errorSentence, formatResetTime, resultSentence } from './text';
 const PERSIST_INTERVAL_MS = 1000;
 /** Names of unsaved files listed in the warning before the turn. */
 const MAX_UNSAVED_LISTED = 5;
+/** Most pre-hook records kept at once; a call whose request never comes must not grow the map. */
+const MAX_PRE_TOOL_HOOKS = 256;
 
 type MetaPatch = Parameters<ConversationStore['updateMeta']>[1];
 
@@ -219,6 +222,12 @@ export class TurnRun {
   private closed = false;
   private handle: TurnHandle | undefined;
   private registration: TurnRegistration | undefined;
+  /**
+   * What each PreToolUse hook reported, by tool call id, until the permission request for the same
+   * call takes it (or the PostToolUse hook drops it). Ids belong to one provider process, so the
+   * map is emptied whenever the host registration is replaced. Capped, oldest first.
+   */
+  private readonly preToolHooks = new Map<string, ToolHookFacts>();
   private session: SessionPlan = { ref: { kind: 'new', sessionId: '' }, prefix: '' };
   private retried = false;
   private failed = false;
@@ -607,6 +616,7 @@ export class TurnRun {
     this.session = plan;
     this.registration?.dispose();
     this.registration = undefined;
+    this.preToolHooks.clear();
     await fs.rm(this.runDir, { recursive: true, force: true });
     await ensurePrivateDir(this.runDir);
     const planTool = this.offersPlanTool();
@@ -678,6 +688,7 @@ export class TurnRun {
       this.persistTimer = undefined;
       this.registration?.dispose();
       this.registration = undefined;
+      this.preToolHooks.clear();
       await fs.rm(this.runDir, { recursive: true, force: true }).catch((error: unknown) => {
         this.logger.warn('a run directory could not be removed', { error: redact(String(error)) });
       });
@@ -895,6 +906,7 @@ export class TurnRun {
   }
 
   private async onToolHook(event: ToolHookEvent): Promise<void> {
+    this.recordToolHook(event);
     const context = this.turnContext;
     if (!context) return;
     for (const observer of this.ranBefore) {
@@ -904,6 +916,25 @@ export class TurnRun {
       } catch (error) {
         this.logger.warn('an observer failed on a tool hook', { error: redact(String(error)) });
       }
+    }
+  }
+
+  /** Keeps what a pre-hook reported, for the permission request of the same call. */
+  private recordToolHook(event: ToolHookEvent): void {
+    if (event.phase === 'post') {
+      this.preToolHooks.delete(event.toolCallId);
+      return;
+    }
+    // Delete first so a repeated id counts as the newest entry.
+    this.preToolHooks.delete(event.toolCallId);
+    this.preToolHooks.set(event.toolCallId, {
+      ...(event.cwd !== undefined ? { cwd: event.cwd } : {}),
+      ...(event.agentId !== undefined ? { agentId: event.agentId } : {}),
+    });
+    while (this.preToolHooks.size > MAX_PRE_TOOL_HOOKS) {
+      const oldest = this.preToolHooks.keys().next();
+      if (oldest.done) break;
+      this.preToolHooks.delete(oldest.value);
     }
   }
 
@@ -1312,8 +1343,12 @@ export class TurnRun {
 
   // ---- permission requests and questions -------------------------------------------------------------
 
-  private async onPermissionRequest(request: PermissionRequest): Promise<PermissionResponse> {
-    const id = request.toolCallId;
+  private async onPermissionRequest(original: PermissionRequest): Promise<PermissionResponse> {
+    const id = original.toolCallId;
+    const hook = this.preToolHooks.get(id);
+    this.preToolHooks.delete(id);
+    // The spread copies `signal`, a plain property, so the policy sees the provider's own signal.
+    const request = hook !== undefined ? { ...original, hook } : original;
     this.awaiting.add(id);
     this.openCalls.add(id);
     if (!this.closed) this.setToolStatusIf(id, 'running', 'awaiting-approval');

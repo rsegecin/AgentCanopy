@@ -276,6 +276,107 @@ describe('permission requests', () => {
   });
 });
 
+describe('hook facts on permission requests', () => {
+  const input = { command: 'ls' };
+  const pre = (id: string, extra: Record<string, unknown> = {}) => ({
+    hook: { phase: 'pre', toolName: 'Bash', input, toolUseId: id, ...extra },
+  });
+  const post = (id: string) => ({
+    hook: { phase: 'post', toolName: 'Bash', input, toolUseId: id },
+  });
+  const ask = (id: string) => ({
+    permission: { toolName: 'Bash', input, toolUseId: id, onAllow: [], onDeny: [] },
+  });
+
+  async function run(steps: object[]): Promise<{
+    byId: Map<string, PermissionRequest>;
+    seenByObserver: Map<string, PermissionRequest>;
+  }> {
+    const byId = new Map<string, PermissionRequest>();
+    const seenByObserver = new Map<string, PermissionRequest>();
+    const policy: TurnPolicy = {
+      ...createPlanTestPolicy(),
+      decide: (request) => {
+        byId.set(request.toolCallId, request);
+        return Promise.resolve({ response: { behavior: 'allow' }, approval: 'policy' });
+      },
+    };
+    const observer: TurnObserver = {
+      wantsToolHooks: () => true,
+      onPermissionRequest: (_context, request) => {
+        seenByObserver.set(request.toolCallId, request);
+        return Promise.resolve();
+      },
+    };
+    const h = await harness({
+      policy,
+      observers: [observer],
+      scenario: {
+        steps: [
+          stateEvent('running'),
+          initEvent(),
+          ...steps,
+          assistantText('done'),
+          ...resultStep('done'),
+        ],
+      },
+    });
+    const view = h.attach();
+    sendAgent(view);
+    const turn = await finishedTurn(h, view);
+    expect(turn.status).toBe('completed');
+    return { byId, seenByObserver };
+  }
+
+  it('hands the policy what the pre-hook of the same call reported', async () => {
+    const { byId, seenByObserver } = await run([
+      pre('t_cwd', { cwd: '/the/folder' }),
+      ask('t_cwd'),
+      pre('t_agent', { cwd: '/the/folder', agentId: 'agent-1' }),
+      ask('t_agent'),
+      pre('t_only_agent', { cwd: null, agentId: 'agent-2' }),
+      ask('t_only_agent'),
+      ask('t_none'),
+    ]);
+    expect(byId.get('t_cwd')?.hook).toEqual({ cwd: '/the/folder' });
+    expect(byId.get('t_agent')?.hook).toEqual({ cwd: '/the/folder', agentId: 'agent-1' });
+    expect(byId.get('t_only_agent')?.hook).toEqual({ agentId: 'agent-2' });
+    expect(byId.get('t_none')).toBeDefined();
+    expect(byId.get('t_none')).not.toHaveProperty('hook');
+    // The observers see the same enriched request, and the provider's own abort signal.
+    expect(seenByObserver.get('t_cwd')?.hook).toEqual({ cwd: '/the/folder' });
+    const signal = byId.get('t_cwd')?.signal;
+    expect(signal).toBeInstanceOf(AbortSignal);
+    expect(seenByObserver.get('t_cwd')?.signal).toBe(signal);
+  });
+
+  it('forgets a call at its post hook, and uses each record once', async () => {
+    const { byId } = await run([
+      pre('t_post', { cwd: '/the/folder' }),
+      post('t_post'),
+      ask('t_post'),
+      pre('t_twice', { cwd: '/the/folder' }),
+      ask('t_twice'),
+      ask('t_twice'),
+    ]);
+    expect(byId.get('t_post')).not.toHaveProperty('hook');
+    // The map holds the later of the two requests: it came after the record was taken.
+    expect(byId.get('t_twice')).toBeDefined();
+    expect(byId.get('t_twice')).not.toHaveProperty('hook');
+  });
+
+  it('keeps at most 256 records, dropping the oldest', async () => {
+    const steps: object[] = [];
+    for (let i = 0; i < 300; i += 1) steps.push(pre(`c${i}`, { cwd: `/dir/${i}` }));
+    for (const id of ['c0', 'c43', 'c44', 'c299']) steps.push(ask(id));
+    const { byId } = await run(steps);
+    expect(byId.get('c0')).not.toHaveProperty('hook');
+    expect(byId.get('c43')).not.toHaveProperty('hook');
+    expect(byId.get('c44')?.hook).toEqual({ cwd: '/dir/44' });
+    expect(byId.get('c299')?.hook).toEqual({ cwd: '/dir/299' });
+  });
+});
+
 describe('the provider process', () => {
   it('is reported to the observers once, with its process id', async () => {
     const started: { pid: number; turnId: string }[] = [];

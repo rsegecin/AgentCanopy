@@ -33,6 +33,13 @@ export interface ProjectConfigChoice {
   settings: 'use' | 'ignore';
   /** `ignore`: start only AgentCanopy's tool server. Read-only turns always ignore project servers. */
   mcp: 'use' | 'ignore';
+  /**
+   * True when `settings` is `use` and the project's settings hold more than the safe set: environment
+   * variables, hooks, helper commands, allow rules, extra directories, or a file that could not be
+   * read. Such settings can change what a command runs (`PATH`, `BASH_ENV`), so Agent mode then
+   * stops treating any command as read-only.
+   */
+  settingsBeyondSafeSet?: boolean;
 }
 
 export type ExecutionProfile =

@@ -165,7 +165,11 @@ describe("asking about the project's Claude Code configuration", () => {
     );
     used.h.ui.chooseAnswers = ['use'];
     await turn(used.h, used.view);
-    expect(choiceOf(used.h, 0)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(used.h, 0)).toEqual({
+      settings: 'use',
+      mcp: 'use',
+      settingsBeyondSafeSet: true,
+    });
     both.view.expectMirror();
   });
 
@@ -187,7 +191,11 @@ describe("asking about the project's Claude Code configuration", () => {
     other.h.ui.chooseAnswers = ['use'];
     await turn(other.h, other.view, 'plan');
     expect(other.h.ui.callsOf('choose')).toHaveLength(1);
-    expect(choiceOf(other.h, 0)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(other.h, 0)).toEqual({
+      settings: 'use',
+      mcp: 'use',
+      settingsBeyondSafeSet: true,
+    });
   });
 
   it('remembers an answer, but not a dismissal', async () => {
@@ -203,12 +211,12 @@ describe("asking about the project's Claude Code configuration", () => {
     expect(choiceOf(h, 0)).toEqual({ settings: 'ignore', mcp: 'use' });
     await turn(h, view);
     expect(h.ui.callsOf('choose')).toHaveLength(2);
-    expect(choiceOf(h, 1)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(h, 1)).toEqual({ settings: 'use', mcp: 'use', settingsBeyondSafeSet: true });
     // Answered: the next turns do not ask again.
     await turn(h, view);
     await turn(h, view);
     expect(h.ui.callsOf('choose')).toHaveLength(2);
-    expect(choiceOf(h, 3)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(h, 3)).toEqual({ settings: 'use', mcp: 'use', settingsBeyondSafeSet: true });
     view.expectMirror();
   });
 
@@ -298,6 +306,83 @@ describe("asking about the project's Claude Code configuration", () => {
     await turn(h, view, 'agent');
     expect(seen).toEqual([{ settings: 'use', mcp: 'ignore' }]);
     expect(choiceOf(h, 0)).toEqual({ settings: 'use', mcp: 'ignore' });
+  });
+
+  it('marks the settings in use as beyond the safe set only when the user chose them and they need a decision', async () => {
+    const SETTINGS_WITH_ENV = JSON.stringify({ env: { PATH: '/somewhere/bin' } });
+
+    // "Use", for settings that run or change things: the flag is set.
+    const used = await project({ '.claude/settings.json': SETTINGS_WITH_ENV }, [text()]);
+    used.h.ui.chooseAnswers = ['use'];
+    await turn(used.h, used.view);
+    expect(choiceOf(used.h, 0)).toEqual({
+      settings: 'use',
+      mcp: 'use',
+      settingsBeyondSafeSet: true,
+    });
+
+    // Nothing needs a decision: nothing is asked and the flag is absent.
+    const plain = await project(
+      { '.claude/settings.json': JSON.stringify({ permissions: { deny: ['Read(.env)'] } }) },
+      [text()],
+    );
+    await turn(plain.h, plain.view, 'agent');
+    expect(plain.h.ui.callsOf('choose')).toEqual([]);
+    expect(choiceOf(plain.h, 0)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(plain.h, 0)).not.toHaveProperty('settingsBeyondSafeSet');
+
+    // Only a tool server needs a decision, and the user uses it: the settings are still the safe set.
+    const mcpOnly = await project({ '.mcp.json': MCP_SERVER }, [text()]);
+    mcpOnly.h.ui.chooseAnswers = ['use'];
+    await turn(mcpOnly.h, mcpOnly.view);
+    expect(choiceOf(mcpOnly.h, 0)).toEqual({ settings: 'use', mcp: 'use' });
+    expect(choiceOf(mcpOnly.h, 0)).not.toHaveProperty('settingsBeyondSafeSet');
+
+    // "Ignore": the settings are not in force, so the flag is absent.
+    const ignored = await project({ '.claude/settings.json': SETTINGS_WITH_ENV }, [text()]);
+    ignored.h.ui.chooseAnswers = ['ignore'];
+    await turn(ignored.h, ignored.view);
+    expect(choiceOf(ignored.h, 0)).toEqual({ settings: 'ignore', mcp: 'use' });
+    expect(choiceOf(ignored.h, 0)).not.toHaveProperty('settingsBeyondSafeSet');
+  });
+
+  it('gives the policy the flag with every decision', async () => {
+    const seen: (PolicyContext['projectConfig'] | 'none')[] = [];
+    const base = createPlanTestPolicy();
+    const policy = {
+      ...base,
+      decide: (request: Parameters<typeof base.decide>[0], context: PolicyContext) => {
+        seen.push(context.projectConfig ?? 'none');
+        return base.decide(request, context);
+      },
+    };
+    const permission: ScenarioSpec = {
+      scenario: {
+        steps: [
+          stateEvent('running'),
+          initEvent(),
+          {
+            permission: {
+              toolName: 'Bash',
+              input: { command: 'ls' },
+              toolUseId: 'toolu_f',
+              onAllow: [],
+              onDeny: [],
+            },
+          },
+          assistantText('done'),
+          ...resultStep('done'),
+        ],
+      },
+    };
+    const { h, view } = await project(
+      { '.claude/settings.json': SETTINGS_WITH_HOOKS },
+      [permission],
+      { policy, projectConfigGate: true },
+    );
+    h.ui.chooseAnswers = ['use'];
+    await turn(h, view, 'agent');
+    expect(seen).toEqual([{ settings: 'use', mcp: 'use', settingsBeyondSafeSet: true }]);
   });
 
   it('is not asked when the application is built with its own policy, unless switched on', async () => {

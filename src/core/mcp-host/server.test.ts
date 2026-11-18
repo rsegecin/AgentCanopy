@@ -967,6 +967,82 @@ describe('hooks', () => {
     });
   });
 
+  it('passes cwd and agent_id as cwd and agentId', async () => {
+    const onToolHook = vi.fn(() => Promise.resolve());
+    const { endpoint } = register({ onToolHook }, { hooks: true });
+    const r = await hookCall(
+      endpoint,
+      'pre',
+      JSON.stringify({
+        tool_name: 'Bash',
+        tool_use_id: 'toolu_20',
+        tool_input: { command: 'ls' },
+        cwd: '/work/folder',
+        agent_id: 'agent-7',
+      }),
+    );
+    expect(r.status).toBe(200);
+    expect(onToolHook).toHaveBeenLastCalledWith({
+      phase: 'pre',
+      toolCallId: 'toolu_20',
+      toolName: 'Bash',
+      input: { command: 'ls' },
+      cwd: '/work/folder',
+      agentId: 'agent-7',
+    });
+  });
+
+  it('drops a cwd or agent_id that is not a usable string, and still delivers the event', async () => {
+    const onToolHook = vi.fn(() => Promise.resolve());
+    const { endpoint } = register({ onToolHook }, { hooks: true });
+    const base = { tool_name: 'Bash', tool_use_id: 'toolu_21', tool_input: {} };
+    const expected = { phase: 'pre', toolCallId: 'toolu_21', toolName: 'Bash', input: {} };
+    const bad: Record<string, unknown>[] = [
+      { cwd: 5, agent_id: null },
+      { cwd: '', agent_id: '' },
+      { cwd: { a: 1 }, agent_id: ['x'] },
+      { cwd: true, agent_id: 7 },
+      { agent_id: 'a'.repeat(257) },
+    ];
+    for (const extra of bad) {
+      const r = await hookCall(endpoint, 'pre', JSON.stringify({ ...base, ...extra }));
+      expect(r.status).toBe(200);
+      expect(onToolHook).toHaveBeenLastCalledWith(expected);
+    }
+    expect(onToolHook).toHaveBeenCalledTimes(bad.length);
+
+    // A value at the limit is kept; one beyond it is dropped (this host takes a larger body).
+    const big = createHostToolServer({ logger: logs.logger, maxBodyBytes: 65_536 });
+    await big.start();
+    try {
+      const bigHook = vi.fn(() => Promise.resolve());
+      const registration = big.registerTurn(
+        { onPermissionRequest: vi.fn(), onToolHook: bigHook },
+        { toolHooks: true },
+      );
+      const atLimit = 'c'.repeat(4096);
+      await hookCall(
+        registration.endpoint,
+        'pre',
+        JSON.stringify({ ...base, cwd: atLimit, agent_id: 'a'.repeat(256) }),
+      );
+      expect(bigHook).toHaveBeenLastCalledWith({
+        ...expected,
+        cwd: atLimit,
+        agentId: 'a'.repeat(256),
+      });
+      await hookCall(
+        registration.endpoint,
+        'pre',
+        JSON.stringify({ ...base, cwd: 'c'.repeat(4097) }),
+      );
+      expect(bigHook).toHaveBeenLastCalledWith(expected);
+      expect(bigHook).toHaveBeenCalledTimes(2);
+    } finally {
+      await big.stop();
+    }
+  });
+
   it('reports a failed tool call as a post hook marked failed, and refuses unknown hook kinds', async () => {
     const onToolHook = vi.fn(() => Promise.resolve());
     const { endpoint } = register({ onToolHook }, { hooks: true });

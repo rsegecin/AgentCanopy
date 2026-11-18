@@ -26,6 +26,13 @@ export function buildChildEnv(base: NodeJS.ProcessEnv, readOnly: boolean): NodeJ
   env.CLAUDE_CODE_EMIT_SESSION_STATE_EVENTS = '1';
   env.CLAUDE_CODE_STARTUP_FAILURE_RESULTS = '1';
   env.CLAUDE_CODE_DISABLE_BACKGROUND_TASKS = '1';
-  if (readOnly) env.ENABLE_CLAUDEAI_MCP_SERVERS = 'false';
+  if (readOnly) {
+    env.ENABLE_CLAUDEAI_MCP_SERVERS = 'false';
+  } else {
+    // Every Bash call of an Agent turn starts in the folder, so a `cd` does not carry the next call
+    // elsewhere (read by Claude Code 2.1.325). The read-only command check still confirms each
+    // call's directory from the PreToolUse hook.
+    env.CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR = '1';
+  }
   return env;
 }

@@ -52,6 +52,8 @@ const KEEP_ALIVE_TIMEOUT_MS = 120_000;
 const BODY_TIMEOUT_MS = 30_000;
 const HOOK_TIMEOUT_MS = 30_000;
 const MAX_LOGGED_NAME = 100;
+const MAX_HOOK_CWD_LENGTH = 4096;
+const MAX_HOOK_AGENT_ID_LENGTH = 256;
 
 const DENY_FAILED: PermissionResponse = {
   behavior: 'deny',
@@ -112,6 +114,11 @@ function noop(): void {
 
 function truncate(value: string): string {
   return value.length > MAX_LOGGED_NAME ? `${value.slice(0, MAX_LOGGED_NAME)}...` : value;
+}
+
+/** The value when it is a non-empty string of at most `max` characters; otherwise undefined. */
+function boundedString(value: unknown, max: number): string | undefined {
+  return typeof value === 'string' && value.length > 0 && value.length <= max ? value : undefined;
 }
 
 function errorMessage(error: unknown): string {
@@ -592,6 +599,8 @@ export function createHostToolServer(options: HostToolServerOptions = {}): HostT
       return;
     }
     log.tool = truncate(parsed.data.tool_name);
+    const cwd = boundedString(parsed.data.cwd, MAX_HOOK_CWD_LENGTH);
+    const agentId = boundedString(parsed.data.agent_id, MAX_HOOK_AGENT_ID_LENGTH);
     if (route.handlers.onToolHook) {
       try {
         const outcome = await withTimeout(
@@ -602,6 +611,8 @@ export function createHostToolServer(options: HostToolServerOptions = {}): HostT
               toolName: parsed.data.tool_name,
               input: parsed.data.tool_input,
               ...(failed ? { failed: true } : {}),
+              ...(cwd !== undefined ? { cwd } : {}),
+              ...(agentId !== undefined ? { agentId } : {}),
             }))(),
           HOOK_TIMEOUT_MS,
         );

@@ -11,6 +11,19 @@ export interface PermissionRequest {
   input: Record<string, unknown>;
   /** Aborts when the provider cancels the request or its connection closes. A late answer is then ignored. */
   signal: AbortSignal;
+  /**
+   * What the PreToolUse hook reported for this call, when one arrived before the request. Absent
+   * when tool hooks are off for the turn or no hook carried this call's id.
+   */
+  hook?: ToolHookFacts;
+}
+
+/** Facts a provider's tool hook reports about one call. Untrusted, like everything the provider sends. */
+export interface ToolHookFacts {
+  /** The working directory the provider reported for the call. */
+  cwd?: string;
+  /** Present when the call comes from a subagent rather than from the main session. */
+  agentId?: string;
 }
 
 export type PermissionResponse =
@@ -25,6 +38,10 @@ export interface ToolHookEvent {
   input: unknown;
   /** Only for `post`: the provider reported that the tool call failed. */
   failed?: boolean;
+  /** The working directory the provider reported, when it reported one. */
+  cwd?: string;
+  /** Present when the call comes from a subagent rather than from the main session. */
+  agentId?: string;
 }
 
 export interface ToolTextResult {
