@@ -83,7 +83,21 @@ Messages that start "Claude Code offered tools that are not allowed in a read-on
 
 ## A command asks even though it is harmless
 
-In Agent mode a terminal command asks, including `ls`, unless you chose **Always allow** for that exact command or [Auto](agent-mode.md#auto) is on for the conversation. This is deliberate. Reads inside the workspace do not ask, and reads outside it do, unless you allowed them for the folder (see [Permissions](agent-mode.md#permissions)). Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable, and for PowerShell for plain commands made of letters, digits, spaces and `_ . / \ : -`. For everything at once, see Auto.
+In Agent mode a terminal command asks unless it is read-only, you chose **Always allow** for that exact command, or [Auto](agent-mode.md#auto) is on for the conversation. Only a fixed list of commands and options counts as read-only, and anything AgentCanopy does not fully understand asks. This is deliberate. A harmless command asks for one of these reasons:
+
+- It is not on the list, or uses an option that is not: `npm test`, `git fetch`, `sed -i`, `tail -f`, an abbreviated long option such as `--co`. A command is not read-only because it looks harmless; see [Read-only commands](agent-mode.md#read-only-commands) for the list.
+- It contains a variable, a substitution (`$(...)` or backticks), a `~` path, a glob (other than the patterns of grep `--include` and rg `--glob`), a redirection other than `2>&1`, `>&2` and `/dev/null`, a single `&`, or a line break.
+- It names a file outside the workspace folder, or a link inside the folder leads outside it. On Windows, MSYS paths such as `/c/...` ask.
+- It is a git command and the folder has no `.git` directory of its own at its root. A parent folder's repository, a linked worktree and a submodule (where `.git` is a file) all ask.
+- It is a PowerShell command. PowerShell commands ask unless saved or Auto is on.
+- It comes from a subagent, or Claude Code did not report the workspace folder as the working directory. AgentCanopy reads that from the hook it installs in Agent mode, so with `disableAllHooks` in your Claude Code user settings every command asks.
+- `agentCanopy.agent.alwaysAskCommands` is on. It turns read-only commands off.
+- You chose **Use Project Settings** and the project's settings hold environment variables, hooks or helper commands.
+- The workspace folder is your home folder or above it, or inside a credential location, or a `PATH` entry is relative or lies inside the folder.
+
+The AgentCanopy log records the reason a command was not judged read-only, at debug level and without the command text.
+
+Reads inside the workspace do not ask, and reads outside it do, unless you allowed them for the folder (see [Permissions](agent-mode.md#permissions)). Choose **Always allow** for commands you run often; it is offered for plain literal commands that do not start with an environment variable, and for PowerShell for plain commands made of letters, digits, spaces and `_ . / \ : -`. For everything at once, see Auto.
 
 ## Why did a command still ask with Auto on?
 
@@ -134,7 +148,7 @@ These appear as warnings in the chat view. They come from the Permissions tab an
 | The switch could not be changed. | The switch kept its old state, also when you meant to turn it off. Check what it shows, try again, and check the log for the reason |
 | That folder could not be read. | The folder you picked does not exist, is not a folder or could not be opened. Pick another |
 | That folder is inside the workspace folder, where reads never ask. | There is nothing to allow: reads inside the workspace folder never ask |
-| That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask. | These are never saved. Read the file once with **Allow once** when the agent asks |
+| That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask. | These are never saved. Read the file once with **Allow once** when the agent asks. Claude Code's memory for this folder is the exception: it needs no permission |
 | That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location. | Pick the folder that holds the files you mean, not one above it |
 | That folder is already inside a saved folder. | It already counts. The saved folder is listed under Saved permissions |
 
@@ -142,7 +156,7 @@ Turning a switch on or choosing **Allow a folder...** also does nothing in an un
 
 ## A read or a web call asks although I allowed it
 
-- The target is a credential location, AgentCanopy's own storage, on Windows a network path, a search that starts at your home folder or above it, or on Windows the temp folder. These always ask, whatever is on or saved. See [limitations](../limitations.md#saved-permissions-and-switches).
+- The target is a credential location, AgentCanopy's own storage, on Windows a network path, a search that starts at your home folder or above it, or on Windows the temp folder. These always ask, whatever is on or saved. See [limitations](../limitations.md#saved-permissions-and-switches). The one exception is Claude Code's memory for this folder (`projects/<slug>/memory` under `~/.claude`, or under `CLAUDE_CONFIG_DIR` when that is an absolute path), which is read without asking. A memory read still asks when the memory folder or a file in it is a link that leads elsewhere, when the call is an edit, when it is another project's memory, or when the folder path gives a slug of more than 200 characters.
 - The path is written in a form AgentCanopy cannot judge (whitespace at either end, or on Windows a path rooted without a drive, a drive letter without a separator, or a segment that ends in a dot or a space), or a pattern has `..` after a wildcard or an alternative in braces that starts at a root.
 - The permission belongs to another workspace folder. Another project, or another folder of the same window, has its own.
 - A saved site matches the exact host: `a.docs.example.com`, `example.com` and `docs.example.com:8443` are not `docs.example.com`. An address with a user name or password is never matched by a saved site.

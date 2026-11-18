@@ -117,7 +117,7 @@ const SWITCH_BODY: Record<PermissionSwitch, { title: string; paragraphs: string[
     title: 'Allow reads outside the folder without asking?',
     paragraphs: [
       'In this workspace folder the agent will read and search files anywhere on this machine without asking, in Ask, Plan and Agent mode. What it reads is sent to the model.',
-      "Credential locations and AgentCanopy's own storage still ask. Edits outside the folder still ask.",
+      "Credential locations (except Claude Code's own memory for this folder) and AgentCanopy's own storage still ask. Edits outside the folder still ask.",
     ],
   },
   'web-fetch': {

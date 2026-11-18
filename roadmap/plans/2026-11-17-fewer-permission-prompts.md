@@ -1,6 +1,6 @@
 # Fewer permission prompts: install Phase 12, read-only commands, Claude's memory
 
-Phase 13 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, written on 2026-11-17. **Not approved yet.**
+Phase 13 in `docs/planning/2026-11-10-implementation-plan.md`. Plan version 1, written on 2026-11-17. **Approved and built on 2026-11-17, with the departures listed in the Progress section at the end.** The text below is the plan as written and is not corrected.
 
 ## Context
 
@@ -106,3 +106,36 @@ After the `dangerouslyDisableSandbox` branch: if `request.toolName === 'Bash'`, 
   - In a new conversation with Auto off, Agent mode: `git status && git log --oneline -3` runs with "Allowed by AgentCanopy"; `npm test` asks; `cat ../something` asks.
   - A memory read under `~/.claude/projects/<slug>/memory` runs without a prompt.
 - Re-run `/private/tmp/claude-501/-Users-rinaldi-Documents-Sources-AgentCanopy/936bd4fb-f3b3-4758-b0f1-853de2fb339b/scratchpad/prompts.py` after a real plan execution to count the prompts left.
+
+## Progress
+
+Approved and built on 2026-11-17, on Windows 10, as the commits below. Four independent reviews of the plan ran before the build, and each departure in the second list closes a hole they showed or a contradiction they found.
+
+| Step | What it built | Commit |
+| :- | :- | :- |
+| 0. Version 0.1.4 | `package.json` and `package-lock.json` set to 0.1.4, so the installed version names the build that has Phase 12 | `9d1b006` |
+| 13.1. Claude's memory | `src/core/policy/readonly/claude-memory.ts` and `decideRead`: reads and searches whose targets all lie in `<config>/projects/<slug>/memory` for the folder are allowed with approval `policy`, in Ask, Plan and Agent mode. Edits still ask | `e34573a` |
+| 13.2. Hook data, flag, start folder | `PermissionRequest.hook` (`cwd`, `agentId`), taken from the PreToolUse hook of the same call; `ProjectConfigChoice.settingsBeyondSafeSet`; `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR=1` on Agent turns | `f8f68b3` |
+| 13.3. The checker | `src/core/policy/agent/readonly-command/` (`tokenize.ts`, `grammar.ts`, `git.ts`, `sed.ts`, `paths.ts`, `index.ts`): `checkReadOnlyCommand` returns read-only, or a refusal with a reason code. Nothing used it yet | `d47130c` |
+| 13.4. Wiring and `.gitattributes` | `decideCommand` allows a Bash command with approval `policy` after a saved rule and Auto, when the gates hold; `.gitattributes` becomes a protected file | `4a60453` |
+| 13.5. Documentation and status | The guides, `SECURITY.md`, `docs/limitations.md`, `docs/architecture.md`, `docs/protocol/claude-cli.md`, the changelog, the Permissions tab text, the status table and `CLAUDE.md` | The commit that carries this update |
+| Version 0.1.5 | The version of the build that has Phase 13 | The last commit of the phase |
+
+### Where the build differs from this roadmap
+
+1. **Each command has a list of the options it may use, not a list of forbidden ones.** GNU tools and git accept abbreviated long options (`sort --co=sh` runs a program, `git grep --op=x` runs a shell, `grep --der` follows links), `printf -v` assigns a shell variable, and several commands read lists of file names that the path check never sees (`--files0-from`, `file -f`, `date -f`). Anything not on a command's list asks. `jq` and `tree` are not on the list of commands; neither is installed on the machine. `diff` takes files and no directories, and `which` takes command names only.
+2. **A stricter tokenizer.** Control and format characters are refused anywhere, because Git Bash drops CR inside quotes. Only space and tab separate words. `>&2evil` and `x2>/dev/null` are file writes. Unquoted globs expand into words that were never checked. A UNC path in quotes makes the extension host contact a server. A word that starts with `=` is expanded by zsh.
+3. **git only with the folder's own `.git` directory,** nothing before the subcommand except `--no-pager`, and none of the git environment variables that redirect the repository. Without a `.git` at the root the agent could write `HEAD`, `objects/`, `refs/` and `config` there with no prompt, and git would treat the folder as a bare repository and run `core.fsmonitor`. In a monorepo subfolder `:/` and `HEAD:../x` read outside the folder.
+4. **The working directory is confirmed for each call,** from the PreToolUse hook AgentCanopy already installs in Agent mode. The roadmap relied on `CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR`, which user or project settings can switch off, and which does not hold for a subagent started in a worktree. The variable is still set, and it only raises how often the hook's `cwd` equals the folder. The hook's `cwd` and `agent_id` were found in the binary's schema and not observed at runtime.
+5. **Off in more cases:** when the folder is or holds a credential location (the home folder, for example), when `PATH` has an empty entry (ignored on Windows, where Git Bash drops it), a relative entry or an in-folder entry, and when the user chose to use project settings that hold environment variables, hooks or helper commands. Project `env` and hooks can set `PATH` or `BASH_ENV`.
+6. **The order is saved rule, Auto, read-only, prompt.** The roadmap put read-only first, which contradicted its own test ("a saved rule still wins with `user`") and the Auto table of the guide.
+7. **`.gitattributes` is a protected file.** The roadmap did not have it.
+8. **The label code in `commands.ts` is unchanged.** The roadmap wanted to refactor it into a words-based core shared with the new check; the check has its own tables, so the "runs project code" label on Always allow is as it was.
+9. **The checker is a folder of modules, not one file,** with an entry point `checkReadOnlyCommand(command, { folderPath, sensitiveRoots?, platform?, env? })` that returns a reason for every refusal. It is `async`, as the roadmap's `isReadOnlyCommand` was, and returns `{ readOnly: true }` or `{ readOnly: false, reason }`.
+10. **The memory helper covers both spellings of the folder path** (VS Code's `d:` and the real path's `D:`), resolves only the configuration directory to its real path, and accepts a memory directory only when it is a plain directory and not a link.
+11. **Windows, not macOS.** No `caffeinate`, and no macOS script to count prompts. The by-hand checks are on Windows.
+12. **Two version bumps,** 0.1.4 for Phase 12 and 0.1.5 for Phase 13, instead of one. The commits are 13.1 to 13.5, not three.
+
+### What was verified, and what was not
+
+<VERIFICATION: filled in by the primary model>

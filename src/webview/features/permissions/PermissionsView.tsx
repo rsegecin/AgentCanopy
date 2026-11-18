@@ -26,7 +26,7 @@ const SWITCH_TEXT: Record<PermissionSwitch, { label: string; description: string
   'read-outside': {
     label: 'Reads outside the folder',
     description:
-      "Read and search files anywhere on this machine. Credential locations and AgentCanopy's own storage still ask.",
+      "Read and search files anywhere on this machine. Credential locations and AgentCanopy's own storage still ask, except Claude Code's memory for this folder.",
   },
   'web-fetch': { label: 'Web fetch', description: 'Fetch any web address.' },
   'web-search': { label: 'Web search', description: 'Run any web search.' },
@@ -54,7 +54,7 @@ const ALWAYS_ASKS: { what: string; why: string }[] = [
   },
   {
     what: "Credential locations and AgentCanopy's own storage.",
-    why: 'They ask also with a switch on or inside a saved folder.',
+    why: "They ask also with a switch on or inside a saved folder. The one exception is reading Claude Code's memory for this folder, which never asks.",
   },
 ];
 

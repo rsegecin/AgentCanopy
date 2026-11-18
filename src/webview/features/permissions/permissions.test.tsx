@@ -67,7 +67,7 @@ describe('Permissions view: sections', () => {
     ).toEqual(['Reads outside the folder', 'Web fetch', 'Web search']);
     expect(PERMISSION_SWITCHES).toEqual(['read-outside', 'web-fetch', 'web-search']);
     expect(describedBy(switchOf('Reads outside the folder'))).toEqual([
-      "Read and search files anywhere on this machine. Credential locations and AgentCanopy's own storage still ask.",
+      "Read and search files anywhere on this machine. Credential locations and AgentCanopy's own storage still ask, except Claude Code's memory for this folder.",
     ]);
     expect(describedBy(switchOf('Web fetch'))).toEqual(['Fetch any web address.']);
     expect(describedBy(switchOf('Web search'))).toEqual(['Run any web search.']);
@@ -147,6 +147,7 @@ describe('Permissions view: sections', () => {
     expect(items[1]?.textContent).toContain('Edits to protected files.');
     expect(items[2]?.textContent).toContain('skills and background commands');
     expect(items[3]?.textContent).toContain("AgentCanopy's own storage");
+    expect(items[3]?.textContent).toContain("reading Claude Code's memory for this folder");
   });
 
   it('shows the six settings read-only, each with its value in words and its id', () => {

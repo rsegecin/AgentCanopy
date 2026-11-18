@@ -150,6 +150,12 @@ Added on 2026-11-15 for the saved permissions of Phase 11, from the tools refere
 - **PowerShell input.** The permissions page names `command` as the primary content field "for Bash and PowerShell", and the tools reference says hooks "receive the tool's command string in `tool_input.command`, with the same fields as the Bash tool". The tool's own input schema is not printed. The policy reads `command` for both tools.
 - **PowerShell rules.** "PowerShell permission rules use the same shape as Bash rules"; "Common aliases are canonicalized before matching" and "Matching is case-insensitive". AgentCanopy does not pass PowerShell rules to the CLI: a saved PowerShell command is matched in the host by exact text, so `ls` and `Get-ChildItem` are two commands there. On Windows the PowerShell tool is not sandboxed ("On Windows, sandboxing is not supported").
 
+Added on 2026-11-17 for the read-only commands of Phase 13. These are facts seen in the strings and schemas of the CLI 2.1.325 binary on Windows. None was observed at runtime, and the hook fields in particular were not seen in a real request body.
+
+- **`CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR`.** When it is set to `1`, the main session's shell is reset to the start folder after every `Bash` call, so a `cd` does not carry over to the next call. AgentCanopy sets it on Agent turns. It only makes it more likely that a call starts in the folder; user or project settings can set it differently, and a subagent started in a worktree runs in the worktree. The allow decision therefore reads the working directory from the hook of each call and does not rely on the variable.
+- **Hook body.** The schema of the `PreToolUse` hook input has `cwd` and, inside a subagent, `agent_id`. AgentCanopy accepts both as optional strings. A call with no `cwd`, or with an `agent_id`, is never allowed as read-only.
+- **Project slug.** The folder of a project under the configuration directory is named by replacing every character that does not match `[a-zA-Z0-9]` with `-` in the folder path, for example `d:\NSources\AgentCanopy` gives `d--NSources-AgentCanopy`. A slug of more than 200 characters is hashed. AgentCanopy does not reproduce that, so such a folder asks. The configuration directory is `CLAUDE_CONFIG_DIR` when that is set, else `~/.claude`. The slug of `d:\NSources\AgentCanopy` was also seen on disk, under `~/.claude/projects`.
+
 ## 14. Not covered
 
 - Windows and Linux.
