@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FolderKey, PromptAnswer, Settings } from '../../../shared';
 import type { PermissionRequest, PolicyContext, PolicyDecision } from '../../contracts';
 import type { GrantStore } from '../grants';
+import { projectSlug } from './claude-memory';
 import { createReadOnlyPolicy, escapeForDisplay } from './index';
 import {
   makeContext,
@@ -1345,4 +1346,151 @@ describe('decide: paths the host cannot judge', () => {
       expect(decision.response.behavior).toBe('deny');
     },
   );
+});
+
+describe('decide: Claude Code memory directory', () => {
+  let root: string;
+  let folder: string;
+  let config: string;
+  let home: string;
+  let slug: string;
+  let memdir: string;
+  let restoreHome: () => void;
+  let savedConfigDir: string | undefined;
+
+  beforeEach(async () => {
+    root = await makeTempDir('readonly-memory');
+    folder = join(root, 'folder');
+    config = join(root, 'config');
+    home = join(root, 'home');
+    await writeTree(folder, { 'src/a.ts': 'a' });
+    await fs.mkdir(home, { recursive: true });
+    slug = projectSlug(folder) ?? '';
+    memdir = join(config, 'projects', slug, 'memory');
+    await writeTree(memdir, { 'MEMORY.md': '# memory', 'note.md': 'note' });
+    await writeTree(config, {
+      '.credentials.json': 'secret',
+      [`projects/${slug}/session.jsonl`]: 's',
+      'projects/other-project/memory/x.md': 'x',
+    });
+    savedConfigDir = process.env['CLAUDE_CONFIG_DIR'];
+    process.env['CLAUDE_CONFIG_DIR'] = config;
+    restoreHome = useHome(home);
+  });
+  afterEach(async () => {
+    restoreHome();
+    if (savedConfigDir === undefined) delete process.env['CLAUDE_CONFIG_DIR'];
+    else process.env['CLAUDE_CONFIG_DIR'] = savedConfigDir;
+    await removeDir(root);
+  });
+
+  async function run(
+    toolName: string,
+    input: Record<string, unknown>,
+    mode: 'ask' | 'plan' = 'ask',
+  ): Promise<{ decision: PolicyDecision; prompts: ReturnType<typeof makeContext>['prompts'] }> {
+    const { context, prompts } = makeContext({ folderPath: folder, answer: DENY, mode });
+    return { decision: await policy.decide(request(toolName, input), context), prompts };
+  }
+
+  async function expectAllowed(toolName: string, input: Record<string, unknown>) {
+    const { decision, prompts } = await run(toolName, input);
+    expect(decision).toEqual(allow('policy'));
+    expect(prompts).toEqual([]);
+  }
+
+  async function expectAsks(toolName: string, input: Record<string, unknown>) {
+    const { decision, prompts } = await run(toolName, input);
+    expect(prompts).toHaveLength(1);
+    expect(prompts[0]).toMatchObject({ category: 'read-outside' });
+    expect(decision.response.behavior).toBe('deny');
+  }
+
+  describe('reads and searches pass without asking', () => {
+    it('Read of a memory file', async () => {
+      await expectAllowed('Read', { file_path: join(memdir, 'MEMORY.md') });
+    });
+
+    it('Grep with the memory directory as its path', async () => {
+      await expectAllowed('Grep', { path: memdir, pattern: 'note' });
+    });
+
+    it('Glob of the memory files', async () => {
+      await expectAllowed('Glob', { pattern: `${memdir}/*.md` });
+    });
+
+    it.each(['ask', 'plan'] as const)('Read in %s mode', async (mode) => {
+      const { decision, prompts } = await run('Read', { file_path: join(memdir, 'note.md') }, mode);
+      expect(decision).toEqual(allow('policy'));
+      expect(prompts).toEqual([]);
+    });
+
+    it('Read of a memory file that does not exist yet', async () => {
+      await expectAllowed('Read', { file_path: join(memdir, 'new.md') });
+    });
+
+    it('is spelled with another case of the drive letter on Windows', async () => {
+      if (process.platform !== 'win32') return;
+      const swapped = memdir.replace(/^[A-Za-z]/, (letter) =>
+        letter === letter.toLowerCase() ? letter.toUpperCase() : letter.toLowerCase(),
+      );
+      await expectAllowed('Read', { file_path: join(swapped, 'MEMORY.md') });
+    });
+  });
+
+  describe('everything else still asks', () => {
+    it("a file in another project's memory directory", async () => {
+      await expectAsks('Read', {
+        file_path: join(config, 'projects', 'other-project', 'memory', 'x.md'),
+      });
+    });
+
+    it('a file of this project that is outside memory', async () => {
+      await expectAsks('Read', { file_path: join(config, 'projects', slug, 'session.jsonl') });
+    });
+
+    it('the credentials file next to it', async () => {
+      await expectAsks('Read', { file_path: join(config, '.credentials.json') });
+    });
+
+    it('a symlink in memory that points to the credentials file', async () => {
+      await fs.symlink(join(config, '.credentials.json'), join(memdir, 'link.md'), 'file');
+      await expectAsks('Read', { file_path: join(memdir, 'link.md') });
+    });
+
+    it('a memory directory that is itself a link', async () => {
+      const elsewhere = join(root, 'elsewhere');
+      await writeTree(elsewhere, { 'f.md': 'f' });
+      await fs.rm(memdir, { recursive: true });
+      await fs.symlink(elsewhere, memdir, process.platform === 'win32' ? 'junction' : 'dir');
+      await expectAsks('Read', { file_path: join(memdir, 'f.md') });
+    });
+
+    it('a glob that climbs out of the memory directory', async () => {
+      await expectAsks('Glob', { pattern: `${memdir}/*/../../x` });
+    });
+
+    it('a glob with an alternative that starts somewhere else', async () => {
+      await expectAsks('Glob', { pattern: `${memdir}/{a.md,${config}/*}` });
+    });
+
+    it('a folder with no memory directory', async () => {
+      await fs.rm(memdir, { recursive: true });
+      await expectAsks('Read', { file_path: join(memdir, 'MEMORY.md') });
+    });
+
+    it('the home folder when CLAUDE_CONFIG_DIR points elsewhere', async () => {
+      await writeTree(join(home, '.claude', 'projects', slug, 'memory'), { 'x.md': 'x' });
+      await expectAsks('Read', {
+        file_path: join(home, '.claude', 'projects', slug, 'memory', 'x.md'),
+      });
+    });
+  });
+
+  it('uses the .claude folder in the home folder when CLAUDE_CONFIG_DIR is not set', async () => {
+    delete process.env['CLAUDE_CONFIG_DIR'];
+    const homeMemory = join(home, '.claude', 'projects', slug, 'memory');
+    await writeTree(homeMemory, { 'note.md': 'note' });
+    await expectAllowed('Read', { file_path: join(homeMemory, 'note.md') });
+  });
 });

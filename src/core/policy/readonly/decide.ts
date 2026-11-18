@@ -24,6 +24,7 @@ import {
 } from '../grants/sensitive';
 import { isValidGrant, type Grant } from '../grants/store';
 import { fetchSite, webCovered } from '../grants/web';
+import { claudeMemoryDirs, isInsideClaudeMemory } from './claude-memory';
 import { escapeForDisplay } from './escape';
 import { isInside } from './paths';
 import { PLAN_TOOL_NAME } from './tools';
@@ -152,11 +153,35 @@ function coverablePath(target: OutsideTarget, env: SensitiveEnv): string | undef
   const real = target.check.real;
   if (real === undefined) return undefined;
   if (isSensitivePath(real, env) || containsSensitive(real, env)) return undefined;
-  if (target.pattern !== undefined) {
-    const { rest } = splitPattern(target.pattern);
-    if (PARENT_COMPONENT.test(rest) || ROOTED_ALTERNATIVE.test(rest)) return undefined;
-  }
+  if (target.pattern !== undefined && !patternStaysWithinPrefix(target.pattern)) return undefined;
   return real;
+}
+
+/**
+ * True when the part of a glob pattern after its literal prefix neither climbs out with `..` nor has
+ * an alternative that starts somewhere else, so the pattern cannot match outside its prefix.
+ */
+function patternStaysWithinPrefix(pattern: string): boolean {
+  const { rest } = splitPattern(pattern);
+  return !PARENT_COMPONENT.test(rest) && !ROOTED_ALTERNATIVE.test(rest);
+}
+
+/**
+ * True when every target is inside Claude Code's own memory directory for this folder. The
+ * sensitive-location refusal is not applied: `~/.claude` is one, and this is the one place in it
+ * that is let through.
+ */
+async function inClaudeMemory(
+  targets: readonly OutsideTarget[],
+  folderPath: string,
+): Promise<boolean> {
+  const dirs = await claudeMemoryDirs(folderPath);
+  if (dirs.length === 0) return false;
+  return targets.every((target) => {
+    const real = target.check.real;
+    if (real === undefined || !isInsideClaudeMemory(real, dirs)) return false;
+    return target.pattern === undefined || patternStaysWithinPrefix(target.pattern);
+  });
 }
 
 async function directoryOf(real: string): Promise<string> {
@@ -255,6 +280,9 @@ export async function decideRead(
   // One prompt, showing the pattern when both leave the folder.
   const outside = targets[targets.length - 1];
   if (outside === undefined) return { response: { behavior: 'allow' }, approval: 'policy' };
+  if (await inClaudeMemory(targets, folderPath)) {
+    return { response: { behavior: 'allow' }, approval: 'policy' };
+  }
 
   const search = toolName !== 'Read';
   const prompt: NewPrompt = {

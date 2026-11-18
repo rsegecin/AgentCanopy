@@ -11,6 +11,7 @@ import {
 import type { AgentEvent } from '../../../shared';
 import type { PermissionRequest, PolicyDecision } from '../../contracts';
 import type { GrantStore } from '../grants';
+import { projectSlug } from '../readonly/claude-memory';
 import {
   makeContext,
   makeTempDir,
@@ -292,6 +293,26 @@ describe('agent policy', () => {
         detail: await expected(),
         choices: ['allow-once', 'deny'],
       });
+    });
+
+    it("an Edit of Claude Code's memory file still asks", async () => {
+      const config = join(root, 'config');
+      const memdir = join(config, 'projects', projectSlug(folder) ?? '', 'memory');
+      await writeTree(memdir, { 'MEMORY.md': '# memory' });
+      const saved = process.env['CLAUDE_CONFIG_DIR'];
+      process.env['CLAUDE_CONFIG_DIR'] = config;
+      try {
+        const { decide, prompts } = setup({ answer: DENY });
+        await decide('Edit', { file_path: join(memdir, 'MEMORY.md') });
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({
+          category: 'outside-workspace',
+          title: 'Edit a file outside the workspace',
+        });
+      } finally {
+        if (saved === undefined) delete process.env['CLAUDE_CONFIG_DIR'];
+        else process.env['CLAUDE_CONFIG_DIR'] = saved;
+      }
     });
 
     it('a symlink inside that points back inside is judged by where it leads', async () => {
