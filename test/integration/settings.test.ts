@@ -32,10 +32,10 @@ suite('settings', () => {
 
   test("Agent mode's Auto settings are read from their keys", async () => {
     await change('agent.auto.enabled', false);
-    await change('agent.auto.webTools', true);
+    await change('agent.auto.webTools', false);
     const settings = readSettings();
     assert.strictEqual(settings.agentAuto, false);
-    assert.strictEqual(settings.agentAutoWebTools, true);
+    assert.strictEqual(settings.agentAutoWebTools, false);
   });
 
   test('megabytes become bytes', async () => {

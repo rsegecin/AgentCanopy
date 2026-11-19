@@ -523,7 +523,7 @@ describe('turning Auto on', () => {
         `${workLine(h)}\nConversation: hello`,
         'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
         'Commands are not sandboxed.',
-        'Still asks: protected files, anything outside the folder, web access and other tools.',
+        'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).',
         REVIEW_PARAGRAPH,
         STAYS_PARAGRAPH,
       ].join('\n\n'),
@@ -588,7 +588,7 @@ describe('turning Auto on', () => {
           `${workLine(h)}\nConversation: new`,
           'Agent turns in this conversation run terminal commands and edits inside the folder without asking for each one. Commands run with your privileges.',
           sentence,
-          'Still asks: protected files, anything outside the folder, web access and other tools.',
+          'Still asks: protected files, anything outside the folder and other tools. Web fetch and web search also run without asking (agentCanopy.agent.auto.webTools).',
           REVIEW_PARAGRAPH,
           STAYS_PARAGRAPH,
         ].join('\n\n'),
@@ -759,14 +759,17 @@ describe('a turn with Auto', () => {
   });
 
   it('turned off during a turn: the next command asks, without a dialog', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(
-        commandSteps('echo one', 'one.txt', 'toolu_1'),
-        webFetchSteps('toolu_2'),
-        commandSteps('echo two', 'two.txt', 'toolu_3'),
-      ),
-    ]);
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          webFetchSteps('toolu_2'),
+          commandSteps('echo two', 'two.txt', 'toolu_3'),
+        ),
+      ],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     const id = await conversation(h, view);
     await turnOn(h, view);
@@ -793,14 +796,17 @@ describe('a turn with Auto', () => {
   });
 
   it('turned off during a turn while the store cannot write: off in memory, a toast, and the next command asks', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(
-        commandSteps('echo one', 'one.txt', 'toolu_1'),
-        webFetchSteps('toolu_2'),
-        commandSteps('echo two', 'two.txt', 'toolu_3'),
-      ),
-    ]);
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          webFetchSteps('toolu_2'),
+          commandSteps('echo two', 'two.txt', 'toolu_3'),
+        ),
+      ],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     const id = await conversation(h, view);
     await turnOn(h, view);
@@ -820,14 +826,17 @@ describe('a turn with Auto', () => {
   });
 
   it('turned off during a turn, stays off for it even when the meta comes back on behind its back', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(
-        commandSteps('echo one', 'one.txt', 'toolu_1'),
-        webFetchSteps('toolu_2'),
-        commandSteps('echo two', 'two.txt', 'toolu_3'),
-      ),
-    ]);
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          webFetchSteps('toolu_2'),
+          commandSteps('echo two', 'two.txt', 'toolu_3'),
+        ),
+      ],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     const id = await conversation(h, view);
     await turnOn(h, view);
@@ -1235,10 +1244,10 @@ describe('the setting', () => {
   });
 
   it('turned off during a turn, takes Auto away from it at once', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(webFetchSteps('toolu_1'), commandSteps('echo x', 'x.txt', 'toolu_2')),
-    ]);
+    const h = await harness(
+      [text(), agentScenario(webFetchSteps('toolu_1'), commandSteps('echo x', 'x.txt', 'toolu_2'))],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     await conversation(h, view);
     await turnOn(h, view);
@@ -1380,7 +1389,7 @@ describe('approving a plan', () => {
   });
 
   it.each<[string, Partial<Settings>]>([
-    ['a setting the dialog names', { agentAutoWebTools: true }],
+    ['a setting the dialog names', { agentAutoWebTools: false }],
     ['the sandbox setting', { sandbox: true }],
   ])(
     'changed while the dialog is open (%s): approved, but the turn runs without Auto',
@@ -1869,7 +1878,7 @@ describe('Auto turned off between turns', () => {
 describe('the settings the dialog names', () => {
   it.each([
     ['alwaysAskCommands', { alwaysAskCommands: true }],
-    ['agentAutoWebTools', { agentAutoWebTools: true }],
+    ['agentAutoWebTools', { agentAutoWebTools: false }],
     ['sandbox', { sandbox: true }],
   ] as const)('%s changed while the dialog is open: nothing is turned on', async (_name, patch) => {
     const h = await harness([text()]);
@@ -2319,14 +2328,17 @@ describe('Auto turned off, on and off again while the writes overlap', () => {
 
 describe('settings changed during a turn with Auto', () => {
   it('alwaysAskCommands turned on: the next command asks, and the composer says so at once', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(
-        commandSteps('echo one', 'one.txt', 'toolu_1'),
-        webFetchSteps('toolu_2'),
-        commandSteps('echo two', 'two.txt', 'toolu_3'),
-      ),
-    ]);
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          webFetchSteps('toolu_2'),
+          commandSteps('echo two', 'two.txt', 'toolu_3'),
+        ),
+      ],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     await conversation(h, view);
     await turnOn(h, view);
@@ -2392,10 +2404,10 @@ describe('settings changed during a turn with Auto', () => {
   });
 
   it('auto.webTools turned on: web calls still ask for the rest of the turn', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(webFetchSteps('toolu_1'), webFetchSteps('toolu_2')),
-    ]);
+    const h = await harness(
+      [text(), agentScenario(webFetchSteps('toolu_1'), webFetchSteps('toolu_2'))],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     await conversation(h, view);
     await turnOn(h, view);
@@ -2675,15 +2687,18 @@ describe('a draft with Auto', () => {
 
 describe('settings that narrow Auto, changed back during the turn', () => {
   it('alwaysAskCommands on and off again before the next command: it still asks, the next turn does not', async () => {
-    const h = await harness([
-      text(),
-      agentScenario(
-        commandSteps('echo one', 'one.txt', 'toolu_1'),
-        webFetchSteps('toolu_2'),
-        commandSteps('echo two', 'two.txt', 'toolu_3'),
-      ),
-      bashScenario('echo three', 'three.txt'),
-    ]);
+    const h = await harness(
+      [
+        text(),
+        agentScenario(
+          commandSteps('echo one', 'one.txt', 'toolu_1'),
+          webFetchSteps('toolu_2'),
+          commandSteps('echo two', 'two.txt', 'toolu_3'),
+        ),
+        bashScenario('echo three', 'three.txt'),
+      ],
+      { settings: { agentAutoWebTools: false } },
+    );
     const view = h.attach();
     await conversation(h, view);
     await turnOn(h, view);

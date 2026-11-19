@@ -395,7 +395,7 @@ describe('banners', () => {
       alwaysAskCommands: false,
       askWebTools: false,
       autoOffered: true,
-      autoWebTools: false,
+      autoWebTools: true,
       sandbox: false,
     });
 
@@ -405,7 +405,7 @@ describe('banners', () => {
       alwaysAskCommands: true,
       askWebTools: true,
       agentAuto: false,
-      agentAutoWebTools: true,
+      agentAutoWebTools: false,
       sandbox: true,
     };
     h.controller.environmentChanged();
@@ -414,7 +414,7 @@ describe('banners', () => {
       alwaysAskCommands: true,
       askWebTools: true,
       autoOffered: false,
-      autoWebTools: true,
+      autoWebTools: false,
       sandbox: true,
     });
     view.expectMirror();

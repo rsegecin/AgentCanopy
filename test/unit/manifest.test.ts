@@ -58,7 +58,7 @@ describe('package.json configuration', () => {
 
   it.each([
     ['agentCanopy.agent.auto.enabled', true],
-    ['agentCanopy.agent.auto.webTools', false],
+    ['agentCanopy.agent.auto.webTools', true],
   ])('declares %s as a machine-scoped boolean defaulting to %s', (key, value) => {
     expect(properties[key]).toMatchObject({ type: 'boolean', default: value, scope: 'machine' });
   });

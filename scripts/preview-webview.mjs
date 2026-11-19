@@ -581,7 +581,7 @@ const state = {
     alwaysAskCommands: false,
     askWebTools: false,
     autoOffered: true,
-    autoWebTools: false,
+    autoWebTools: true,
     sandbox: true,
   },
   banners: [

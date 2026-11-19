@@ -27,7 +27,7 @@ describe('shared contracts', () => {
   });
 
   it('has the Auto settings, on and off by default', () => {
-    expect(DEFAULT_SETTINGS).toMatchObject({ agentAuto: true, agentAutoWebTools: false });
+    expect(DEFAULT_SETTINGS).toMatchObject({ agentAuto: true, agentAutoWebTools: true });
     expect(EMPTY_VIEW_STATE.agentAuto).toEqual({ offered: false, commands: false });
     expect(EMPTY_VIEW_STATE.draftAgentAuto).toBe(false);
   });

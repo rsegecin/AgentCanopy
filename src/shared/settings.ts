@@ -45,7 +45,7 @@ export const DEFAULT_SETTINGS: Settings = {
   alwaysAskCommands: false,
   sandbox: false,
   agentAuto: true,
-  agentAutoWebTools: false,
+  agentAutoWebTools: true,
   exactEarlierForks: true,
   unsavedFiles: 'warn',
   snapshotMaxFileBytes: 10 * 1024 * 1024,

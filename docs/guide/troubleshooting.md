@@ -110,7 +110,7 @@ Auto is on when the Auto switch is pressed and the setting `agentCanopy.agent.au
 - The turn started before Auto was on. Whether a turn runs with Auto is decided when it is sent, and turning Auto on cannot change a turn that is already running.
 - The turn is the execution of a plan, and Auto was not turned on by the approval because something changed while its dialog was open, or Auto could not be saved. A warning said so; see [Auto messages](#auto-messages).
 - The call is a side question. A side question is a branch and starts without Auto, and it is read-only anyway.
-- It is not a command. Protected files, edits outside the folder (unless a folder you saved for edits covers them, and then not protected files or credential locations), other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search, unless `agentCanopy.agent.auto.webTools` is on or a switch or saved site of the folder covers them.
+- It is not a command. Protected files, edits outside the folder (unless a folder you saved for edits covers them, and then not protected files or credential locations), other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search while `agentCanopy.agent.auto.webTools` is off (it is on by default), unless a switch or saved site of the folder covers them.
 
 ## Auto messages
 

@@ -1176,6 +1176,18 @@ describe('agent policy', () => {
         settings: { agentAutoWebTools: true },
         expected: 'auto',
       },
+      {
+        name: 'WebFetch with the default settings',
+        tool: 'WebFetch',
+        input: () => ({ url: 'https://example.com' }),
+        expected: 'auto',
+      },
+      {
+        name: 'WebSearch with the default settings',
+        tool: 'WebSearch',
+        input: () => ({ query: 'q' }),
+        expected: 'auto',
+      },
       // R4: what Auto never approves.
       {
         name: 'a Bash command with alwaysAskCommands',
@@ -1233,12 +1245,14 @@ describe('agent policy', () => {
         name: 'WebFetch without the web setting',
         tool: 'WebFetch',
         input: () => ({ url: 'https://example.com' }),
+        settings: { agentAutoWebTools: false },
         expected: 'asks',
       },
       {
         name: 'WebSearch without the web setting',
         tool: 'WebSearch',
         input: () => ({ query: 'q' }),
+        settings: { agentAutoWebTools: false },
         expected: 'asks',
       },
       { name: 'an MCP tool', tool: 'mcp__x__y', input: () => ({}), expected: 'asks' },

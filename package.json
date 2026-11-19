@@ -314,9 +314,9 @@
         },
         "agentCanopy.agent.auto.webTools": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "scope": "machine",
-          "description": "Let Auto also approve web fetch and web search. Off by default: a fetched page can carry instructions for the agent, and a request can send file contents out."
+          "description": "Let Auto also approve web fetch and web search. On by default. Turn it off to have them ask even with Auto on: a fetched page can carry instructions for the agent, and a request can send file contents out."
         },
         "agentCanopy.forks.exactEarlierMessages": {
           "type": "boolean",
