@@ -17,14 +17,23 @@ export function childEnv(extra = {}) {
 }
 
 export function psList() {
+  // No ps on Windows: survivor checks report nothing there.
+  if (process.platform === 'win32') return [];
   const r = spawnSync('ps', ['-A', '-o', 'pid=,ppid=,pgid=,command='], { encoding: 'utf8' });
-  return r.stdout.split('\n').filter(Boolean).map((l) => {
+  return (r.stdout ?? '').split('\n').filter(Boolean).map((l) => {
     const m = l.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.*)$/);
     return m ? { pid: +m[1], ppid: +m[2], pgid: +m[3], command: m[4].slice(0, 200) } : null;
   }).filter(Boolean);
 }
 export const groupMembers = (pgid) => psList().filter((p) => p.pgid === pgid);
 export function killGroup(pgid, sig = 'SIGKILL') { try { process.kill(-pgid, sig); } catch {} }
+// Negative pids do nothing on Windows, so kill the child itself and, there, its whole tree.
+export function killChild(child, sig = 'SIGKILL') {
+  try { child.kill(sig); } catch {}
+  if (process.platform === 'win32' && child.pid) {
+    try { spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true }); } catch {}
+  }
+}
 
 /**
  * opts: { args, prompt, cwd, env, outPrefix (path prefix for files), timeoutMs, signals, onStart,
@@ -35,7 +44,7 @@ export async function runClaude(opts) {
   const { args, prompt, cwd, env, outPrefix, timeoutMs = 240000, signals = [], onStart, survivorCheckDelayMs = 0, survivorMatch } = opts;
   const t0 = Date.now();
   const startedAt = new Date(t0).toISOString();
-  const child = spawn('claude', args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  const child = spawn('claude', args, { cwd, env, detached: process.platform !== 'win32', windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   const pgid = child.pid;
   const bus = new EventEmitter();
   const handle = { pid: child.pid, pgid, bus, on: (e, f) => bus.on(e, f), signalSent: [], t0,
@@ -83,7 +92,8 @@ export async function runClaude(opts) {
   const timer = setTimeout(() => {
     timedOut = true;
     killGroup(pgid, 'SIGTERM');
-    setTimeout(() => killGroup(pgid, 'SIGKILL'), 5000);
+    if (process.platform === 'win32') killChild(child);
+    setTimeout(() => { killGroup(pgid, 'SIGKILL'); killChild(child); }, 5000);
   }, timeoutMs);
 
   const { exitCode, signal } = await new Promise((resolve) => child.on('close', (c, s) => resolve({ exitCode: c, signal: s })));

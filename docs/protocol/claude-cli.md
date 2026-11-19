@@ -139,7 +139,7 @@ Checked on 2026-11-14 against the Claude Code documentation for 2.1.322, for the
 - **Sandbox.** macOS, Linux and WSL2 only; on native Windows commands run unsandboxed. The `Bash` input `dangerouslyDisableSandbox` asks to run one command outside the sandbox, behind a prompt. `sandbox.allowUnsandboxedCommands: false` removes that retry and, set through `--settings`, holds against project settings. Whether the permission prompt tool receives the `dangerouslyDisableSandbox` field is not documented.
 - **Monitor** runs a background command and "uses the same permission rules as Bash"; its own name also needs permission.
 - **Skill.** A skill's `allowed-tools` grants the listed tools for the turn that invokes it, without prompting. That an ask rule still wins over that grant follows from the evaluation order; it is not stated.
-- **Subagents.** Their tool calls fire `PreToolUse` and `PostToolUse` like the main agent's. A subagent definition's `permissionMode` applies under a parent in the default mode. Whether a subagent's inner calls reach the permission prompt tool was not probed (see section 14).
+- **Subagents.** Their tool calls fire `PreToolUse` and `PostToolUse` like the main agent's. A subagent definition's `permissionMode` applies under a parent in the default mode. That a subagent's inner calls reach the permission prompt tool was probed later: see section 14.
 - **Plan mode tools.** `EnterPlanMode` switches the session to plan mode without asking. Approving `ExitPlanMode` can switch the session's permission mode for later calls. The policy's `inspect` checks the mode at session start only.
 - **Hooks.** "PreToolUse hook decisions don't bypass permission rules": a matching ask rule still prompts when a hook returned allow.
 
@@ -156,8 +156,21 @@ Added on 2026-11-17 for the read-only commands of Phase 13. These are facts seen
 - **Hook body.** The schema of the `PreToolUse` hook input has `cwd` and, inside a subagent, `agent_id`. AgentCanopy accepts both as optional strings. A call with no `cwd`, or with an `agent_id`, is never allowed as read-only.
 - **Project slug.** The folder of a project under the configuration directory is named by replacing every character that does not match `[a-zA-Z0-9]` with `-` in the folder path, for example `d:\NSources\AgentCanopy` gives `d--NSources-AgentCanopy`. A slug of more than 200 characters is hashed. AgentCanopy does not reproduce that, so such a folder asks. The configuration directory is `CLAUDE_CONFIG_DIR` when that is set, else `~/.claude`. The slug of `d:\NSources\AgentCanopy` was also seen on disk, under `~/.claude/projects`.
 
-## 14. Not covered
+## 14. Subagents (probed)
 
-- Windows and Linux.
+Observed on 2026-11-18 with Claude Code 2.1.325 on Windows 10, in one run of spike scenario `G1` (`node spike/run.mjs G1`, then `node spike/run.mjs --check G1 --verbose`). The run mirrored an Agent turn: `--permission-mode default`, the permission prompt tool, the Agent ask rules and the three HTTP hooks through `--settings`, `--setting-sources user`, `--strict-mcp-config`, and no `--model`. The prompt asked for two `general-purpose` subagents in one message, one with model `haiku` and one with `sonnet`, each to write a file and run `echo`. Everything in this section was seen in that run; nothing else about subagents was.
+
+- **Without `--model`, `system/init.model` is the resolved id** of the default model (`claude-fable-5-2` here), not an alias. `message.model` on the main session's assistant events and one key of `result.modelUsage` are the same id.
+- **The launch tool is called `Agent` in events.** `init.tools` lists it as `Task`; the `tool_use` blocks, the hooks and the tool results name it `Agent`. Its input had the keys `description`, `subagent_type`, `model` and `prompt`. `init.agents` listed `claude`, `Explore`, `general-purpose`, `Plan`, `statusline-setup` and `web-fetch`.
+- **The `model` of a launch is honored.** The assistant events of the subagent launched with `haiku` carry `message.model: "claude-haiku-5-5"`, those of the one launched with `sonnet` carry `"claude-sonnet-5-5"`, and `result.modelUsage` has a key for each of the three models. A subagent's events carry `parent_tool_use_id`, the id of the `Agent` call that launched it.
+- **The launch does not ask, and fires hooks.** No permission request was made for `Agent`. `PreToolUse` and `PostToolUse` fired for it, with no `agent_id`.
+- **A subagent's own calls reach the permission prompt tool.** Its `Write` and `Bash` each made one request, with the same arguments as a main-session call (`tool_name`, `input`, `tool_use_id`) and nothing that names the subagent. The request can be tied to its subagent only through the stream (`tool_use_id`, then the `parent_tool_use_id` of that `tool_use`) or through the hook of the same call.
+- **Hook body inside a subagent.** `PreToolUse` and `PostToolUse` carry `agent_id` (17 characters of lower-case hex, starting with `a`) and `agent_type` (`general-purpose`), next to `session_id`, `transcript_path`, `cwd`, `prompt_id`, `permission_mode`, `effort`, `hook_event_name`, `tool_name`, `tool_input` and `tool_use_id`. `cwd` was the start folder. This confirms the `agent_id` field that section 13 took from the binary.
+- **Two launches in one message run at the same time.** The second subagent's first event came 0.3 s before the first one's last event. Their tool calls did not overlap in this run (each made only two), so whether two subagents' calls can be pending at once was not seen.
+- Not probed: a subagent with `isolation: "worktree"` or in the background, a project's own `.claude/agents` under `--setting-sources user`, the `--agents` flag, a subagent that launches another, a denied permission inside a subagent, and what a subagent's text looks like in the stream (AgentCanopy drops it).
+
+## 15. Not covered
+
+- Linux, and Windows beyond what sections 13 and 14 say.
 - Authentication failure and rate-limit shapes (not reproducible without logging out or exhausting limits).
-- Subagent (`Task`) event shapes, and writes larger than 40 KB.
+- Writes larger than 40 KB.

@@ -43,7 +43,8 @@ export function makeScenario(id) {
     const before = listTree(work);
     const host = opts.host ?? !!opts.handler;
     const srv = host ? await startServer({ dir, prefix: `${name}.`, handler: opts.handler, submitPlan: !!opts.submitPlan }) : null;
-    const args = [...BASE_FLAGS, '--model', opts.model ?? 'haiku'];
+    // model: undefined -> haiku; null -> no --model flag (the CLI's own default)
+    const args = [...BASE_FLAGS, ...(opts.model === null ? [] : ['--model', opts.model ?? 'haiku'])];
     if (host) args.push('--mcp-config', srv.configFile, '--permission-prompt-tool', 'mcp__agentcanopy__permission_prompt');
     let settings = opts.settings;
     if (opts.ask) {

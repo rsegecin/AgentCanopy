@@ -406,4 +406,25 @@ def('C2x', async () => {
   });
 });
 
+// Subagents (Task/Agent tool): which model does each run on, are its permission requests and hooks
+// identifiable, and do two launched together overlap? Mirrors an Agent turn of the extension:
+// host on, ask rules for the file/shell/web tools, HTTP hooks, user settings only, no project MCP.
+// No --model flag (model: null). Not in ORDER: it runs the real CLI with the default model.
+def('G1', async () => {
+  const sc = makeScenario('G1');
+  const ASK = ['Edit', 'Write', 'NotebookEdit', 'Bash', 'PowerShell', 'Read', 'Grep', 'Glob', 'WebFetch', 'WebSearch', 'Monitor', 'Skill'];
+  await sc.step('delegate', {
+    model: null,
+    handler: handlerAllow,
+    args: ['--setting-sources', 'user', '--strict-mcp-config'],
+    settings: (srv) => {
+      const entry = [{ matcher: '*', hooks: [{ type: 'http', url: srv.hookUrl, timeout: 30 }] }];
+      return { permissions: { ask: ASK }, hooks: { PreToolUse: entry, PostToolUse: entry, PostToolUseFailure: entry } };
+    },
+    env: { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_BASH_MAINTAIN_PROJECT_WORKING_DIR: '1' },
+    timeoutMs: 300000,
+    prompt: 'Launch two subagents of type general-purpose in a single message so they run at the same time. Give the first one model "haiku" and this task: use the Write tool to create the file one.txt containing the word one, then run the shell command `echo one-done`, then reply with the word done. Give the second one model "sonnet" and this task: use the Write tool to create the file two.txt containing the word two, then run the shell command `echo two-done`, then reply with the word done. Do not do the work yourself. When both have finished, reply with exactly: finished.',
+  });
+});
+
 export const ORDER = ['T1', 'T2', 'T3', 'P1', 'P2', 'P3', 'P4', 'P5', 'P6', 'A1', 'A2', 'Q1', 'S1', 'S2', 'C1', 'C2', 'C3', 'C4', 'L1', 'X1', 'E1'];
