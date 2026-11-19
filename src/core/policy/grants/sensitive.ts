@@ -7,6 +7,8 @@ import { realFolderPath } from '../readonly/targets';
 /**
  * Where the sensitive locations are. Every path is a real path. This is a backstop for the common
  * credential stores and for AgentCanopy's own storage, not a complete list of what is private.
+ * On Windows the user's temp folder lies under `AppData` and is the one place there that is not
+ * sensitive (see `tempFolder`).
  */
 export interface SensitiveEnv {
   home: string;
@@ -45,11 +47,25 @@ function foldsCase(env: SensitiveEnv): boolean {
   return env.platform === 'win32' || env.platform === 'darwin';
 }
 
-function locations(env: SensitiveEnv): string[] {
+/** The credential locations under the home directory. */
+function homeLocations(env: SensitiveEnv): string[] {
   const names = [...HOME_NAMES];
   if (env.platform === 'win32') names.push('AppData');
   if (env.platform === 'darwin') names.push('Library');
-  return [...names.map((name) => join(env.home, name)), ...env.roots];
+  return names.map((name) => join(env.home, name));
+}
+
+function locations(env: SensitiveEnv): string[] {
+  return [...homeLocations(env), ...env.roots];
+}
+
+/**
+ * Windows keeps the user's temp folder under AppData. It holds scratch files of every program, not
+ * credential stores, so it is the one place under AppData that is an ordinary location. The path is
+ * fixed, not read from TEMP: a variable must not be able to declare part of AppData ordinary.
+ */
+function tempFolder(env: SensitiveEnv): string | undefined {
+  return env.platform === 'win32' ? join(env.home, 'AppData', 'Local', 'Temp') : undefined;
 }
 
 /** The location and the path, both lower case when the file system ignores case. */
@@ -57,17 +73,27 @@ function folded(env: SensitiveEnv, ...paths: string[]): string[] {
   return foldsCase(env) ? paths.map((path) => path.toLowerCase()) : paths;
 }
 
+/** True when the real path is one of the places or lies below one. */
+function insideAny(env: SensitiveEnv, real: string, places: readonly string[]): boolean {
+  return places.some((place) => {
+    const [root, path] = folded(env, place, real);
+    return root !== undefined && path !== undefined && isInside(root, path);
+  });
+}
+
 /**
  * True when the real path is a sensitive location or lies below one. On Windows it is also true for
  * every path that starts with two backslashes: a network share or an administrative share such as
- * `\\localhost\C$` cannot be told apart from a local path.
+ * `\\localhost\C$` cannot be told apart from a local path. The temp folder of Windows is not
+ * sensitive although it lies under `AppData`; AgentCanopy's own storage is, wherever it lies, so it
+ * is looked at first.
  */
 export function isSensitivePath(real: string, env: SensitiveEnv): boolean {
   if (env.platform === 'win32' && (real.startsWith('\\\\') || real.startsWith('//'))) return true;
-  return locations(env).some((location) => {
-    const [root, path] = folded(env, location, real);
-    return root !== undefined && path !== undefined && isInside(root, path);
-  });
+  if (insideAny(env, real, env.roots)) return true;
+  const temp = tempFolder(env);
+  if (temp !== undefined && insideAny(env, real, [temp])) return false;
+  return insideAny(env, real, homeLocations(env));
 }
 
 /**

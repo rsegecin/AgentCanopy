@@ -65,8 +65,9 @@ async function setup(
   options: HarnessOptions & { settings?: Partial<typeof DEFAULT_SETTINGS> } = {},
 ): Promise<Setup> {
   const { settings, ...rest } = options;
-  // The temporary directories lie under the real home (on Windows under `AppData`, which is
-  // sensitive), so the test has a home of its own.
+  // The test has a home of its own, so that what is sensitive is under its control: the temporary
+  // directories lie under the real home, whose credential locations must not be in play (and,
+  // before Phase 18, on Windows the temporary directory itself was sensitive).
   const h = await createHarness({ realDefaults: true, sequence, ...rest });
   harnesses.push(h);
   if (settings) {

@@ -50,7 +50,9 @@ beforeAll(async () => {
   await fs.symlink(join(outside, 'secret.txt'), join(bsd, '5'), 'file');
   await fs.mkdir(join(folder, 'd1'));
   await fs.symlink(join(outside, 'secret.txt'), join(folder, 'd1', 'x'), 'file');
-  // The temporary folder lies under the real home (AppData on Windows, which is sensitive).
+  // A home of its own, so that what is sensitive is under the test's control: the temporary folder
+  // lies under the real home, whose credential locations must not be in play (and, before Phase 18,
+  // on Windows the temporary folder itself was sensitive).
   restoreHome = useHome(home);
   env = { PATH: binDir };
 });

@@ -593,8 +593,10 @@ describe('agent policy', () => {
       await fs.mkdir(join(folder, '.git', 'refs'), { recursive: true });
       const bin = join(root, 'bin');
       await fs.mkdir(bin, { recursive: true });
-      // The temporary folder lies under AppData on Windows, a credential location: without a home of
-      // its own, every command would be refused as `sensitive-folder`.
+      // A home of its own, so that what is sensitive is under the test's control: the temporary
+      // folder lies under the real home, whose credential locations must not be in play (and, before
+      // Phase 18, on Windows the temporary folder itself was sensitive, so every command was refused
+      // as `sensitive-folder`).
       const home = join(root, 'home');
       await fs.mkdir(home, { recursive: true });
       restoreHome = useHome(home);
@@ -1459,8 +1461,9 @@ describe('agent policy with saved permissions', () => {
   let restoreHome: () => void;
   let grants: GrantStore;
 
-  // The temporary directories lie under the real home (under AppData on Windows, which is
-  // sensitive), so these tests run with a home directory of their own.
+  // These tests run with a home directory of their own, so that what is sensitive is under their
+  // control: the temporary directories lie under the real home, whose credential locations must not
+  // be in play (and, before Phase 18, on Windows the temporary directory itself was sensitive).
   beforeEach(async () => {
     root = await makeTempDir('agent-saved');
     folder = join(root, 'folder');
@@ -1626,6 +1629,41 @@ describe('agent policy with saved permissions', () => {
         expect((await decide(tool, input(join(other, 'x.txt')))).response.behavior).toBe('allow');
         expect(prompts).toHaveLength(2);
         expect(prompts[1]).toMatchObject({ alwaysRule: { kind: 'edit-directory', rule: other } });
+      },
+    );
+
+    it.runIf(process.platform === 'win32')(
+      'an edit in the temp folder of Windows is an ordinary edit outside the folder',
+      async () => {
+        const work = join(home, 'AppData', 'Local', 'Temp', 'work');
+        await fs.mkdir(work, { recursive: true });
+        const file = join(work, 'out.txt');
+
+        for (const tool of ['Write', 'Edit']) {
+          const { decide, prompts } = setup({ answer: DENY });
+          await decide(tool, { file_path: file });
+          expect(prompts).toHaveLength(1);
+          expect(prompts[0]).toMatchObject({
+            category: 'outside-workspace',
+            choices: ONCE_ALWAYS_DENY,
+            alwaysRule: { kind: 'edit-directory', rule: work },
+          });
+        }
+
+        await grants.add(KEY, { kind: 'edit-directory', path: work });
+        for (const tool of ['Write', 'Edit']) {
+          const { decide, prompts } = setup({ answer: DENY });
+          expect(await decide(tool, { file_path: file })).toEqual(allowUser);
+          expect(prompts).toEqual([]);
+        }
+
+        // A protected file in the saved folder still asks, without an offer to save. Outside the
+        // folder the prompt is the one for a file outside the workspace.
+        const { decide, prompts } = setup({ answer: DENY });
+        await decide('Edit', { file_path: join(work, '.env') });
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ category: 'outside-workspace', choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
       },
     );
 

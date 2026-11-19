@@ -496,8 +496,9 @@ describe('decide: saved permissions for reads', () => {
   let restoreHome: () => void;
   let grants: GrantStore;
 
-  // The temporary directories lie under the real home (under AppData on Windows, which is
-  // sensitive), so these tests run with a home directory of their own.
+  // These tests run with a home directory of their own, so that what is sensitive is under their
+  // control: the temporary directories lie under the real home, whose credential locations must not
+  // be in play (and, before Phase 18, on Windows the temporary directory itself was sensitive).
   beforeEach(async () => {
     root = await makeTempDir('readonly-saved');
     folder = join(root, 'folder');
@@ -695,6 +696,51 @@ describe('decide: saved permissions for reads', () => {
     const grep = await run('Grep', { pattern: 'x', path: outside, glob: `${fwd(other)}/*` }, DENY);
     expect(grep.prompts).toHaveLength(1);
   });
+
+  it.runIf(process.platform === 'win32')(
+    'the temp folder of Windows is an ordinary place to read from, the rest of AppData is not',
+    async () => {
+      const work = join(home, 'AppData', 'Local', 'Temp', 'work');
+      const roaming = join(home, 'AppData', 'Roaming');
+      await writeTree(work, { 'a.txt': 'a' });
+      await writeTree(roaming, { 'b.txt': 'b' });
+      const file = join(work, 'a.txt');
+
+      // Nothing saved: asks, and offers to save the folder.
+      const asked = await run('Read', { file_path: file }, DENY);
+      expect(asked.prompts).toHaveLength(1);
+      expect(asked.prompts[0]).toMatchObject({
+        category: 'read-outside',
+        choices: ONCE_ALWAYS_DENY,
+        alwaysRule: { kind: 'read-directory', rule: work },
+      });
+
+      // The folder saved: no prompt.
+      await grants.add(FOLDER_KEY, { kind: 'read-directory', path: work });
+      const saved = await run('Read', { file_path: file }, DENY);
+      expect(saved.decision).toEqual(allow('user'));
+      expect(saved.prompts).toEqual([]);
+      await grants.remove(FOLDER_KEY, { kind: 'read-directory', path: work });
+
+      // The temp folder itself saved: no prompt either.
+      const temp = join(home, 'AppData', 'Local', 'Temp');
+      await grants.add(FOLDER_KEY, { kind: 'read-directory', path: temp });
+      const savedTemp = await run('Read', { file_path: file }, DENY);
+      expect(savedTemp.decision).toEqual(allow('user'));
+      expect(savedTemp.prompts).toEqual([]);
+      await grants.remove(FOLDER_KEY, { kind: 'read-directory', path: temp });
+
+      // Only the switch: no prompt for the temp folder, a prompt for the rest of AppData.
+      await grants.setSwitch(FOLDER_KEY, 'read-outside', true);
+      const switched = await run('Read', { file_path: file }, DENY);
+      expect(switched.decision).toEqual(allow('user'));
+      expect(switched.prompts).toEqual([]);
+      const refused = await run('Read', { file_path: join(roaming, 'b.txt') }, DENY);
+      expect(refused.prompts).toHaveLength(1);
+      expect(refused.prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      expect(refused.prompts[0]).not.toHaveProperty('alwaysRule');
+    },
+  );
 
   describe('what is sensitive always asks', () => {
     beforeEach(async () => {

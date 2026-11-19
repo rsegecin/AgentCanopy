@@ -194,6 +194,79 @@ describe('sensitive paths', () => {
     });
   });
 
+  describe('the temp folder of Windows', () => {
+    const temp = () => join(home, 'AppData', 'Local', 'Temp');
+
+    it('is not sensitive on win32, nor a file or a folder in it, whatever the case', () => {
+      expect(isSensitivePath(temp(), env('win32'))).toBe(false);
+      expect(isSensitivePath(join(temp(), 'a.txt'), env('win32'))).toBe(false);
+      expect(isSensitivePath(join(temp(), 'work', 'deeper', 'a.txt'), env('win32'))).toBe(false);
+      expect(isSensitivePath(join(home, 'APPDATA', 'LOCAL', 'TEMP', 'x'), env('win32'))).toBe(
+        false,
+      );
+    });
+
+    it('can be granted on win32, and so can a folder in it, whatever the case', () => {
+      expect(canGrantDirectory(temp(), env('win32'))).toBe(true);
+      expect(canGrantDirectory(join(temp(), 'work'), env('win32'))).toBe(true);
+      expect(canGrantDirectory(join(home, 'APPDATA', 'LOCAL', 'TEMP', 'x'), env('win32'))).toBe(
+        true,
+      );
+    });
+
+    it('leaves the rest of AppData sensitive on win32', () => {
+      for (const parts of [
+        ['AppData'],
+        ['AppData', 'Local'],
+        ['AppData', 'Local', 'x'],
+        ['AppData', 'Local', 'Temporary', 'x'],
+        ['AppData', 'Local', 'Tempx'],
+        ['AppData', 'Roaming', 'Temp', 'x'],
+        ['AppData', 'LocalLow', 'Temp', 'x'],
+      ]) {
+        expect(isSensitivePath(join(home, ...parts), env('win32'))).toBe(true);
+      }
+      expect(canGrantDirectory(join(home, 'AppData', 'Local'), env('win32'))).toBe(false);
+    });
+
+    it('does not make a storage root inside it ordinary', () => {
+      const inTemp: SensitiveEnv = {
+        home,
+        roots: [join(temp(), 'agc-storage')],
+        platform: 'win32',
+      };
+      expect(isSensitivePath(join(temp(), 'agc-storage'), inTemp)).toBe(true);
+      expect(isSensitivePath(join(temp(), 'agc-storage', 'permissions', 'k.json'), inTemp)).toBe(
+        true,
+      );
+      expect(containsSensitive(temp(), inTemp)).toBe(true);
+      expect(canGrantDirectory(temp(), inTemp)).toBe(false);
+      expect(isSensitivePath(join(temp(), 'work'), inTemp)).toBe(false);
+      expect(canGrantDirectory(join(temp(), 'work'), inTemp)).toBe(true);
+    });
+
+    it('is no exception on linux and darwin, where AppData is no location', () => {
+      for (const platform of ['linux', 'darwin'] as const) {
+        expect(isSensitivePath(join(home, 'AppData', 'Local', 'Temp', 'x'), env(platform))).toBe(
+          isSensitivePath(join(home, 'AppData', 'Local', 'x'), env(platform)),
+        );
+        expect(isSensitivePath(join(home, 'AppData', 'Local', 'Temp', 'x'), env(platform))).toBe(
+          false,
+        );
+      }
+      expect(isSensitivePath(join(home, 'Library', 'Caches', 'Temp', 'x'), env('darwin'))).toBe(
+        true,
+      );
+    });
+
+    it('is no exception for a network path that names it', () => {
+      expect(isSensitivePath('\\\\server\\share\\AppData\\Local\\Temp', env('win32'))).toBe(true);
+      expect(canGrantDirectory('\\\\server\\share\\AppData\\Local\\Temp', env('win32'))).toBe(
+        false,
+      );
+    });
+  });
+
   describe('resolveSensitiveEnv', () => {
     it('gives the real home directory, the real roots without empty ones, and the platform', async () => {
       const restore = useHome(home);

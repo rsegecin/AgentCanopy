@@ -23,8 +23,9 @@ describe('checkDirectoryToGrant', () => {
     await writeTree(folder, { 'src/a.ts': 'a' });
     await writeTree(sibling, { 'x.txt': 'x', 'inner/y.txt': 'y' });
     await fs.mkdir(join(storage, 'deeper'), { recursive: true });
-    // The temporary directory lies under the real home (under AppData on Windows, which is
-    // sensitive), so the test gets a home of its own.
+    // The tests get a home of their own, so that what is sensitive is under their control: the
+    // temporary directory lies under the real home, whose credential locations must not be in play
+    // (and, before Phase 18, on Windows the temporary directory itself was sensitive).
     await fs.mkdir(join(root, 'home'));
     restoreHome = useHome(join(root, 'home'));
   });
@@ -95,6 +96,30 @@ describe('checkDirectoryToGrant', () => {
   it.runIf(process.platform === 'win32')('refuses a network share as sensitive', async () => {
     const result = await check('\\\\localhost\\C$');
     expect(['not-a-directory', 'sensitive']).toContain('refused' in result ? result.refused : '');
+  });
+
+  describe.runIf(process.platform === 'win32')('the temp folder of Windows', () => {
+    const checkAccess = (path: string, access: 'read' | 'edit') =>
+      checkDirectoryToGrant({
+        path,
+        folderPath: folder,
+        granted: none,
+        sensitiveRoots: () => [storage],
+        access,
+      });
+
+    it('may be saved for reads and for edits, with a folder in it, but not the rest of AppData', async () => {
+      const temp = join(root, 'home', 'AppData', 'Local', 'Temp');
+      const work = join(temp, 'work');
+      const roaming = join(root, 'home', 'AppData', 'Roaming', 'x');
+      await fs.mkdir(work, { recursive: true });
+      await fs.mkdir(roaming, { recursive: true });
+      for (const access of ['read', 'edit'] as const) {
+        expect(await checkAccess(work, access)).toEqual({ dir: await fs.realpath(work) });
+        expect(await checkAccess(temp, access)).toEqual({ dir: await fs.realpath(temp) });
+        expect(await checkAccess(roaming, access)).toEqual({ refused: 'sensitive' });
+      }
+    });
   });
 
   describe('for edits', () => {
@@ -206,6 +231,21 @@ describe('coversRead and coversEdit', () => {
     expect(coversEdit(grant, join(root, 'libs-other', 'x.txt'), env)).toBe(false);
     expect(coversRead(grant, join(root, 'libs-other', 'x.txt'), env)).toBe(false);
   });
+
+  it.runIf(process.platform === 'win32')(
+    'a directory saved in the temp folder of Windows covers what lies below it',
+    async () => {
+      const work = join(root, 'home', 'AppData', 'Local', 'Temp', 'work');
+      await fs.mkdir(work, { recursive: true });
+      const file = join(await fs.realpath(work), 'out.txt');
+      const edit: Grant = { kind: 'edit-directory', path: await fs.realpath(work) };
+      expect(coversEdit(edit, file, env)).toBe(true);
+      expect(coversRead(edit, file, env)).toBe(true);
+      const read: Grant = { kind: 'read-directory', path: await fs.realpath(work) };
+      expect(coversRead(read, file, env)).toBe(true);
+      expect(coversEdit(read, file, env)).toBe(false);
+    },
+  );
 
   it('a directory that may not be granted covers nothing', () => {
     for (const kind of ['read-directory', 'edit-directory'] as const) {

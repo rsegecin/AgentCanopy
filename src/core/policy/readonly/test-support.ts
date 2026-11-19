@@ -39,8 +39,9 @@ export function recordingLogger(): { logger: Logger; warnings: string[] } {
 
 /**
  * Makes `os.homedir()` answer with this directory until the returned function is called. The
- * temporary directories of the tests lie under the real home directory (and, on Windows, under
- * `AppData`, which is sensitive), so a test of what is sensitive needs a home of its own.
+ * temporary directories of the tests lie under the real home directory, whose credential locations
+ * must not be in play (and, before Phase 18, on Windows the temporary directory itself was
+ * sensitive), so a test of what is sensitive needs a home of its own.
  */
 export function useHome(home: string): () => void {
   const saved = { HOME: process.env['HOME'], USERPROFILE: process.env['USERPROFILE'] };
