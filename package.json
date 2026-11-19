@@ -1,7 +1,7 @@
 {
   "name": "agentcanopy",
   "displayName": "AgentCanopy",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "description": "AI coding agents in standard VS Code: Ask, Plan and Agent modes with reviewable changes",
   "license": "MIT",
   "publisher": "agentcanopy-local",
