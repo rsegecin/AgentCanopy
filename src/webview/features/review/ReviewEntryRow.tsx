@@ -9,10 +9,13 @@ import { ATTRIBUTION_NOTE, CHANGE_LABEL } from './review-model';
 export function ReviewEntryRow({
   entry,
   uncertain,
+  readOnly = false,
 }: {
   entry: ReviewEntry;
   /** Show the explanation and the "Include in Reject All" checkbox. */
   uncertain: boolean;
+  /** No Accept, Reject or checkbox: the row only tells what changed (an Agent turn is running). */
+  readOnly?: boolean;
 }) {
   const { ui } = useApp();
   const post = usePost();
@@ -87,21 +90,23 @@ export function ReviewEntryRow({
       {uncertain && (
         <div className="review-uncertain">
           <p className="review-note muted">{ATTRIBUTION_NOTE[entry.attribution]}</p>
-          <label className="review-include">
-            <input
-              type="checkbox"
-              checked={included}
-              aria-label={`Include in Reject All: ${path}`}
-              onChange={(event) => {
-                ui.setReviewInclude(path, event.target.checked);
-              }}
-            />
-            <span>Include in Reject All</span>
-          </label>
+          {!readOnly && (
+            <label className="review-include">
+              <input
+                type="checkbox"
+                checked={included}
+                aria-label={`Include in Reject All: ${path}`}
+                onChange={(event) => {
+                  ui.setReviewInclude(path, event.target.checked);
+                }}
+              />
+              <span>Include in Reject All</span>
+            </label>
+          )}
         </div>
       )}
 
-      {pending && (
+      {pending && !readOnly && (
         <div className="review-entry-actions">
           <button
             type="button"

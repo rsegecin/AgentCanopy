@@ -10,12 +10,14 @@ import type {
   HostMessage,
   MessageId,
   MessagePart,
+  OperationId,
   PermissionPrompt,
   PlanContent,
   PlanDoc,
   PlanId,
   PlanVersion,
   CheckpointSummary,
+  ChangeType,
   ConfigChange,
   FolderPermissions,
   RestoreItem,
@@ -417,6 +419,26 @@ export function makeReviewEntry(path: string, over: Partial<ReviewEntry> = {}): 
     includesUserEdits: false,
     operationIds: [],
     ...over,
+  };
+}
+
+export const opId = (s: string) => s as OperationId;
+
+/** The `changes` part an Agent turn ends with. `files` are paths (modified) or `[path, changeType]`. */
+export function makeChangesPart(
+  operations: string[],
+  files: (string | [string, ChangeType])[] = [],
+  more = 0,
+): Extract<MessagePart, { kind: 'changes' }> {
+  return {
+    kind: 'changes',
+    operationIds: operations.map(opId),
+    files: files.map((f) =>
+      typeof f === 'string'
+        ? { path: f, changeType: 'modified' as const }
+        : { path: f[0], changeType: f[1] },
+    ),
+    more,
   };
 }
 

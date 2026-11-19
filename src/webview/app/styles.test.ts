@@ -100,6 +100,7 @@ describe('stylesheets', () => {
       '.tool-card-pre',
       '.log',
       '.changes-dock-body',
+      '.changes-card-body',
     ]) {
       expect(rule?.[1], selector).toContain(`${selector}:focus-visible`);
     }
@@ -114,7 +115,7 @@ describe('stylesheets', () => {
     for (const selector of removed) {
       if (selector === ':focus') continue;
       expect(selector, selector).toMatch(
-        /^(?:\[role='tabpanel'\]|\.changes-dock|\.checkpoints-scroll|\.permissions-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
+        /^(?:\[role='tabpanel'\]|\.changes-dock|\.changes-card|\.checkpoints-scroll|\.permissions-scroll|\.plan-card|\.plan-card-slot|\.history|form\.composer):focus-visible$/,
       );
     }
     expect(removed.length).toBeGreaterThan(3);
@@ -159,6 +160,7 @@ describe('stylesheets', () => {
       '.prompt-card',
       '.review-entry',
       '.changes-dock',
+      '.changes-card',
       '.plan-card',
       '.menu',
       '.reference-picker',
@@ -198,15 +200,17 @@ describe('stylesheets', () => {
     expect(text).toMatch(/\.tabs\s*\{[^}]*flex-wrap:\s*wrap/);
     // No fixed pixel widths on layout containers that could exceed a 260 px view.
     expect(text).not.toMatch(
-      /\.(?:app|column|composer|plan-card|changes-dock|checkpoints|permissions|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
+      /\.(?:app|column|composer|plan-card|changes-dock|changes-card|checkpoints|permissions|history)\s*\{[^}]*(?<!max-|min-)width:\s*\d+px/,
     );
   });
 
-  it('bounds the changes card, which scrolls inside itself, and drops the removed tab styles', () => {
+  it('bounds the changes strip and the changes card, which scroll inside themselves, and drops the removed tab styles', () => {
     const text = strip(all);
-    const body = text.match(/\.changes-dock-body\s*\{([^}]*)\}/);
-    expect(body?.[1]).toMatch(/max-height:\s*min\(40vh,\s*320px\)/);
-    expect(body?.[1]).toMatch(/overflow-y:\s*auto/);
+    for (const selector of ['changes-dock-body', 'changes-card-body']) {
+      const body = text.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));
+      expect(body?.[1], selector).toMatch(/max-height:\s*min\(40vh,\s*320px\)/);
+      expect(body?.[1], selector).toMatch(/overflow-y:\s*auto/);
+    }
     expect(text).not.toContain('.tab-badge');
     expect(text).not.toContain('.header-warning');
     expect(text).not.toContain('.review-scroll');

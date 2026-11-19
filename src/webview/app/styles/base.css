@@ -52,6 +52,7 @@ p {
  */
 [role='tabpanel']:focus-visible,
 .changes-dock:focus-visible,
+.changes-card:focus-visible,
 .checkpoints-scroll:focus-visible,
 .plan-card:focus-visible,
 .plan-card-slot:focus-visible,
@@ -67,6 +68,7 @@ form.composer:focus-visible {
 .prompt-detail:focus-visible,
 .log:focus-visible,
 .changes-dock-body:focus-visible,
+.changes-card-body:focus-visible,
 .queued-text:focus-visible {
   outline-offset: -2px;
 }

@@ -17,6 +17,7 @@ import {
   autoOffered,
   makeActive,
   makeAside,
+  makeChangesPart,
   makeCheckpoint,
   makeConfigChange,
   makeFolderPermissions,
@@ -35,6 +36,7 @@ import {
   makeToolCall,
   makeTurn,
   msgId,
+  opId,
   promptId,
   userMessage,
 } from '../test-support/fixtures';
@@ -321,11 +323,26 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
   });
 
-  it('moves to the card itself when there is no composer to take focus', () => {
-    const { init } = renderWithHost(<ChangesDock />, reviewState([makeReviewEntry('a.ts')]));
+  it('moves to the changes card in the log when there is no composer to take focus', () => {
+    const cardState = (entry: ReviewEntry): ViewState => ({
+      ...reviewState([entry]),
+      active: makeActive('c1', {
+        messages: [assistantMessage('a1', [makeChangesPart(['op1'], ['a.ts'])])],
+      }),
+    });
+    const pending = makeReviewEntry('a.ts', { operationIds: [opId('op1')] });
+    const { init } = renderWithHost(<MessageList />, cardState(pending));
+    screen.getByRole('button', { name: 'Accept a.ts' }).focus();
+    init(cardState({ ...pending, status: 'accepted' }), 1);
+    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Changed files' }));
+  });
+
+  it('leaves the strip when its last pending file is accepted, and focus goes to the composer', () => {
+    const { init } = withComposer(reviewState([makeReviewEntry('a.ts')]));
     screen.getByRole('button', { name: 'Accept a.ts' }).focus();
     init(reviewState([makeReviewEntry('a.ts', { status: 'accepted' })]), 1);
-    expect(document.activeElement).toBe(screen.getByRole('region', { name: 'Changes' }));
+    expect(screen.queryByRole('region', { name: 'Changes' })).toBeNull();
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
   });
 
   it('leaves focus alone when it is somewhere that still exists', () => {
@@ -1179,6 +1196,47 @@ describe('scrollable boxes and text alternatives', () => {
     expect(region?.hidden).toBe(true);
     expect(within(card).queryByRole('button', { name: 'Accept All' })).toBeNull();
     expect(within(card).getByRole('button', { name: /^Keep / })).toBeTruthy();
+  });
+
+  it('gives the changes card in the log a name, toggles that state what they control, and a reachable scroll box', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        review: {
+          entries: [
+            makeReviewEntry('a.ts', { operationIds: [opId('op1')] }),
+            makeReviewEntry('done.ts', { status: 'accepted', operationIds: [opId('op1')] }),
+          ],
+          configChanges: [],
+          busy: false,
+        },
+        active: makeActive('c1', {
+          messages: [
+            assistantMessage('a1', [makeChangesPart(['op1'], ['a.ts', 'done.ts', 'old.ts'])]),
+          ],
+        }),
+      }),
+    );
+    const card = screen.getByRole('region', { name: 'Changed files' });
+    expect(card.getAttribute('tabindex')).toBe('-1');
+    const body = within(card).getByRole('group', { name: 'Changed files details' });
+    expect(body.getAttribute('tabindex')).toBe('0');
+    for (const name of [/^Accepted/, /no longer pending$/]) {
+      const toggle = within(card).getByRole('button', { name });
+      expect(toggle.getAttribute('aria-expanded')).toBe('false');
+      const target = document.getElementById(toggle.getAttribute('aria-controls') ?? '');
+      expect(target?.hidden, String(name)).toBe(true);
+      fireEvent.click(toggle);
+      expect(toggle.getAttribute('aria-expanded')).toBe('true');
+      expect(target?.hidden).toBe(false);
+    }
+    // Every control has a name, and an entry action names its path.
+    for (const control of card.querySelectorAll<HTMLElement>('button, input')) {
+      expect((control.getAttribute('aria-label') ?? control.textContent ?? '').trim()).not.toBe('');
+    }
+    for (const button of card.querySelectorAll<HTMLElement>('.review-entry-actions button')) {
+      expect(button.getAttribute('aria-label')).toMatch(/a\.ts$/);
+    }
   });
 
   it('lets the keyboard reach a scrolling diagram, table, code block and tool output', async () => {

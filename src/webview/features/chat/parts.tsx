@@ -3,6 +3,7 @@ import type { ComponentType } from 'react';
 import type { MessagePart } from '../../../shared';
 import { Icon, VisuallyHidden } from '../../app/components';
 import { useViewState } from '../../app/store';
+import { TurnChangesCard } from '../review/TurnChangesCard';
 import { Markdown } from './Markdown';
 import { ToolCard, useIsNested } from './ToolCard';
 import { PromptScope } from './prompt-scope';
@@ -93,8 +94,7 @@ const DEFAULTS: { [K in PartKind]: ComponentType<PartRendererProps<K>> } = {
   notice: NoticePart,
   'plan-update': PlanUpdatePart,
   prompt: PromptPlaceholder,
-  // The card is added in the next stage.
-  changes: () => null,
+  changes: TurnChangesCard,
 };
 
 /** Renders one part, through a registered override when there is one. Memoised on the part object. */

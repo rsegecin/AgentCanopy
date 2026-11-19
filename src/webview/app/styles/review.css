@@ -1,4 +1,8 @@
-/* The changes card between the chat log and the composer. */
+/*
+ * The strip between the chat log and the composer (configuration changes, and pending files no card
+ * acts on), and the "Changed files" card in the log where an Agent turn ended. Their file rows share
+ * the review-* rules below.
+ */
 .changes-dock {
   flex: none;
   border-top: 1px solid var(--vscode-panel-border, var(--vscode-widget-border, currentColor));
@@ -35,6 +39,32 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+.changes-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--vscode-widget-border, var(--vscode-input-border, currentColor));
+  border-radius: 4px;
+  background: var(--vscode-editorWidget-background, transparent);
+}
+.changes-card-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 6px;
+  margin: 0;
+  font-size: 1em;
+}
+.changes-card-summary {
+  font-weight: 400;
+}
+.changes-card-body {
+  max-height: min(40vh, 320px);
+  min-width: 0;
+  overflow-y: auto;
 }
 .review-section {
   display: flex;

@@ -6,11 +6,14 @@ import {
   assistantMessage,
   convId,
   makeActive,
+  makeChangesPart,
   makePlanDoc,
   makePlanVersion,
+  makeReviewEntry,
   makeState,
   makeTurn,
   msgId,
+  opId,
   turnId,
   userMessage,
 } from '../../test-support/fixtures';
@@ -259,6 +262,35 @@ describe('MessageList', () => {
     ]);
   });
 
+  it('renders a changes part as a Changed files card in the log, where the turn ended', () => {
+    renderWithHost(
+      <MessageList />,
+      makeState({
+        review: {
+          entries: [makeReviewEntry('src/a.ts', { operationIds: [opId('op1')] })],
+          configChanges: [],
+          busy: false,
+        },
+        active: makeActive('c1', {
+          messages: [
+            userMessage('u1', 'go'),
+            assistantMessage('a1', [
+              { kind: 'text', text: 'All done.' },
+              makeChangesPart(['op1'], ['src/a.ts']),
+            ]),
+          ],
+        }),
+      }),
+    );
+    const card = within(screen.getByRole('log')).getByRole('region', { name: 'Changed files' });
+    const assistant = screen.getByRole('article', { name: 'Assistant' });
+    expect(assistant.contains(card)).toBe(true);
+    expect(assistant.textContent?.indexOf('All done.') ?? -1).toBeLessThan(
+      assistant.textContent?.indexOf('Changed files') ?? -1,
+    );
+    expect(within(card).getByRole('button', { name: 'Accept src/a.ts' })).toBeTruthy();
+  });
+
   describe('scrolling', () => {
     function setGeometry(
       el: HTMLElement,
@@ -342,7 +374,7 @@ describe('MessageList', () => {
         });
       };
 
-      it('stays at the bottom when the changes card appears, grows or collapses', () => {
+      it('stays at the bottom when the changes strip appears, grows or collapses', () => {
         renderWithHost(<MessageList />, stateWith([{ kind: 'text', text: 'a' }]));
         const log = screen.getByRole('log');
         setGeometry(log, { scrollHeight: 1000, clientHeight: 400 });
@@ -361,6 +393,34 @@ describe('MessageList', () => {
         setGeometry(log, { scrollHeight: 1000, clientHeight: 500 });
         log.scrollTop = 400;
         resize(log);
+        expect(log.scrollTop).toBe(1000);
+      });
+
+      it('stays at the bottom when a Changed files card in the log appears, grows or collapses', () => {
+        renderWithHost(
+          <MessageList />,
+          stateWith([{ kind: 'text', text: 'a' }, makeChangesPart(['op1'], ['a.ts', 'b.ts'])]),
+        );
+        const log = screen.getByRole('log');
+        const content = log.firstElementChild as HTMLElement;
+        const resizeContent = () => {
+          act(() => {
+            for (const o of observers) if (o.target === content && !o.disconnected) o.callback();
+          });
+        };
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 400 });
+        log.scrollTop = 600;
+        fireEvent.scroll(log);
+        // The card grows the content, not the log: its record opens.
+        fireEvent.click(screen.getByRole('button', { name: '2 files no longer pending' }));
+        setGeometry(log, { scrollHeight: 1300, clientHeight: 400 });
+        resizeContent();
+        expect(log.scrollTop).toBe(1300);
+        // The card collapses again.
+        fireEvent.click(screen.getByRole('button', { name: '2 files no longer pending' }));
+        setGeometry(log, { scrollHeight: 1000, clientHeight: 400 });
+        log.scrollTop = 500;
+        resizeContent();
         expect(log.scrollTop).toBe(1000);
       });
 
