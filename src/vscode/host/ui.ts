@@ -229,10 +229,10 @@ export function createUiPort(parts: UiParts): UiPort {
       await openChangeDiff(review, folderKey, relativePath);
     },
 
-    async openAllChanges(folderKey) {
+    async openAllChanges(folderKey, paths) {
       const review = parts.review();
       if (!review) return notReady();
-      await openAllChanges(review, folderKey);
+      await openAllChanges(review, folderKey, paths);
     },
 
     openEditorPanel: (conversationId) => {

@@ -3,6 +3,7 @@ import {
   ConversationIdSchema,
   FolderKeySchema,
   MessageIdSchema,
+  OperationIdSchema,
   PlanIdSchema,
   PromptIdSchema,
   RelPathSchema,
@@ -11,6 +12,7 @@ import {
   TurnIdSchema,
 } from './ids';
 import { ModeSchema } from './modes';
+import { ChangeTypeSchema } from './workspace';
 
 /** Image types the user can paste into a message. */
 export const ImageMediaTypeSchema = z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']);
@@ -88,6 +90,27 @@ export type ToolCallView = z.infer<typeof ToolCallViewSchema>;
 
 export const NoticeLevelSchema = z.enum(['info', 'warning', 'error']);
 
+/** Most files one `changes` part lists. It only limits the record: the live rows come from the review. */
+export const MAX_CHANGES_LISTED = 200;
+
+/**
+ * The files an Agent turn left pending for review, written once when the turn ends. It marks where
+ * the turn's card sits in the transcript and records what the turn changed; whether a file is still
+ * pending is read from the review entries of the folder, never from here.
+ */
+export const ChangesPartSchema = z.object({
+  kind: z.literal('changes'),
+  /** The operations of the turn. An entry whose last operation is one of these is acted on here. */
+  operationIds: z.array(OperationIdSchema).min(1),
+  /** What the turn left pending when it ended, sorted by path, at most `MAX_CHANGES_LISTED`. */
+  files: z
+    .array(z.object({ path: RelPathSchema, changeType: ChangeTypeSchema }))
+    .max(MAX_CHANGES_LISTED),
+  /** How many more files there were than `files` lists. */
+  more: z.number().int().nonnegative(),
+});
+export type ChangesPart = z.infer<typeof ChangesPartSchema>;
+
 export const MessagePartSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('text'), text: z.string() }),
   z.object({ kind: z.literal('thinking'), text: z.string() }),
@@ -99,6 +122,7 @@ export const MessagePartSchema = z.discriminatedUnion('kind', [
     version: z.number().int().positive(),
   }),
   z.object({ kind: z.literal('prompt'), promptId: PromptIdSchema }),
+  ChangesPartSchema,
 ]);
 export type MessagePart = z.infer<typeof MessagePartSchema>;
 

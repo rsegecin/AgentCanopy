@@ -455,8 +455,8 @@ class Engine implements ReviewService {
     await this.accept(folderKey, new Set([path]));
   }
 
-  async acceptAll(folderKey: FolderKey): Promise<void> {
-    await this.accept(folderKey, undefined);
+  async acceptAll(folderKey: FolderKey, only?: readonly RelPath[]): Promise<void> {
+    await this.accept(folderKey, only === undefined ? undefined : new Set(only));
   }
 
   /** Records that the file as it is on the disk now is accepted. Nothing in the workspace is written. */
@@ -1074,7 +1074,7 @@ export function createReviewEngine(options: ReviewEngineOptions): ReviewEngine {
     onDidChange: (listener) => engine.onDidChange(listener),
     hunks: (folderKey, path) => engine.hunks(folderKey, path),
     baselineContent: (folderKey, path) => engine.baselineContent(folderKey, path),
-    acceptAll: (folderKey) => engine.acceptAll(folderKey),
+    acceptAll: (folderKey, only) => engine.acceptAll(folderKey, only),
     acceptFile: (folderKey, path) => engine.acceptFile(folderKey, path),
     acceptHunk: (folderKey, path, hunkId) => engine.acceptHunk(folderKey, path, hunkId),
     rejectFile: (folderKey, path, mode) => engine.rejectFile(folderKey, path, mode),

@@ -422,8 +422,9 @@ export class FakeUi implements UiPort {
     this.record('openChangeDiff', folderKey, path);
     return Promise.resolve();
   }
-  openAllChanges(folderKey: FolderKey): Promise<void> {
-    this.record('openAllChanges', folderKey);
+  openAllChanges(folderKey: FolderKey, paths?: readonly string[]): Promise<void> {
+    if (paths === undefined) this.record('openAllChanges', folderKey);
+    else this.record('openAllChanges', folderKey, paths);
     return Promise.resolve();
   }
   showLogs(): void {

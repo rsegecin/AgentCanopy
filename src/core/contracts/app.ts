@@ -73,8 +73,11 @@ export interface UiPort {
   }): Promise<string | undefined>;
   /** Opens the native diff editor for one pending file: its review baseline against the file on disk. */
   openChangeDiff(folderKey: FolderKey, path: string): Promise<void>;
-  /** Opens the native multi-file changes editor for every pending file of a folder. */
-  openAllChanges(folderKey: FolderKey): Promise<void>;
+  /**
+   * Opens the native multi-file changes editor for every pending file of a folder, or with `paths`
+   * for the pending files among those.
+   */
+  openAllChanges(folderKey: FolderKey, paths?: readonly string[]): Promise<void>;
   /**
    * Opens a Markdown text as a read-only document (used to read one version of a plan). The same
    * `key` shows the same editor tab again instead of opening another. `beside` opens it next to the

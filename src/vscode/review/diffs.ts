@@ -55,10 +55,18 @@ export async function openChangeDiff(
   });
 }
 
-/** Every pending file of a folder in one multi-file diff editor. */
-export async function openAllChanges(review: ReviewService, folderKey: FolderKey): Promise<void> {
+/** Every pending file of a folder, or only those in `paths`, in one multi-file diff editor. */
+export async function openAllChanges(
+  review: ReviewService,
+  folderKey: FolderKey,
+  paths?: readonly string[],
+): Promise<void> {
+  const only = paths === undefined ? undefined : new Set<string>(paths);
   const entries = (await review.entries(folderKey)).filter(
-    (entry) => entry.status === 'pending' && diffability(entry) === 'ok',
+    (entry) =>
+      entry.status === 'pending' &&
+      diffability(entry) === 'ok' &&
+      (only === undefined || only.has(entry.path)),
   );
   const resources: [vscode.Uri, vscode.Uri | undefined, vscode.Uri | undefined][] = [];
   for (const entry of entries) {

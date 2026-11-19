@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
 import { DEFAULT_SETTINGS } from '../../shared';
-import type { AssistantMessage, FolderKey, ReviewEntry } from '../../shared';
+import type { AssistantMessage, ChangesPart, FolderKey, ReviewEntry } from '../../shared';
 import type { OperationRecord, ReviewService } from '../contracts';
 import {
   FOLDER_KEY,
@@ -151,9 +151,26 @@ function reviewService(h: Harness): ReviewService {
   return service;
 }
 
+function assistantOf(view: TestView): AssistantMessage | undefined {
+  return view.active().messages.find((m): m is AssistantMessage => m.role === 'assistant');
+}
+
 function noticesOf(view: TestView): string[] {
-  const message = view.active().messages.find((m): m is AssistantMessage => m.role === 'assistant');
-  return (message?.parts ?? []).flatMap((part) => (part.kind === 'notice' ? [part.text] : []));
+  return (assistantOf(view)?.parts ?? []).flatMap((part) =>
+    part.kind === 'notice' ? [part.text] : [],
+  );
+}
+
+function changesPartsOf(view: TestView): ChangesPart[] {
+  return (assistantOf(view)?.parts ?? []).flatMap((part) =>
+    part.kind === 'changes' ? [part] : [],
+  );
+}
+
+/** The review records the folder's log holds. */
+function reviewRecords(h: Harness): number {
+  const records = h.tracker()?.folder(FOLDER_KEY)?.log.records() ?? [];
+  return records.filter((record) => record.type === 'review').length;
 }
 
 const UNSAVED = 'Save or discard your unsaved changes in this file first.';
@@ -174,9 +191,21 @@ describe('review of agent changes', () => {
       ['a.txt', 'created', 'pending'],
       ['b.txt', 'modified', 'pending'],
     ]);
-    expect(noticesOf(view)).toEqual([
-      'This turn changed 2 files. Review them in the changes card below the chat.',
-    ]);
+    // The turn ends with one structured part, not a notice.
+    const parts = assistantOf(view)?.parts ?? [];
+    expect(parts[parts.length - 1]).toEqual({
+      kind: 'changes',
+      operationIds: operations(h).map((op) => op.id),
+      files: [
+        { path: 'a.txt', changeType: 'created' },
+        { path: 'b.txt', changeType: 'modified' },
+      ],
+      more: 0,
+    });
+    expect(operations(h)).toHaveLength(1);
+    expect(changesPartsOf(view)).toHaveLength(1);
+    expect(noticesOf(view)).toEqual([]);
+    expect(JSON.stringify(parts)).not.toContain('This turn changed');
 
     // A second view of the same folder (not showing the conversation) sees the same entries.
     other.send({ type: 'resync' });
@@ -284,6 +313,141 @@ describe('review of agent changes', () => {
     await until('the UI calls', () => h.ui.callsOf('openAllChanges').length === 1);
     expect(h.ui.callsOf('openChangeDiff')).toEqual([[FOLDER_KEY, 'b.txt']]);
     expect(h.ui.callsOf('openAllChanges')).toEqual([[FOLDER_KEY]]);
+  });
+});
+
+describe('the changes part at the end of a turn', () => {
+  it('is not added by an Agent turn that changed nothing, nor by an Ask turn', async () => {
+    const { h, view } = await reviewHarness([textSpec(), textSpec()]);
+    await agentTurn(h, view);
+    expect(changesPartsOf(view)).toEqual([]);
+
+    view.send({
+      type: 'turn.send',
+      conversationId: view.active().meta.id,
+      text: 'just a question',
+      mode: 'ask',
+      model: 'default',
+    });
+    await until('the second turn to exist', () => (view.state?.active?.turns.length ?? 0) === 2);
+    await finishedTurn(h, view);
+    const parts = view
+      .active()
+      .messages.flatMap((message) => (message.role === 'assistant' ? message.parts : []));
+    expect(parts.length).toBeGreaterThan(0);
+    expect(parts.some((part) => part.kind === 'changes')).toBe(false);
+    view.expectMirror();
+  });
+
+  it('is added when the turn was stopped after it changed files', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS, [{ hang: true }])]);
+    view.send({ type: 'turn.send', text: 'go', mode: 'agent', model: 'default' });
+    await until('the turn to exist', () => (view.state?.active?.turns.length ?? 0) > 0);
+    await until('both files to be written', () => {
+      try {
+        return (
+          readFileSync(join(h.workspace, 'a.txt'), 'utf8') === 'brand new\n' &&
+          readFileSync(join(h.workspace, 'b.txt'), 'utf8') === AGENT_B
+        );
+      } catch {
+        return false;
+      }
+    });
+    view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    await until('the turn to end', () => h.controller.runningTurns() === 0);
+    const turn = await finishedTurn(h, view);
+
+    expect(turn.status).toBe('interrupted');
+    expect(changesPartsOf(view)).toEqual([
+      {
+        kind: 'changes',
+        operationIds: operations(h).map((op) => op.id),
+        files: [
+          { path: 'a.txt', changeType: 'created' },
+          { path: 'b.txt', changeType: 'modified' },
+        ],
+        more: 0,
+      },
+    ]);
+    view.expectMirror();
+  });
+
+  it('lists at most 200 files and counts the rest', async () => {
+    const many = Array.from({ length: 201 }, (_, index) => ({
+      writeFile: {
+        path: `$CWD/f${String(index).padStart(3, '0')}.txt`,
+        content: `file ${index}\n`,
+      },
+    }));
+    const { h, view } = await reviewHarness([editsScenario([], many)]);
+    await agentTurn(h, view);
+    await pendingEntries(view, 201);
+
+    const [part] = changesPartsOf(view);
+    expect(changesPartsOf(view)).toHaveLength(1);
+    expect(part?.files).toHaveLength(200);
+    expect(part?.more).toBe(1);
+    expect(part?.files[0]).toEqual({ path: 'f000.txt', changeType: 'created' });
+    expect(part?.files[199]).toEqual({ path: 'f199.txt', changeType: 'created' });
+    view.expectMirror();
+  });
+});
+
+describe('a bulk review action limited to some files', () => {
+  it('accepts only the named files, in one review record', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
+    await agentTurn(h, view);
+    await pendingEntries(view, 2);
+    const before = reviewRecords(h);
+
+    view.send({ type: 'review.acceptAll', paths: ['a.txt'] });
+    await until('a.txt to be accepted', () => entry(view, 'a.txt')?.status === 'accepted');
+    expect(entry(view, 'b.txt')?.status).toBe('pending');
+    expect(reviewRecords(h)).toBe(before + 1);
+    expect(await read(h, 'a.txt')).toBe('brand new\n');
+    expect(await read(h, 'b.txt')).toBe(AGENT_B);
+    expect(view.toasts).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('rejects only the named files, and counts only those in the confirmation', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
+    await agentTurn(h, view);
+    await pendingEntries(view, 2);
+
+    h.ui.confirmAnswer = true;
+    view.send({ type: 'review.rejectAll', includePaths: [], paths: ['a.txt'] });
+    await until('a.txt to go', () => entry(view, 'a.txt') === undefined);
+    expect(h.ui.callsOf('confirm')).toHaveLength(1);
+    expect(h.ui.callsOf('confirm')[0]?.[0]).toMatchObject({ title: 'Reject 1 change?' });
+    await expect(fs.access(join(h.workspace, 'a.txt'))).rejects.toThrow();
+    expect(await read(h, 'b.txt')).toBe(AGENT_B);
+    expect(entry(view, 'b.txt')?.status).toBe('pending');
+    expect(view.toasts).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('says there is nothing to reject when no named file is pending', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
+    await agentTurn(h, view);
+    await pendingEntries(view, 2);
+
+    view.send({ type: 'review.rejectAll', includePaths: [], paths: ['c.txt'] });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'info', text: 'There is nothing to reject.' });
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(await read(h, 'a.txt')).toBe('brand new\n');
+    expect(await read(h, 'b.txt')).toBe(AGENT_B);
+    expect(entriesOf(view).every((item) => item.status === 'pending')).toBe(true);
+    view.expectMirror();
+  });
+
+  it('opens only the named files in the diff editor', async () => {
+    const { h, view } = await reviewHarness([editsScenario(DEFAULT_EDITS)]);
+    await agentTurn(h, view);
+    view.send({ type: 'review.openAll', paths: ['a.txt'] });
+    await until('the UI call', () => h.ui.callsOf('openAllChanges').length === 1);
+    expect(h.ui.callsOf('openAllChanges')).toEqual([[FOLDER_KEY, ['a.txt']]]);
   });
 });
 

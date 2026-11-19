@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FolderKey, Mode, Settings, TurnId } from '../../../shared';
 import { DEFAULT_SETTINGS } from '../../../shared';
-import type { TurnContext } from '../../contracts';
+import type { TurnContext, TurnNotice } from '../../contracts';
 import * as store from '../../workspace/store';
 import { createReadOnlyTripwire } from './index';
 import { listAll, makeTempDir, meta, removeDir, writeTree } from './test-support';
@@ -46,7 +46,9 @@ describe('read-only tripwire', () => {
   ) {
     await tripwire.beforeTurn?.(context, signal());
     await change();
-    return tripwire.afterTurn?.(context, 'completed');
+    const additions = await tripwire.afterTurn?.(context, 'completed');
+    // The tripwire only reports notices.
+    return additions?.filter((addition): addition is TurnNotice => !('kind' in addition));
   }
 
   // A rewrite that keeps the size could keep the mtime within the clock's resolution, so every

@@ -1024,8 +1024,9 @@ export class TurnRun {
     for (const observer of this.ranBefore) {
       if (!observer.afterTurn) continue;
       try {
-        for (const notice of await observer.afterTurn(context, outcome)) {
-          this.addNotice(notice.level, notice.text);
+        for (const addition of await observer.afterTurn(context, outcome)) {
+          if ('kind' in addition) this.pushPart(addition);
+          else this.addNotice(addition.level, addition.text);
         }
       } catch (error) {
         this.logger.warn('an observer failed after a turn', { error: redact(String(error)) });

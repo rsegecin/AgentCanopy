@@ -93,6 +93,8 @@ const DEFAULTS: { [K in PartKind]: ComponentType<PartRendererProps<K>> } = {
   notice: NoticePart,
   'plan-update': PlanUpdatePart,
   prompt: PromptPlaceholder,
+  // The card is added in the next stage.
+  changes: () => null,
 };
 
 /** Renders one part, through a registered override when there is one. Memoised on the part object. */

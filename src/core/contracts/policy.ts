@@ -1,6 +1,7 @@
 import type {
   AgentEvent,
   ApprovalSource,
+  ChangesPart,
   ConversationMeta,
   Mode,
   PermissionPrompt,
@@ -82,6 +83,9 @@ export interface TurnNotice {
   text: string;
 }
 
+/** What an observer adds to a turn when it ends. A `changes` part is told from a notice by its `kind`. */
+export type TurnAddition = TurnNotice | ChangesPart;
+
 /** Something that needs to act around a turn, such as the read-only tripwire or the change tracker. */
 export interface TurnObserver {
   /**
@@ -89,8 +93,11 @@ export interface TurnObserver {
    * Throwing refuses the turn and shows the error's message.
    */
   beforeTurn?(context: TurnContext, signal: AbortSignal): Promise<void>;
-  /** Runs after the process has exited, whatever the outcome. Its notices are added to the turn. */
-  afterTurn?(context: TurnContext, outcome: TurnOutcome): Promise<TurnNotice[]>;
+  /**
+   * Runs after the process has exited, whatever the outcome. What it returns is added to the turn,
+   * in order: a notice as a notice, a `changes` part (the files the turn left for review) as it is.
+   */
+  afterTurn?(context: TurnContext, outcome: TurnOutcome): Promise<TurnAddition[]>;
   /** Whether this observer wants `onToolHook` for the turn (the provider is then asked to call back around every tool). */
   wantsToolHooks?(context: TurnContext): boolean;
   /** The provider process of the turn has started. */

@@ -207,9 +207,10 @@ export class Turn {
   }
 
   async end(outcome: TurnOutcome = 'completed'): Promise<TurnNotice[]> {
-    const notices = (await this.tracker.observer.afterTurn?.(this.ctx, outcome)) ?? [];
+    const additions = (await this.tracker.observer.afterTurn?.(this.ctx, outcome)) ?? [];
     this.open = false;
-    return notices;
+    // The tracker itself only reports notices; a `changes` part comes from the controller.
+    return additions.filter((addition): addition is TurnNotice => !('kind' in addition));
   }
 
   get isOpen(): boolean {

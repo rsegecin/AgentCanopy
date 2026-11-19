@@ -3,6 +3,7 @@ import { join, posix, resolve } from 'node:path';
 import {
   AttachmentSchema,
   EMPTY_VIEW_STATE,
+  MAX_CHANGES_LISTED,
   MAX_IMAGES_PER_MESSAGE,
   MAX_IMAGE_BYTES,
   MAX_IMAGE_BYTES_PER_MESSAGE,
@@ -753,7 +754,7 @@ class Controller implements AppController {
         createReadOnlyTripwire({ logger }),
         tracker.observer,
         engine.observer,
-        this.reviewNotice(tracker, engine),
+        this.turnChanges(tracker, engine),
       ];
       this.unsubscribe.push(
         tracker.onDidChangeStatus(() => {
@@ -1272,11 +1273,11 @@ class Controller implements AppController {
         await this.openReviewDiff(view, message.path);
         return;
       case 'review.openAll':
-        await this.openAllChanges(view);
+        await this.openAllChanges(view, message.paths);
         return;
       case 'review.acceptAll':
         if (this.acceptRefused(view)) return;
-        await this.reviewAction(view, (engine, key) => engine.acceptAll(key));
+        await this.reviewAction(view, (engine, key) => engine.acceptAll(key, message.paths));
         return;
       case 'review.acceptFile':
         if (this.acceptRefused(view)) return;
@@ -1286,7 +1287,7 @@ class Controller implements AppController {
         await this.rejectFileForView(view, message.path);
         return;
       case 'review.rejectAll':
-        await this.rejectAllForView(view, message.includePaths);
+        await this.rejectAllForView(view, message.includePaths, message.paths);
         return;
 
       case 'config.keep':
@@ -3544,10 +3545,10 @@ class Controller implements AppController {
   }
 
   /**
-   * After an Agent turn: how many files it left pending for review. Runs after the tracker and the
-   * review engine have seen the turn.
+   * After an Agent turn: a `changes` part naming the files it left pending for review. Runs after
+   * the tracker and the review engine have seen the turn.
    */
-  private reviewNotice(tracker: WorkspaceTracker, engine: ReviewEngine): TurnObserver {
+  private turnChanges(tracker: WorkspaceTracker, engine: ReviewEngine): TurnObserver {
     return {
       afterTurn: async (context) => {
         if (context.mode !== 'agent') return [];
@@ -3562,11 +3563,14 @@ class Controller implements AppController {
             entry.status === 'pending' && entry.operationIds.some((id) => operations.has(id)),
         );
         if (touched.length === 0) return [];
-        const count = touched.length === 1 ? '1 file' : `${touched.length} files`;
         return [
           {
-            level: 'info',
-            text: `This turn changed ${count}. Review them in the changes card below the chat.`,
+            kind: 'changes',
+            operationIds: [...operations],
+            files: touched
+              .slice(0, MAX_CHANGES_LISTED)
+              .map((entry) => ({ path: entry.path, changeType: entry.changeType })),
+            more: Math.max(0, touched.length - MAX_CHANGES_LISTED),
           },
         ];
       },
@@ -3692,13 +3696,14 @@ class Controller implements AppController {
     await this.deps.ui.openChangeDiff(folder.key, path);
   }
 
-  private async openAllChanges(view: ViewRecord): Promise<void> {
+  private async openAllChanges(view: ViewRecord, paths?: readonly RelPath[]): Promise<void> {
     const folder = this.viewFolder(view);
     if (!folder || !this.engine) {
       this.state.toast(view, 'info', TEXT.notAvailableYet);
       return;
     }
-    await this.deps.ui.openAllChanges(folder.key);
+    if (paths === undefined) await this.deps.ui.openAllChanges(folder.key);
+    else await this.deps.ui.openAllChanges(folder.key, paths);
   }
 
   private async rejectFileForView(view: ViewRecord, path: RelPath): Promise<void> {
@@ -3711,13 +3716,17 @@ class Controller implements AppController {
     this.syncReviewEntries(view);
   }
 
-  private async rejectAllForView(view: ViewRecord, includePaths: RelPath[]): Promise<void> {
+  private async rejectAllForView(
+    view: ViewRecord,
+    includePaths: RelPath[],
+    scope?: readonly RelPath[],
+  ): Promise<void> {
     const folder = this.viewFolder(view);
     if (!folder) {
       this.state.toast(view, 'info', TEXT.notAvailableYet);
       return;
     }
-    await this.rejectAllWith(folder.key, includePaths, this.reportToView(view));
+    await this.rejectAllWith(folder.key, includePaths, this.reportToView(view), scope);
     this.syncReviewEntries(view);
   }
 
@@ -3822,6 +3831,7 @@ class Controller implements AppController {
     folderKey: FolderKey,
     rawPaths: readonly string[],
     report: Report,
+    scope?: readonly RelPath[],
   ): Promise<void> {
     const target = this.reviewTargetFor(folderKey, report);
     if (!target) return;
@@ -3831,7 +3841,15 @@ class Controller implements AppController {
       return parsed.success ? [parsed.data] : [];
     });
     try {
-      const preview = await engine.previewRejectAll(folderKey, includePaths);
+      let preview = await engine.previewRejectAll(folderKey, includePaths);
+      if (scope !== undefined) {
+        // A card rejects only its own files.
+        const inScope = new Set<string>(scope);
+        preview = {
+          willReject: preview.willReject.filter((path) => inScope.has(path)),
+          cannot: preview.cannot.filter((item) => inScope.has(item.path)),
+        };
+      }
       if (preview.willReject.length === 0) {
         // When something was refused, the reason (a running turn, for instance) says more than "nothing".
         const reason = preview.cannot[0]?.message;

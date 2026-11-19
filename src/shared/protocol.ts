@@ -222,11 +222,19 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
 
   // Review
   z.object({ type: z.literal('review.openDiff'), path: RelPathSchema }),
-  z.object({ type: z.literal('review.openAll') }),
-  z.object({ type: z.literal('review.acceptAll') }),
+  // `paths` limits each of the three to those files (the files of one card). Absent: the whole folder.
+  z.object({
+    type: z.literal('review.openAll'),
+    paths: z.array(RelPathSchema).max(10_000).optional(),
+  }),
+  z.object({
+    type: z.literal('review.acceptAll'),
+    paths: z.array(RelPathSchema).max(10_000).optional(),
+  }),
   z.object({
     type: z.literal('review.rejectAll'),
     includePaths: z.array(RelPathSchema).max(10_000),
+    paths: z.array(RelPathSchema).max(10_000).optional(),
   }),
   z.object({ type: z.literal('review.acceptFile'), path: RelPathSchema }),
   z.object({ type: z.literal('review.rejectFile'), path: RelPathSchema }),

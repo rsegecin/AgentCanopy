@@ -53,7 +53,8 @@ export interface ReviewService {
   hunks(folderKey: FolderKey, path: RelPath): Promise<Hunk[]>;
   /** The review baseline of a path, for the left side of a diff. */
   baselineContent(folderKey: FolderKey, path: RelPath): Promise<BaselineContent>;
-  acceptAll(folderKey: FolderKey): Promise<void>;
+  /** Accepts every pending file, or with `only` the pending files among those paths, in one record. */
+  acceptAll(folderKey: FolderKey, only?: readonly RelPath[]): Promise<void>;
   acceptFile(folderKey: FolderKey, path: RelPath): Promise<void>;
   acceptHunk(folderKey: FolderKey, path: RelPath, hunkId: string): Promise<RejectResult>;
   rejectFile(folderKey: FolderKey, path: RelPath, mode: RejectMode): Promise<RejectResult>;
