@@ -569,7 +569,7 @@ describe('Agent mode with the default policy and tracker', () => {
     await until('the toast', () => view.toasts.length === 1);
     expect(view.toasts[0]).toEqual({ level: 'warning', text: CONFIG_PENDING_MESSAGE });
     expect(CONFIG_PENDING_MESSAGE).toBe(
-      'The last turn changed tool or editor configuration. Keep or revert those changes in the changes card below the chat before starting another Agent turn.',
+      'The last turn changed tool or editor configuration. Keep or revert those changes below the chat before starting another Agent turn.',
     );
     await sleep(40);
     expect(view.active().turns).toHaveLength(turns);

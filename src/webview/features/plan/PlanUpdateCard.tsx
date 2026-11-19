@@ -20,8 +20,7 @@ import {
 const TITLE_BUTTON = '.plan-card-open';
 const RUNNING_HINT = 'Wait for the current turn to finish.';
 const FOLDER_HINT = 'Another agent turn is running in this folder.';
-const CONFIG_HINT =
-  'Keep or revert the configuration changes in the changes card below the chat first.';
+const CONFIG_HINT = 'Keep or revert the configuration changes below the chat first.';
 
 /**
  * The highest version among the `plan-update` parts of the open conversation for this plan, or 0

@@ -282,7 +282,7 @@ function Log({ conversationId }: { conversationId: ConversationId }) {
     previousLength.current = list.length;
   }, [messages, activity, failure, planVersions, ui, conversationId]);
 
-  // The changes card (or anything else beside the log) can appear, grow or collapse, which changes
+  // The strip or a card (or anything else beside the log) can appear, grow or collapse, which changes
   // the log's height without a scroll: a log that was at the bottom stays there.
   useLayoutEffect(() => {
     const el = scroller.current;

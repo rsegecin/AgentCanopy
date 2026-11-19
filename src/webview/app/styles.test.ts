@@ -204,7 +204,7 @@ describe('stylesheets', () => {
     );
   });
 
-  it('bounds the changes strip and the changes card, which scroll inside themselves, and drops the removed tab styles', () => {
+  it('bounds the changes strip and the Changed files card, which scroll inside themselves, and drops the removed tab styles', () => {
     const text = strip(all);
     for (const selector of ['changes-dock-body', 'changes-card-body']) {
       const body = text.match(new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`));

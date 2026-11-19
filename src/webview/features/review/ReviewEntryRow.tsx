@@ -5,7 +5,7 @@ import { useApp, usePost } from '../../app/context';
 import { useUi } from '../../app/ui-state';
 import { ATTRIBUTION_NOTE, CHANGE_LABEL } from './review-model';
 
-/** One file of the changes card. Pending entries have actions; accepted ones are marked. */
+/** One file of the card of a turn or of the strip. Pending entries have actions; accepted ones are marked. */
 export function ReviewEntryRow({
   entry,
   uncertain,

@@ -92,19 +92,19 @@ Details: [docs/guide/agent-mode.md](docs/guide/agent-mode.md).
 
 ## Reviewing changes
 
-When an Agent turn ends, a **Changes** card appears under the chat. It lists every file the agent changed, with its added and removed lines, and while an Agent turn runs in the folder it says "File changes can be reviewed when the turn ends." in place of the file list. Click a path to open the file's diff in VS Code's diff editor, or use the command **AgentCanopy: Show Agent Changes for File**. The card has **Accept All**, **Reject All** and **Open All in Diff Editor**, **Accept** and **Reject** for each file, and a collapsed **Accepted** group. You can collapse the card. Review of single changes is in the editor: changed lines are marked in the gutter and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
+When an Agent turn ends and has left files pending, a **Changed files** card ends the turn in the chat. It lists every file the turn changed, with its added and removed lines. Click a path to open the file's diff in VS Code's diff editor, or use the command **AgentCanopy: Show Agent Changes for File**. The card has **Accept All**, **Reject All** and **Open All in Diff Editor**, which act on the files of that card, **Accept** and **Reject** for each file, and a collapsed **Accepted** group. A pending file has its buttons in the card of the last turn that changed it; the cards of earlier turns stay in the chat as a record. While an Agent turn runs in the folder, the cards have no buttons and say "File changes can be reviewed when the turn ends." Pending files that no card of the open conversation acts on, such as changes of another conversation in the same folder, are listed in a strip between the chat and the message box. Review of single changes is in the editor: changed lines are marked in the gutter and each change has **Accept Change**, **Reject Change** and **Show Diff** actions above it.
 
-| Action                          | Where                                    | Key           |
-| :------------------------------ | :--------------------------------------- | :------------ |
-| Next / previous change          | Editor with pending changes              | Alt+] / Alt+[ |
-| Accept the change at the cursor | Editor with pending changes              | Alt+Enter     |
-| Reject the change at the cursor | Editor with pending changes              | Alt+Backspace |
-| Accept or reject a whole file   | Editor title bar, CodeLens, Changes card | none          |
-| Accept All, Reject All          | Changes card, Command Palette            | none          |
+| Action                          | Where                                          | Key           |
+| :------------------------------ | :--------------------------------------------- | :------------ |
+| Next / previous change          | Editor with pending changes                    | Alt+] / Alt+[ |
+| Accept the change at the cursor | Editor with pending changes                    | Alt+Enter     |
+| Reject the change at the cursor | Editor with pending changes                    | Alt+Backspace |
+| Accept or reject a whole file   | Editor title bar, CodeLens, Changed files card | none          |
+| Accept All, Reject All          | Changed files card, Command Palette            | none          |
 
 - Files that may hold your own work (you changed them too, they changed outside one of the agent's tool calls, or they were reconstructed after an interruption) are listed apart. Rejecting one always asks first. Reject All leaves them out unless you tick them, and never rejects a file that both of you changed or that was reconstructed after an interruption.
 - A file marked **Cannot be restored** was not captured before the agent changed it, so you can accept it but not put the old content back.
-- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the Changes card shows a warning with each file, and you must **Keep** or **Revert** each one, with a confirmation, before the next Agent turn. That section stays visible, also when you collapse the card. Until you decide, Send is disabled in Agent mode and says where to decide; Ask and Plan still work.
+- If the agent changed Claude Code or editor configuration (settings, hooks, skills, `.mcp.json`, Git hooks and similar), the strip between the chat and the message box shows a warning with each file, and you must **Keep** or **Revert** each one, with a confirmation, before the next Agent turn. That section stays visible, also when you collapse the strip. Until you decide, Send is disabled in Agent mode and says where to decide; Ask and Plan still work.
 
 Details: [docs/guide/reviewing-changes.md](docs/guide/reviewing-changes.md).
 

@@ -37,7 +37,7 @@ function unlistedModelOption(model: string, models: ModelInfo[]): ModelInfo {
 }
 
 const CONFIG_BLOCK_HINT =
-  'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
+  'Keep or revert the configuration changes below the chat before sending in Agent mode.';
 const QUEUED_HINT = 'A message is already queued. Edit or remove it first.';
 const ASIDE_RUNNING_HINT = 'A side question is already running. Wait for it or stop it.';
 const ASIDE_OF_ASIDE_HINT = 'Wait for the answer or stop it.';

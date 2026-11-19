@@ -10,7 +10,7 @@ If files have unsaved changes, a warning lists them: the agent reads from disk, 
 
 An Agent turn does not start in these cases. [Troubleshooting](troubleshooting.md) covers each message.
 
-- **Configuration changes from the last turn are undecided** (see [Reviewing changes](reviewing-changes.md#configuration-changes)). In Agent mode the message box disables Send and says where to decide, in the Changes card under the chat. Ask and Plan still work, and **Approve and Execute** on a plan is disabled too.
+- **Configuration changes from the last turn are undecided** (see [Reviewing changes](reviewing-changes.md#configuration-changes)). In Agent mode the message box disables Send and says where to decide, in the strip below the chat. Ask and Plan still work, and **Approve and Execute** on a plan is disabled too.
 - **Another Agent turn is running in the same folder.**
 - **Another VS Code window is tracking the same folder.**
 
@@ -235,9 +235,9 @@ Click **Stop**, next to **Send** in the message box while a turn runs. Pressing 
 
 ## After the turn
 
-- The Changes card under the chat lists the changed files. Accept or reject them; see [Reviewing changes](reviewing-changes.md).
+- A **Changed files** card at the end of the turn, in the chat, lists the changed files. Accept or reject them; see [Reviewing changes](reviewing-changes.md).
 - If the agent changed Git state, a note says: "The agent changed Git state (commits, branch or stash). Undoing file changes does not undo that."
-- If the agent changed Claude Code or editor configuration, the Changes card asks you to decide on each file before the next Agent turn.
+- If the agent changed Claude Code or editor configuration, the strip below the chat asks you to decide on each file before the next Agent turn.
 - Each turn is a step you can go back to; see [Checkpoints and branches](checkpoints-and-branches.md).
 - Files you reverted since the last turn are listed in the next prompt, so the agent does not assume its earlier edits still exist.
 

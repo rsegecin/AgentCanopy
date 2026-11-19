@@ -119,7 +119,7 @@ describe('UiState review ticks', () => {
     expect(new UiState(new FakeHost({ tab: 'checkpoints' })).getSnapshot().tab).toBe('checkpoints');
   });
 
-  it('keeps the changes card collapsed state in the expanded map', () => {
+  it('keeps the strip collapsed state in the expanded map', () => {
     const host = new FakeHost();
     const ui = new UiState(host);
     ui.setExpanded('changes-dock-collapsed', true);

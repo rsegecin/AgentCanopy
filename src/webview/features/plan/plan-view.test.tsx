@@ -522,7 +522,7 @@ describe('Approve and Execute', () => {
     );
     expect(approve().disabled).toBe(true);
     expect(describedBy(approve())).toEqual([
-      'Keep or revert the configuration changes in the changes card below the chat first.',
+      'Keep or revert the configuration changes below the chat first.',
     ]);
     fireEvent.click(approve());
     expect(host.postedOf('plan.approve')).toEqual([]);
@@ -563,7 +563,7 @@ describe('Approve and Execute', () => {
     );
     expect(describedBy(approve())).toEqual([
       'Wait for the current turn to finish.',
-      'Keep or revert the configuration changes in the changes card below the chat first.',
+      'Keep or revert the configuration changes below the chat first.',
     ]);
   });
 

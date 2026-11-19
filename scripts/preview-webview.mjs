@@ -391,6 +391,22 @@ const state = {
             { status: 'awaiting-approval', approval: undefined, endedAt: undefined },
           ),
           { kind: 'prompt', promptId: 'pr2' },
+          // The card of the turn. A real turn gets it when it ends; the sample shows it while the turn
+          // runs (no buttons), and the variants that end the turn show it with buttons. 'src/legacy/cache.js'
+          // has no review entry, so the card says "1 file no longer pending".
+          {
+            kind: 'changes',
+            operationIds: ['op-3'],
+            files: [
+              { path: 'README.md', changeType: 'modified' },
+              { path: 'assets/logo.png', changeType: 'deleted' },
+              { path: 'src/cache.ts', changeType: 'modified' },
+              { path: 'src/legacy/cache.js', changeType: 'deleted' },
+              { path: 'src/server/rate-limit.test.ts', changeType: 'created' },
+              { path: 'src/store/index.ts', changeType: 'created' },
+            ],
+            more: 0,
+          },
         ],
       },
     ],
@@ -479,7 +495,7 @@ const state = {
         },
         restorable: true,
         includesUserEdits: false,
-        operationIds: [],
+        operationIds: ['op-3'],
         linesAdded: 14,
         linesRemoved: 3,
       },
@@ -500,7 +516,7 @@ const state = {
         restorable: true,
         includesUserEdits: true,
         renamedFrom: 'src/store.ts',
-        operationIds: [],
+        operationIds: ['op-3'],
         linesAdded: 22,
       },
       {
@@ -513,7 +529,7 @@ const state = {
         restorable: false,
         note: 'The earlier content of this file was not kept, so it cannot be put back.',
         includesUserEdits: false,
-        operationIds: [],
+        operationIds: ['op-3'],
       },
       {
         path: 'README.md',
@@ -538,12 +554,62 @@ const state = {
         },
         restorable: true,
         includesUserEdits: false,
-        operationIds: [],
+        operationIds: ['op-3'],
+      },
+      // A new file the turn added, by one of the agent's tools.
+      {
+        path: 'src/server/rate-limit.test.ts',
+        changeType: 'created',
+        attribution: 'agent-tool',
+        status: 'pending',
+        baseline: { kind: 'absent' },
+        current: {
+          kind: 'file',
+          hash: 'eee555',
+          size: 1320,
+          mode: 420,
+          stored: true,
+          binary: false,
+        },
+        restorable: true,
+        includesUserEdits: false,
+        operationIds: ['op-3'],
+        linesAdded: 48,
+      },
+      // Owned by an operation that no card of this conversation lists, as if another conversation in
+      // the same folder had changed it: the strip lists it under "Pending changes outside this conversation".
+      {
+        path: 'docs/notes.md',
+        changeType: 'modified',
+        attribution: 'agent-tool',
+        status: 'pending',
+        baseline: {
+          kind: 'file',
+          hash: 'fff666',
+          size: 410,
+          mode: 420,
+          stored: true,
+          binary: false,
+        },
+        current: {
+          kind: 'file',
+          hash: 'ggg777',
+          size: 468,
+          mode: 420,
+          stored: true,
+          binary: false,
+        },
+        restorable: true,
+        includesUserEdits: false,
+        operationIds: ['op-other'],
+        linesAdded: 5,
+        linesRemoved: 1,
       },
     ],
-    // The sample's turn t3 is a running Agent turn, so the host reports the folder busy: the changes
-    // card shows the configuration changes but hides its Files section. Variants without a running Agent
-    // turn set this to false.
+    // The sample's turn t3 is a running Agent turn, so the host reports the folder busy: the card of
+    // the turn lists its files without buttons, and the strip shows the configuration changes and, in
+    // place of the pending file outside this conversation, a note that files can be reviewed when the
+    // turn ends. Variants without a running Agent turn set this to false.
     busy: true,
     configChanges: [
       {
@@ -991,14 +1057,87 @@ function page(origin, query) {
       state.agentAuto = { offered: true, commands: true };
       state.draftAgentAuto = true;
     }
-    // ?changes=both: no turn runs and the folder is free, so the changes card shows one configuration
-    // change and the file changes together (the card's body scrolls past 320px, hence a single one).
-    if (params.get('changes') === 'both' && state.active) {
+    // The variants of the file review. In each of them the turn has ended and the folder is free, so the
+    // card of the turn has its buttons.
+    // ?changes=both: one configuration change, and the pending file of another operation, so the strip
+    // shows both its sections ("Pending changes outside this conversation") and the card is in the log.
+    // ?collapsed=1: the same, and the user has collapsed the strip.
+    // ?changes=card: nothing but the card: no configuration change and no file outside the card, so
+    // the strip is not shown.
+    // ?changes=turns: an earlier Agent turn has a card too. Its file src/cache.ts was changed again by the
+    // later turn, so it is listed in the record (opened) as "Changed again in a later turn"; the file
+    // src/server/router.ts is still pending and has its buttons in the earlier card; src/config.ts was
+    // settled. The strip shows the file outside this conversation.
+    const changesVariant = params.get('changes');
+    const collapsedVariant = params.get('collapsed') === '1';
+    if ((changesVariant === 'both' || changesVariant === 'card' || changesVariant === 'turns' || collapsedVariant) && state.active) {
       const a = state.active;
       a.turns = a.turns.map((t) => ({ ...t, status: 'completed', endedAt: t.endedAt ?? Date.now() }));
       a.prompts = a.prompts.filter((p) => p.turnId !== 't3');
       a.activity = null;
       state.review = { ...state.review, configChanges: state.review.configChanges.slice(0, 1), busy: false };
+      if (changesVariant === 'card') {
+        state.review = {
+          ...state.review,
+          configChanges: [],
+          entries: state.review.entries.filter((e) => e.operationIds.includes('op-3')),
+        };
+      }
+      if (changesVariant === 'turns') {
+        const edit = {
+          path: 'src/server/router.ts',
+          changeType: 'modified',
+          attribution: 'agent-tool',
+          status: 'pending',
+          baseline: { kind: 'file', hash: 'hhh888', size: 2010, mode: 420, stored: true, binary: false },
+          current: { kind: 'file', hash: 'iii999', size: 2056, mode: 420, stored: true, binary: false },
+          restorable: true,
+          includesUserEdits: false,
+          operationIds: ['op-2c'],
+          linesAdded: 3,
+          linesRemoved: 1,
+        };
+        state.review = {
+          ...state.review,
+          configChanges: [],
+          entries: [
+            edit,
+            ...state.review.entries.map((e) =>
+              e.path === 'src/cache.ts' ? { ...e, operationIds: ['op-2c', 'op-3'] } : e,
+            ),
+          ],
+        };
+        const before = a.messages.findIndex((m) => m.id === 'm5');
+        a.messages = [
+          ...a.messages.slice(0, before),
+          { role: 'user', id: 'm4c', turnId: 't2c', createdAt: Date.now() - 45000, text: 'Mount the limiter on the v1 routes.', mode: 'agent', attachments: [] },
+          {
+            role: 'assistant',
+            id: 'm4d',
+            turnId: 't2c',
+            createdAt: Date.now() - 42000,
+            parts: [
+              { kind: 'text', text: 'The limiter is mounted on the v1 routes.' },
+              {
+                kind: 'changes',
+                operationIds: ['op-2c'],
+                files: [
+                  { path: 'src/cache.ts', changeType: 'modified' },
+                  { path: 'src/config.ts', changeType: 'created' },
+                  { path: 'src/server/router.ts', changeType: 'modified' },
+                ],
+                more: 0,
+              },
+            ],
+          },
+          ...a.messages.slice(before),
+        ];
+        a.turns = [
+          ...a.turns.filter((t) => t.id !== 't3'),
+          { id: 't2c', mode: 'agent', model: 'sonnet', startedAt: Date.now() - 45000, endedAt: Date.now() - 40000, status: 'completed' },
+          ...a.turns.filter((t) => t.id === 't3'),
+        ];
+      }
     }
     // ?sendMode=ask: the parent's turn runs in Agent mode and the user has switched the composer to Ask
     // while it runs. No side question runs, so the composer shows the note "Asked as a side question: the
@@ -1089,8 +1228,11 @@ function page(origin, query) {
     }
     const sent = [];
     window.__sent = sent;
-    // ?collapsed=1: the user has collapsed the changes card.
-    let saved = params.get('collapsed') === '1' ? { expanded: { 'changes-dock-collapsed': true } } : undefined;
+    // The saved view state: ?collapsed=1 collapses the strip, ?changes=turns opens the record of the earlier card.
+    const expanded = {};
+    if (collapsedVariant) expanded['changes-dock-collapsed'] = true;
+    if (changesVariant === 'turns') expanded['review:record:m4d'] = true;
+    let saved = Object.keys(expanded).length > 0 ? { expanded } : undefined;
     const deliver = (data) => window.dispatchEvent(new MessageEvent('message', { data }));
     window.acquireVsCodeApi = () => ({
       postMessage(message) {
@@ -1150,7 +1292,7 @@ const base = `http://127.0.0.1:${server.address().port}`;
 
 if (!process.argv.includes('--check')) {
   console.log(
-    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft, ?tab=permissions, ?permissions=1, ?permcards=1, ?width=260)`,
+    `Preview: ${base}/   (add ?plan=pending, ?plan=ready, ?tab=history, ?theme=light, ?kind=panel, ?changes=both, ?changes=card, ?changes=turns, ?empty=1, ?collapsed=1, ?queued=running, ?queued=stopped, ?aside=running, ?aside=done, ?aside=history, ?sendMode=ask, ?auto=1, ?auto=draft, ?tab=permissions, ?permissions=1, ?permcards=1, ?width=260)`,
   );
 } else {
   const chrome =
@@ -1191,6 +1333,9 @@ if (!process.argv.includes('--check')) {
     { name: 'chat-changes-dark', query: '?tab=chat', size: '520,900' },
     { name: 'chat-changes-collapsed-dark', query: '?tab=chat&collapsed=1', size: '520,900' },
     { name: 'chat-changes-both-dark', query: '?tab=chat&changes=both', size: '520,1100' },
+    { name: 'chat-turn-card-dark', query: '?tab=chat&changes=card', size: '520,1100' },
+    { name: 'chat-turn-card-light', query: '?tab=chat&changes=card&theme=light', size: '520,1100' },
+    { name: 'chat-changes-turns-dark', query: '?tab=chat&changes=turns', size: '520,1700' },
     { name: 'chat-queued-running-dark', query: '?tab=chat&queued=running', size: '520,900' },
     { name: 'chat-queued-stopped-dark', query: '?tab=chat&queued=stopped', size: '520,900' },
     { name: 'chat-empty-config-dark', query: '?tab=chat&empty=1', size: '520,700' },

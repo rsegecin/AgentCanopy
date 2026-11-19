@@ -45,7 +45,7 @@ Your answers are listed under **Your decisions**. They belong to you, not to the
 
 ## Approve and execute
 
-**Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running, while configuration changes from an earlier Agent turn await your decision in the Changes card, or while an Agent turn of another conversation runs in the same folder ("Another agent turn is running in this folder.").
+**Approve and Execute** on the newest plan card is the only way a plan runs. It acts on the latest version, and it is disabled, with a hint, while a turn is running, while configuration changes from an earlier Agent turn await your decision in the strip below the chat, or while an Agent turn of another conversation runs in the same folder ("Another agent turn is running in this folder.").
 
 1. Click it. A native VS Code dialog names the version and warns if questions or decisions are still unanswered. Which dialog it is depends on [Auto](agent-mode.md#auto):
    - Auto is offered (`agentCanopy.agent.auto.enabled` is on) and off for the conversation: "Approve and execute this plan with Auto?". After the version paragraph and the warning it says "Approving also turns on Auto for this conversation.", then everything the dialog of the Auto switch says: the `Folder:` and `Conversation:` lines, what runs without asking, the sandbox, what still asks, what review and checkpoints do not undo, and "Auto stays on for this conversation, also for queued messages and approved plans, until you turn it off." The button reads **Approve and Execute with Auto**.

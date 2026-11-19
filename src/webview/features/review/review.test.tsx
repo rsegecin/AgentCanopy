@@ -915,7 +915,7 @@ describe('the strip, with a conversation open', () => {
   });
 });
 
-describe('the changes card in the log', () => {
+describe('the Changed files card in the log', () => {
   const turn1 = () =>
     turnMessage(
       'a1',

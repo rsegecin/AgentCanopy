@@ -62,7 +62,7 @@ const execFileAsync = promisify(execFile);
 export const BUSY_MESSAGE =
   'Another agent turn is running in this folder. Stop it or wait for it to finish.';
 export const CONFIG_PENDING_MESSAGE =
-  'The last turn changed tool or editor configuration. Keep or revert those changes in the changes card below the chat before starting another Agent turn.';
+  'The last turn changed tool or editor configuration. Keep or revert those changes below the chat before starting another Agent turn.';
 export const RECORD_FAILED_MESSAGE =
   'AgentCanopy could not record what changed in this turn. Review the workspace before continuing.';
 export const INTERRUPTED_NOTE =
@@ -845,7 +845,7 @@ class Tracker implements WorkspaceTracker {
       text: `This turn changed tool or editor configuration (${listNames(
         records.map((r) => r.displayPath),
         5,
-      )}). Keep or revert it in the changes card below the chat before the next turn: such files can make later commands run without asking.`,
+      )}). Keep or revert it below the chat before the next turn: such files can make later commands run without asking.`,
     };
   }
 

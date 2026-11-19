@@ -387,7 +387,7 @@ describe('Composer while a turn runs', () => {
     it('puts the configuration changes before an already queued message', () => {
       renderWithHost(<Composer />, runningIn('agent', { queued: queuedMessage() }, config));
       expect(hints()).toEqual([
-        'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.',
+        'Keep or revert the configuration changes below the chat before sending in Agent mode.',
       ]);
     });
 
@@ -723,10 +723,10 @@ describe('Composer with pending configuration changes', () => {
   const send = () => screen.getByRole<HTMLButtonElement>('button', { name: 'Send' });
   const hint = () =>
     screen.getByText(
-      'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.',
+      'Keep or revert the configuration changes below the chat before sending in Agent mode.',
     );
 
-  it('disables Send and Enter in Agent mode, keeps the text, and names the changes card', () => {
+  it('disables Send and Enter in Agent mode, keeps the text, and says where to decide', () => {
     const { host } = renderWithHost(<Composer />, pending('agent'));
     type('go on');
     expect(send().disabled).toBe(true);
@@ -734,7 +734,7 @@ describe('Composer with pending configuration changes', () => {
     fireEvent.click(send());
     expect(host.postedOf('turn.send')).toHaveLength(0);
     expect(box().value).toBe('go on');
-    expect(hint().textContent).toContain('changes card below the chat');
+    expect(hint().textContent).toContain('below the chat');
     expect(hint().getAttribute('role')).toBe('status');
     expect(box().getAttribute('aria-describedby')).toBe(hint().id);
     expect(send().getAttribute('aria-describedby')).toBe(hint().id);
@@ -755,7 +755,9 @@ describe('Composer with pending configuration changes', () => {
     const { host } = renderWithHost(<Composer />, pending(mode));
     type('question');
     expect(send().disabled).toBe(false);
-    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    expect(
+      screen.queryByText(/Keep or revert the configuration changes below the chat/),
+    ).toBeNull();
     enter();
     expect(host.postedOf('turn.send')).toEqual([
       { type: 'turn.send', text: 'question', mode, model: 'default' },
@@ -767,7 +769,9 @@ describe('Composer with pending configuration changes', () => {
     type('hello');
     fireEvent.click(screen.getByRole('radio', { name: 'Ask' }));
     expect(send().disabled).toBe(false);
-    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    expect(
+      screen.queryByText(/Keep or revert the configuration changes below the chat/),
+    ).toBeNull();
     expect(box().getAttribute('aria-describedby')).toBeNull();
     fireEvent.click(screen.getByRole('radio', { name: 'Agent' }));
     expect(send().disabled).toBe(true);
@@ -797,7 +801,9 @@ describe('Composer with pending configuration changes', () => {
 
   it('does not add the hint over a provider problem', () => {
     renderWithHost(<Composer />, { ...pending('agent'), trusted: false });
-    expect(screen.queryByText(/changes card below the chat/)).toBeNull();
+    expect(
+      screen.queryByText(/Keep or revert the configuration changes below the chat/),
+    ).toBeNull();
     expect(box().getAttribute('aria-describedby')).toBe(screen.getByRole('status').id);
   });
 });

@@ -203,7 +203,7 @@ describe('configuration tripwire', () => {
     expect(warning?.level).toBe('warning');
     expect(warning?.text).toContain('.claude/settings.json');
     expect(warning?.text).toContain(
-      'Keep or revert it in the changes card below the chat before the next turn: such files can make later commands run without asking.',
+      'Keep or revert it below the chat before the next turn: such files can make later commands run without asking.',
     );
     await expect(new Turn(tracker, env).begin()).rejects.toThrow(CONFIG_PENDING_MESSAGE);
   });

@@ -323,7 +323,7 @@ describe('focus after the focused control goes away', () => {
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Message' }));
   });
 
-  it('moves to the changes card in the log when there is no composer to take focus', () => {
+  it('moves to the Changed files card in the log when there is no composer to take focus', () => {
     const cardState = (entry: ReviewEntry): ViewState => ({
       ...reviewState([entry]),
       active: makeActive('c1', {
@@ -1172,7 +1172,7 @@ describe('the Permissions view', () => {
 });
 
 describe('scrollable boxes and text alternatives', () => {
-  it('gives the changes card a name, a toggle that states what it controls, and a reachable scroll box', () => {
+  it('gives the strip a name, a toggle that states what it controls, and a reachable scroll box', () => {
     renderWithHost(
       <ChangesDock />,
       makeState({
@@ -1198,7 +1198,7 @@ describe('scrollable boxes and text alternatives', () => {
     expect(within(card).getByRole('button', { name: /^Keep / })).toBeTruthy();
   });
 
-  it('gives the changes card in the log a name, toggles that state what they control, and a reachable scroll box', () => {
+  it('gives the Changed files card in the log a name, toggles that state what they control, and a reachable scroll box', () => {
     renderWithHost(
       <MessageList />,
       makeState({
