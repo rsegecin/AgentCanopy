@@ -34,6 +34,7 @@ const rejected = { decision: 'reject', source: 'user_reject' } as const;
 
 const READ_OUTSIDE_TITLE = 'Allow reads outside the folder without asking?';
 const DIRECTORY_TITLE = 'Always allow reads in this folder?';
+const EDIT_DIRECTORY_TITLE = 'Always allow edits in this folder?';
 const CARD_TITLE = 'Always allow this?';
 
 interface Dialog {
@@ -159,6 +160,22 @@ function readSteps(file: string, toolUseId: string): Step[] {
   ];
 }
 
+function editSteps(file: string, toolUseId: string): Step[] {
+  const input = { file_path: file, old_string: 'outside', new_string: 'changed' };
+  return [
+    assistantToolUse(toolUseId, 'Edit', input),
+    {
+      permission: {
+        toolName: 'Edit',
+        input,
+        toolUseId,
+        onAllow: [userToolResult(toolUseId, 'edited', { decision: allowed })],
+        onDeny: [denied(toolUseId)],
+      },
+    },
+  ];
+}
+
 function fetchSteps(url: string, toolUseId: string): Step[] {
   const input = { url };
   return [
@@ -190,6 +207,17 @@ function sendAsk(view: TestView, text = 'go'): void {
     ...(active ? { conversationId: active.meta.id } : {}),
     text,
     mode: 'ask',
+    model: 'default',
+  });
+}
+
+function sendAgent(view: TestView, text = 'go'): void {
+  const active = view.state?.active;
+  view.send({
+    type: 'turn.send',
+    ...(active ? { conversationId: active.meta.id } : {}),
+    text,
+    mode: 'agent',
     model: 'default',
   });
 }
@@ -228,6 +256,16 @@ function toolCalls(view: TestView): ToolCallView[] {
 async function askUntilPrompt(h: Harness): Promise<{ view: TestView; prompt: PermissionPrompt }> {
   const view = h.attach();
   sendAsk(view);
+  await until('the prompt', () => pendingPrompt(view) !== undefined);
+  const prompt = pendingPrompt(view);
+  if (!prompt) throw new Error('no prompt');
+  return { view, prompt };
+}
+
+/** A new Agent turn, up to its first prompt. */
+async function agentUntilPrompt(h: Harness): Promise<{ view: TestView; prompt: PermissionPrompt }> {
+  const view = h.attach();
+  sendAgent(view);
   await until('the prompt', () => pendingPrompt(view) !== undefined);
   const prompt = pendingPrompt(view);
   if (!prompt) throw new Error('no prompt');
@@ -761,6 +799,180 @@ describe('adding a folder in the view', () => {
   });
 });
 
+describe('adding a folder for edits in the view', () => {
+  it('saves nothing when the picker is dismissed, and tells the view', async () => {
+    const { h } = await setup();
+    h.ui.directoryAnswer = undefined;
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('the permissions sent again', () => permissionPatches(view) === 1);
+    expect(h.ui.callsOf('pickDirectory')).toEqual([
+      [{ title: 'Allow edits in a folder', openLabel: 'Choose Folder' }],
+    ]);
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(grantsOf(h)).toEqual([]);
+    expect(view.toasts).toEqual([]);
+  });
+
+  it.each([
+    ['a folder inside the workspace', 'inside-folder'],
+    ['a drive or filesystem root', 'too-broad'],
+    ['the home directory', 'too-broad'],
+    ['a credential location', 'sensitive'],
+    ['a protected folder', 'protected'],
+    ['a folder that does not exist', 'not-a-directory'],
+  ] as const)('refuses %s with its message and no dialog', async (name, reason) => {
+    const { h, home, outside } = await setup();
+    const inside = join(h.workspace, 'sub');
+    const protectedDir = join(outside, '.git');
+    await fs.mkdir(inside, { recursive: true });
+    await fs.mkdir(protectedDir, { recursive: true });
+    h.ui.directoryAnswer = {
+      'a folder inside the workspace': inside,
+      'a drive or filesystem root': parse(h.workspace).root,
+      'the home directory': home,
+      'a credential location': join(home, '.ssh'),
+      'a protected folder': protectedDir,
+      'a folder that does not exist': join(h.root, 'missing'),
+    }[name];
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.editDirectoryRefusal[reason] });
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(grantsOf(h)).toEqual([]);
+    expect(permissionPatches(view)).toBe(1);
+  });
+
+  it('refuses a folder inside one that is saved for edits already', async () => {
+    const { h, outside } = await setup();
+    const below = join(outside, 'below');
+    await fs.mkdir(below);
+    await store(h).add(FOLDER_KEY, { kind: 'edit-directory', path: outside });
+    h.ui.directoryAnswer = below;
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]?.text).toBe(TEXT.editDirectoryRefusal.covered);
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(grantsOf(h)).toHaveLength(1);
+  });
+
+  it('accepts a folder that is saved for reads only, and saves it for edits too', async () => {
+    const { h, outside } = await setup();
+    await store(h).add(FOLDER_KEY, { kind: 'read-directory', path: outside });
+    h.ui.directoryAnswer = outside;
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('both folders', () => grantsOf(h).length === 2);
+    expect(grantsOf(h)).toEqual([
+      { kind: 'read-directory', path: outside },
+      { kind: 'edit-directory', path: outside },
+    ]);
+  });
+
+  it('saves a valid folder only after the dialog that names it is confirmed', async () => {
+    const { h, outside } = await setup();
+    h.ui.directoryAnswer = outside;
+    const release = holdDialog(h, EDIT_DIRECTORY_TITLE);
+    const view = h.attach();
+    const other = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('the dialog', () => h.ui.callsOf('confirm').length === 1);
+    expect(grantsOf(h)).toEqual([]);
+    const [dialog] = dialogsOf(h);
+    expect(dialog?.title).toBe(EDIT_DIRECTORY_TITLE);
+    expect(dialog?.confirmLabel).toBe('Always allow');
+    expect(dialog?.detail).toContain(`Directory: ${outside}\nWorkspace folder: ${h.workspace}`);
+    expect(dialog?.detail).toContain('Review and checkpoints do not cover files outside');
+    release();
+    await until('the folder', () => grantsOf(h).length === 1);
+    expect(grantsOf(h)).toEqual([{ kind: 'edit-directory', path: outside }]);
+    await until('both views', () => other.current().permissions.saved.length === 1);
+    expect(view.current().permissions.saved[0]).toMatchObject({
+      kind: 'edit-directory',
+      text: outside,
+    });
+    expect(view.toasts).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('saves nothing when the dialog is declined', async () => {
+    const { h, outside } = await setup();
+    h.ui.directoryAnswer = outside;
+    h.ui.confirmAnswer = false;
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('the dialog', () => h.ui.callsOf('confirm').length === 1);
+    await until('the permissions sent again', () => permissionPatches(view) === 1);
+    expect(grantsOf(h)).toEqual([]);
+    expect(view.current().permissions.saved).toEqual([]);
+  });
+
+  it('is refused in an untrusted workspace, without a folder, and while a dialog is open', async () => {
+    const untrusted = await setup(undefined, { untrusted: true });
+    untrusted.h.ui.directoryAnswer = untrusted.outside;
+    const a = untrusted.h.attach();
+    a.send({ type: 'permissions.addEditDirectory' });
+    await until('a toast', () => a.toasts.length === 1);
+    expect(a.toasts[0]?.text).toBe(TEXT.untrustedRefusal);
+    expect(untrusted.h.ui.callsOf('pickDirectory')).toEqual([]);
+
+    const none = await setup(undefined, { noFolder: true });
+    const b = none.h.attach();
+    b.send({ type: 'permissions.addEditDirectory' });
+    await until('a toast', () => b.toasts.length === 1);
+    expect(b.toasts[0]?.text).toBe(TEXT.noFolder);
+    expect(none.h.ui.callsOf('pickDirectory')).toEqual([]);
+
+    const busy = await setup();
+    busy.h.ui.directoryAnswer = busy.outside;
+    const release = holdDialog(busy.h, EDIT_DIRECTORY_TITLE);
+    const c = busy.h.attach();
+    c.send({ type: 'permissions.addEditDirectory' });
+    await until('the dialog', () => busy.h.ui.callsOf('confirm').length === 1);
+    c.send({ type: 'permissions.addEditDirectory' });
+    c.send({ type: 'permissions.addDirectory' });
+    await until('two toasts', () => c.toasts.length === 2);
+    expect(c.toasts.map((toast) => toast.text)).toEqual([
+      TEXT.permissionDialogOpen,
+      TEXT.permissionDialogOpen,
+    ]);
+    expect(busy.h.ui.callsOf('pickDirectory')).toHaveLength(1);
+    release();
+    await until('the folder', () => grantsOf(busy.h).length === 1);
+    expect(grantsOf(busy.h)).toEqual([{ kind: 'edit-directory', path: busy.outside }]);
+  });
+
+  it('is not saved when the view moved to another folder while the dialog was open', async () => {
+    const { h, outside } = await setup();
+    await secondFolder(h);
+    h.ui.directoryAnswer = outside;
+    const release = holdDialog(h, EDIT_DIRECTORY_TITLE);
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('the dialog', () => h.ui.callsOf('confirm').length === 1);
+    view.send({ type: 'conversation.new', folder: SECOND_FOLDER });
+    await until('the second folder', () => view.current().permissions.folder === SECOND_FOLDER);
+    release();
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]?.text).toBe(TEXT.permissionChangedDuringDialog);
+    expect(grantsOf(h, FOLDER_KEY)).toEqual([]);
+    expect(grantsOf(h, SECOND_FOLDER)).toEqual([]);
+  });
+
+  it('warns when the confirmed folder cannot be saved', async () => {
+    const { h, outside } = await setup();
+    store(h).add = () => Promise.reject(new Error('the disk is full'));
+    h.ui.directoryAnswer = outside;
+    const view = h.attach();
+    view.send({ type: 'permissions.addEditDirectory' });
+    await until('a toast', () => view.toasts.length === 1);
+    expect(view.toasts[0]).toEqual({ level: 'warning', text: TEXT.permissionNotSaved });
+    expect(view.current().permissions.saved).toEqual([]);
+  });
+});
+
 // ---- the card's "Always allow this?" -----------------------------------------------------------------
 
 describe('an always answer on a read-outside card', () => {
@@ -835,6 +1047,87 @@ describe('an always answer on a read-outside card', () => {
   it('is allowed once, with no dialog, when the folder of its conversation is not open', async () => {
     const { h } = await setup(sequence);
     const { view, prompt } = await askUntilPrompt(h);
+    h.env.folderList = [];
+    h.controller.environmentChanged();
+    chooseAlways(view, prompt);
+    await finishedTurn(h, view);
+    expect(h.ui.callsOf('confirm')).toEqual([]);
+    expect(grantsOf(h)).toEqual([]);
+    const settled = view.active().prompts[0];
+    expect(settled?.kind === 'permission' && settled.answered).toBe('allow-once');
+  });
+});
+
+describe('an always answer on an outside-workspace card', () => {
+  const sequence = [scenario(editSteps(OUT_A, 'toolu_e'))];
+
+  it('is allowed once and saves nothing when the dialog is declined', async () => {
+    const { h, outside } = await setup(sequence);
+    h.ui.confirmAnswer = false;
+    const { view, prompt } = await agentUntilPrompt(h);
+    expect(prompt.category).toBe('outside-workspace');
+    expect(prompt.choices).toEqual(['allow-once', 'allow-always', 'deny']);
+    expect(prompt.alwaysRule).toEqual({
+      kind: 'edit-directory',
+      rule: outside,
+      runsProjectCode: false,
+    });
+    chooseAlways(view, prompt);
+    await finishedTurn(h, view);
+    expect(dialogsOf(h).map((dialog) => dialog.title)).toEqual([CARD_TITLE]);
+    expect(grantsOf(h)).toEqual([]);
+    const settled = view.active().prompts[0];
+    expect(settled?.kind === 'permission' && settled.answered).toBe('allow-once');
+    expect(toolCalls(view)[0]).toMatchObject({ name: 'Edit', status: 'done', approval: 'user' });
+    expect(view.toasts).toEqual([]);
+    expect(view.current().permissions.saved).toEqual([]);
+  });
+
+  it('saves the directory when the dialog is confirmed, and the view lists it and the next edit does not ask', async () => {
+    const { h, outside } = await setup(sequence);
+    const { view, prompt } = await agentUntilPrompt(h);
+    const other = h.attach();
+    chooseAlways(view, prompt);
+    await finishedTurn(h, view);
+    const [dialog] = dialogsOf(h);
+    expect(dialog?.title).toBe(CARD_TITLE);
+    expect(dialog?.confirmLabel).toBe('Always allow');
+    expect(dialog?.detail).toContain(`Directory: ${outside}`);
+    expect(dialog?.detail).toContain(`Workspace folder: ${h.workspace}`);
+    expect(dialog?.detail).toContain('Review and checkpoints do not cover files outside');
+    expect(grantsOf(h)).toEqual([{ kind: 'edit-directory', path: outside }]);
+    expect(view.toasts).toEqual([]);
+    expect(view.current().permissions.saved).toMatchObject([
+      { kind: 'edit-directory', text: outside },
+    ]);
+    // Every view of the folder shows it.
+    expect(other.current().permissions.saved).toMatchObject([
+      { kind: 'edit-directory', text: outside },
+    ]);
+    view.expectMirror();
+
+    sendAgent(view, 'again');
+    await until('the second turn', () => view.active().turns.length === 2);
+    await finishedTurn(h, view);
+    expect(view.active().prompts).toHaveLength(1);
+    expect(dialogsOf(h)).toHaveLength(1);
+  });
+
+  it('warns, and still allows the call once, when the directory cannot be saved', async () => {
+    const { h } = await setup(sequence);
+    store(h).add = () => Promise.reject(new Error('the disk is full'));
+    const { view, prompt } = await agentUntilPrompt(h);
+    chooseAlways(view, prompt);
+    await finishedTurn(h, view);
+    expect(view.toasts).toEqual([{ level: 'warning', text: TEXT.permissionNotSaved }]);
+    expect(toolCalls(view)[0]).toMatchObject({ status: 'done', approval: 'user' });
+    expect(grantsOf(h)).toEqual([]);
+    expect(view.current().permissions.saved).toEqual([]);
+  });
+
+  it('is allowed once, with no dialog, when the folder of its conversation is not open', async () => {
+    const { h } = await setup(sequence);
+    const { view, prompt } = await agentUntilPrompt(h);
     h.env.folderList = [];
     h.controller.environmentChanged();
     chooseAlways(view, prompt);
@@ -955,6 +1248,14 @@ describe('every permissions message', () => {
     await sends(
       { type: 'permissions.addDirectory' },
       () => h.ui.callsOf('pickDirectory').length === 2,
+    );
+    // The same two for a folder to edit in.
+    h.ui.directoryAnswer = outside;
+    await sends({ type: 'permissions.addEditDirectory' }, asked(3));
+    h.ui.directoryAnswer = undefined;
+    await sends(
+      { type: 'permissions.addEditDirectory' },
+      () => h.ui.callsOf('pickDirectory').length === 4,
     );
     // An id nobody has, and a switch that is off already.
     await sends({ type: 'permissions.remove', id: 'nothing' }, () => true);

@@ -1119,7 +1119,7 @@ describe('the Permissions view', () => {
   it('points every disabled control at its reason, which is on the page', () => {
     view({ trusted: false });
     const disabled = Array.from(document.querySelectorAll<HTMLButtonElement>('button:disabled'));
-    expect(disabled).toHaveLength(8);
+    expect(disabled).toHaveLength(9);
     for (const el of disabled) {
       const reason = (el.getAttribute('aria-describedby') ?? '')
         .split(' ')

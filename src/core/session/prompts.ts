@@ -88,6 +88,20 @@ export function directoryDetail(dir: string, folderPath: string): string {
   ].join('\n\n');
 }
 
+/**
+ * The text for a directory outside the workspace folder that is allowed to be edited (and read): the
+ * card's dialog and the Permissions view's.
+ */
+export function editDirectoryDetail(dir: string, folderPath: string): string {
+  return [
+    `Directory: ${oneLineText(dir)}\nWorkspace folder: ${folderLine(folderPath)}`,
+    'Edits to files in this directory and below will no longer ask, in Agent mode, for this workspace folder. Review and checkpoints do not cover files outside the workspace folder: AgentCanopy cannot show or undo these edits.',
+    'Reads and searches in this directory and below will no longer ask either, in Ask, Plan and Agent mode. What is read is sent to the model.',
+    'Protected files (such as .git, .vscode, .claude and .env) and credential locations still ask.',
+    'You can remove this under Permissions.',
+  ].join('\n\n');
+}
+
 /** The text for a site that is allowed to be fetched, from the card. */
 export function siteDetail(host: string, folderPath: string): string {
   return [
@@ -109,6 +123,18 @@ export function directoryDialog(
   };
 }
 
+/** What the dialog that adds a folder for edits in the Permissions view says and what it is called. */
+export function editDirectoryDialog(
+  dir: string,
+  folderPath: string,
+): { title: string; detail: string; confirmLabel: string } {
+  return {
+    title: 'Always allow edits in this folder?',
+    detail: editDirectoryDetail(dir, folderPath),
+    confirmLabel: 'Always allow',
+  };
+}
+
 const WEB_TOOLS_NOTE =
   'In Ask and Plan mode this applies only while agentCanopy.ask.webTools is on.';
 
@@ -117,7 +143,7 @@ const SWITCH_BODY: Record<PermissionSwitch, { title: string; paragraphs: string[
     title: 'Allow reads outside the folder without asking?',
     paragraphs: [
       'In this workspace folder the agent will read and search files anywhere on this machine without asking, in Ask, Plan and Agent mode. What it reads is sent to the model.',
-      "Credential locations (except Claude Code's own memory for this folder) and AgentCanopy's own storage still ask. Edits outside the folder still ask.",
+      "Credential locations (except Claude Code's own memory for this folder) and AgentCanopy's own storage still ask. Edits outside the folder still ask, except in folders you allowed for edits.",
     ],
   },
   'web-fetch': {
@@ -155,14 +181,15 @@ export function switchDialog(
 
 /**
  * The text of the native confirmation shown before an "allow always" answer takes effect. For a
- * directory or a site it names the workspace folder (`folderPath`) and shows the directory or host in
- * full; for a command or tool it is the rule.
+ * directory (to read, or to edit and read) or a site it names the workspace folder (`folderPath`) and
+ * shows the directory or host in full; for a command or tool it is the rule.
  */
 export function alwaysAllowDetail(prompt: Prompt, folderPath?: string): string {
   if (prompt.kind !== 'permission') return '';
   const rule = prompt.alwaysRule;
   if (rule === undefined) return prompt.detail;
   if (rule.kind === 'read-directory') return directoryDetail(rule.rule, folderPath ?? '');
+  if (rule.kind === 'edit-directory') return editDirectoryDetail(rule.rule, folderPath ?? '');
   if (rule.kind === 'web-site') return siteDetail(rule.rule, folderPath ?? '');
   const shown = safeText(rule.rule);
   return rule.runsProjectCode ? `${shown}\n\n${PROJECT_CODE_SENTENCE}` : shown;

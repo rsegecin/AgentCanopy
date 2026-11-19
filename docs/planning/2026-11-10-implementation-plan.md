@@ -18,6 +18,7 @@
 | 11. Saved permissions and the Permissions view | Done in code (plan: `roadmap/plans/2026-11-15-saved-permissions.md`; its Progress section records what each stage built, where the build differs from the plan and the rules added on the way). A fix to the path judgement precedes it: path forms the host cannot be sure to resolve like the CLI now ask. Type check, lint and the build pass; of 3676 unit tests, 17 fail, all of them tests that fail on this Windows machine without the change; the VS Code integration tests pass; the Permissions view and the two new cards render in the preview under the CSP. Every place that saves a permission was read to be behind a confirmed native dialog. Not yet tried by hand in VS Code (the six checks of the plan's stage s5); no live test was written or run; not checked with a screen reader or a high-contrast theme; how the CLI treats the path forms of the fix and what `WebFetch` does on a redirect come from reading the code and the documentation, not from a run; `npm run format:check` as written fails on this machine, for line endings only |
 | 12. Plan approval turns Auto on | Done in code (decided with the owner on 2026-11-16; paragraph below). Unit tests pass. Not yet tried by hand in VS Code; the live tests were not run |
 | 13. Fewer permission prompts | <STATUS: filled in by the primary model> |
+| 14. Always allow for edits in a folder outside the workspace | Done in code (decided with the owner on 2026-11-18; paragraph below). Type check, lint and the build pass; of 4920 unit tests, 19 failed in the full run: the 17 that fail on this Windows machine without the change, and one each in `session/asides.test.ts` and `workspace/checkpoints/regressions.test.ts` that pass when run alone; the VS Code integration tests pass; the card and the Permissions view render in the preview under the CSP. Not yet tried by hand in VS Code; no live test was written or run; not checked with a screen reader or a high-contrast theme; that the CLI carries out an outside edit the host allowed comes from the existing "Allow once" path, not from a new run |
 
 Approved by the owner on 2026-11-10. Updated at every phase commit.
 
@@ -100,6 +101,18 @@ Phase 13 (added 2026-11-17 at the owner's request; plan: `roadmap/plans/2026-11-
   8. The label code in `commands.ts` is unchanged; the check has its own tables.
   9. Verified on Windows, not macOS.
   10. Two version bumps: 0.1.4 for the build with Phase 12, 0.1.5 for the build with Phase 13.
+
+Phase 14 (added 2026-11-18 at the owner's request; no separate plan): executing a plan that wrote to another repository asked for every file, because an edit outside the folder offered only "Allow once" and "Deny". The user can now save a folder outside the workspace folder for edits.
+
+- **Owner's decisions (2026-11-18).**
+  1. The card of an edit outside the folder offers "Always allow" for the folder that holds the file, and everything below it.
+  2. A folder saved for edits also allows reads and searches in it, in Ask, Plan and Agent mode.
+  3. The Permissions view lists these folders ("Folders (read and edit)", next to "Folders (read)") and has a second button, "Allow edits in a folder...", with the native folder picker.
+- **Deviation from Phase 11, decision 4** ("Edits outside the folder ... keep asking every time; they get no 'Always allow'"): reversed for folders the user saved. The reason for decision 4 still holds, review and checkpoints do not cover files outside the folder, so the native dialog says that AgentCanopy cannot show or undo these edits. Edits to protected files keep decision 4.
+- **SPEC section 8.** Nothing is saved until the user confirms a native dialog that names the directory and the workspace folder; the webview can only remove. The permission belongs to one workspace folder, a removal applies to the next request of a running turn, and a call allowed this way is labelled "Approved by you".
+- **Always asks, also inside a saved folder**, with only "Allow once" and "Deny": a file with a protected name or below a protected directory anywhere on its real path (`.git`, `.vscode`, `.claude`, `.husky`, `.devcontainer`, `.github/workflows`, `.env`, `.env.*`, `.npmrc`, `.netrc`, `.mcp.json`, `.gitattributes`); the credential locations and storage directories of Phase 11; a path the host cannot judge; a link inside the folder that leads out of it (the real path is compared). Such a path is never offered either, and a folder that may not be granted (a root, the home directory or an ancestor, a sensitive or protected location, a folder inside the workspace folder) cannot be saved and covers nothing if it is in the store.
+- **What does not allow an edit.** A folder saved for reads, the reads switch, and Auto by itself. A policy without the grant store decides as before.
+- **Storage.** A new grant kind, `edit-directory`, in the per-folder store of Phase 11, read by the policy after its last await and never passed to the CLI. The file version is unchanged: an older build drops the entry on load, as it does any entry it does not know.
 
 Further deviations, decided during Phases 6 and 7:
 

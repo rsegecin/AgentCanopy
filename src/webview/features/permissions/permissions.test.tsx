@@ -17,6 +17,7 @@ const FULL: FolderPermissions = makeFolderPermissions({
   switches: ['read-outside'],
   saved: [
     makeSavedPermission('d1', { kind: 'read-directory', text: '/libs/shared' }),
+    makeSavedPermission('e1', { kind: 'edit-directory', text: '/libs/generated' }),
     makeSavedPermission('w1', { kind: 'web-site', text: 'docs.example.com' }),
     makeSavedPermission('c1', {
       kind: 'command',
@@ -94,10 +95,13 @@ describe('Permissions view: sections', () => {
       within(saved)
         .getAllByRole('heading', { level: 3 })
         .map((h) => h.textContent),
-    ).toEqual(['Folders', 'Web sites', 'Commands', 'Tools']);
-    const folders = within(section('Folders'));
+    ).toEqual(['Folders (read)', 'Folders (read and edit)', 'Web sites', 'Commands', 'Tools']);
+    const folders = within(section('Folders (read)'));
     expect(folders.getAllByRole('listitem')).toHaveLength(1);
     expect(folders.getByText('/libs/shared').tagName).toBe('CODE');
+    const editFolders = within(section('Folders (read and edit)'));
+    expect(editFolders.getAllByRole('listitem')).toHaveLength(1);
+    expect(editFolders.getByText('/libs/generated').tagName).toBe('CODE');
     expect(within(section('Web sites')).getByText('docs.example.com').tagName).toBe('CODE');
     expect(within(section('Commands')).getAllByRole('listitem')).toHaveLength(2);
     expect(within(section('Tools')).getByText('mcp__docs__search').tagName).toBe('CODE');
@@ -127,24 +131,30 @@ describe('Permissions view: sections', () => {
     expect(within(powershell).getByText('PowerShell')).toBeTruthy();
     expect(within(powershell).queryByText(PROJECT_CODE_WARNING)).toBeNull();
     // Entries of other kinds never show a shell or the warning.
-    expect(within(section('Folders')).queryByText(PROJECT_CODE_WARNING)).toBeNull();
+    expect(within(section('Folders (read)')).queryByText(PROJECT_CODE_WARNING)).toBeNull();
+    expect(within(section('Folders (read and edit)')).queryByText(PROJECT_CODE_WARNING)).toBeNull();
   });
 
-  it('says what is saved for nothing: the empty state, with Allow a folder... below', () => {
+  it('says what is saved for nothing: the empty state, with the two buttons that add a folder below', () => {
     renderView(makeFolderPermissions());
     expect(screen.getByText('Nothing is saved for this folder yet.')).toBeTruthy();
     expect(screen.queryAllByRole('heading', { level: 3 })).toHaveLength(0);
     expect(screen.queryByRole('button', { name: /^Remove/ })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Allow a folder...' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow reads in a folder...' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Allow edits in a folder...' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Allow a folder...' })).toBeNull();
   });
 
   it('lists what always asks, with the reasons', () => {
     renderView();
     const items = within(section('Always asks')).getAllByRole('listitem');
     expect(items).toHaveLength(4);
-    expect(items[0]?.textContent).toContain('Edits outside the folder.');
+    expect(items[0]?.textContent).toContain(
+      'Edits outside the folder, except in folders you allowed for edits.',
+    );
     expect(items[0]?.textContent).toContain('Review and checkpoints cannot undo them.');
     expect(items[1]?.textContent).toContain('Edits to protected files.');
+    expect(items[1]?.textContent).toContain('They ask also inside a folder allowed for edits.');
     expect(items[2]?.textContent).toContain('skills and background commands');
     expect(items[3]?.textContent).toContain("AgentCanopy's own storage");
     expect(items[3]?.textContent).toContain("reading Claude Code's memory for this folder");
@@ -228,6 +238,7 @@ describe('Permissions view: messages', () => {
       screen.getAllByRole('button', { name: /^Remove / }).map((b) => b.getAttribute('aria-label')),
     ).toEqual([
       'Remove /libs/shared',
+      'Remove /libs/generated',
       'Remove docs.example.com',
       'Remove npm test',
       'Remove Get-Date',
@@ -237,10 +248,20 @@ describe('Permissions view: messages', () => {
 
   it('posts permissions.addDirectory', () => {
     const { host } = renderView();
-    fireEvent.click(screen.getByRole('button', { name: 'Allow a folder...' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow reads in a folder...' }));
     expect(host.postedOf('permissions.addDirectory')).toEqual([
       { type: 'permissions.addDirectory' },
     ]);
+    expect(host.postedOf('permissions.addEditDirectory')).toEqual([]);
+  });
+
+  it('posts permissions.addEditDirectory', () => {
+    const { host } = renderView();
+    fireEvent.click(screen.getByRole('button', { name: 'Allow edits in a folder...' }));
+    expect(host.postedOf('permissions.addEditDirectory')).toEqual([
+      { type: 'permissions.addEditDirectory' },
+    ]);
+    expect(host.postedOf('permissions.addDirectory')).toEqual([]);
   });
 
   it('posts settings.open', () => {
@@ -254,13 +275,14 @@ describe('Permissions view: disabled', () => {
   const changing = () => [
     ...screen.getAllByRole<HTMLButtonElement>('switch'),
     ...screen.getAllByRole<HTMLButtonElement>('button', { name: /^Remove / }),
-    screen.getByRole<HTMLButtonElement>('button', { name: 'Allow a folder...' }),
+    screen.getByRole<HTMLButtonElement>('button', { name: 'Allow reads in a folder...' }),
+    screen.getByRole<HTMLButtonElement>('button', { name: 'Allow edits in a folder...' }),
   ];
 
   it('disables everything that changes something when the workspace is not trusted, and says why', () => {
     const { host } = renderView(FULL, { trusted: false });
     const controls = changing();
-    expect(controls).toHaveLength(9);
+    expect(controls).toHaveLength(11);
     for (const control of controls) {
       expect(control.disabled, control.outerHTML).toBe(true);
       expect(describedBy(control)).toContain(UNTRUSTED_REASON);
@@ -319,7 +341,8 @@ describe('Permissions view: lock after a click', () => {
     for (const control of [
       ...screen.getAllByRole<HTMLButtonElement>('switch'),
       ...screen.getAllByRole<HTMLButtonElement>('button', { name: /^Remove / }),
-      screen.getByRole<HTMLButtonElement>('button', { name: 'Allow a folder...' }),
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Allow reads in a folder...' }),
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Allow edits in a folder...' }),
     ]) {
       expect(control.disabled, control.outerHTML).toBe(true);
     }
@@ -335,20 +358,33 @@ describe('Permissions view: lock after a click', () => {
     for (const control of screen.getAllByRole<HTMLButtonElement>('switch')) {
       expect(control.disabled).toBe(false);
     }
-    expect(
-      screen.getByRole<HTMLButtonElement>('button', { name: 'Allow a folder...' }).disabled,
-    ).toBe(false);
+    for (const name of ['Allow reads in a folder...', 'Allow edits in a folder...']) {
+      expect(screen.getByRole<HTMLButtonElement>('button', { name }).disabled).toBe(false);
+    }
     fireEvent.click(switchOf('Web search'));
     expect(host.postedOf('permissions.setSwitch')).toHaveLength(2);
   });
 
-  it('locks after Remove and Allow a folder... too', () => {
+  it('locks after Remove and the buttons that allow a folder too', () => {
     const { host } = renderView();
-    fireEvent.click(screen.getByRole('button', { name: 'Allow a folder...' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Allow reads in a folder...' }));
     expect(
       screen.getByRole<HTMLButtonElement>('button', { name: 'Remove npm test' }).disabled,
     ).toBe(true);
     patchPermissions(host, 1);
+    fireEvent.click(screen.getByRole('button', { name: 'Allow edits in a folder...' }));
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Remove npm test' }).disabled,
+    ).toBe(true);
+    expect(
+      screen.getByRole<HTMLButtonElement>('button', { name: 'Allow reads in a folder...' })
+        .disabled,
+    ).toBe(true);
+    // Locked: a second click posts nothing.
+    fireEvent.click(screen.getByRole('button', { name: 'Allow reads in a folder...' }));
+    expect(host.postedOf('permissions.addDirectory')).toHaveLength(1);
+    expect(host.postedOf('permissions.addEditDirectory')).toHaveLength(1);
+    patchPermissions(host, 2);
     fireEvent.click(screen.getByRole('button', { name: 'Remove npm test' }));
     expect(switchOf('Web fetch').disabled).toBe(true);
     expect(host.postedOf('permissions.remove')).toEqual([{ type: 'permissions.remove', id: 'c1' }]);

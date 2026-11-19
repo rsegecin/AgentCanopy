@@ -22,6 +22,7 @@ import {
   resolveSensitiveEnv,
   type SensitiveEnv,
 } from '../grants/sensitive';
+import { coversRead } from '../grants/directory';
 import { isValidGrant, type Grant } from '../grants/store';
 import { fetchSite, webCovered } from '../grants/web';
 import { claudeMemoryDirs, isInsideClaudeMemory } from './claude-memory';
@@ -244,7 +245,8 @@ export async function decideQuestion(
 
 /**
  * Reads and searches. Inside the folder they pass. Outside, they ask, unless `access` is given and
- * every outside target is covered by the folder's `read-outside` switch or by a saved directory. What
+ * every outside target is covered by the folder's `read-outside` switch or by a saved directory, one
+ * saved for reads or one saved for edits (which allows reads and searches too). What
  * is sensitive (credential locations, AgentCanopy's storage) is never covered and never offered.
  */
 export async function decideRead(
@@ -308,12 +310,7 @@ export async function decideRead(
     const real = coverablePath(target, env);
     if (real === undefined) return false;
     if (stored.switches.includes('read-outside')) return true;
-    return stored.grants.some(
-      (grant) =>
-        grant.kind === 'read-directory' &&
-        canGrantDirectory(grant.path, env) &&
-        isInside(grant.path, real),
-    );
+    return stored.grants.some((grant) => coversRead(grant, real, env));
   });
   if (covered) return allowByUser();
 

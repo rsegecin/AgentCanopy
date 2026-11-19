@@ -1,3 +1,5 @@
+import { parse } from 'node:path';
+
 const PROTECTED_DIRECTORIES = new Set(['.git', '.vscode', '.claude', '.husky', '.devcontainer']);
 const PROTECTED_FILES = new Set(['.mcp.json', '.npmrc', '.netrc', '.env', '.gitattributes']);
 
@@ -30,4 +32,14 @@ export function isProtectedPath(relPath: string): boolean {
   const name = segments[last];
   if (name === undefined) return false;
   return PROTECTED_FILES.has(name) || name.startsWith('.env.');
+}
+
+/**
+ * `isProtectedPath` for the real, absolute path of a file or directory outside the workspace folder.
+ * The root (a drive, `/`, a share) is left out, since its colon is not a stream; every segment after
+ * it counts, so a path anywhere below a `.git` or a `.claude` is protected whichever directory was
+ * allowed.
+ */
+export function isProtectedAbsolutePath(real: string): boolean {
+  return isProtectedPath(real.slice(parse(real).root.length));
 }

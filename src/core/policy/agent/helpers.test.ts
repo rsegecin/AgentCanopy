@@ -1,3 +1,4 @@
+import { join, parse } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   exactCommandRule,
@@ -6,6 +7,7 @@ import {
   runsProjectCode,
   runsProjectCodePowerShell,
 } from './index';
+import { isProtectedAbsolutePath } from './protected';
 
 describe('isProtectedPath', () => {
   it.each([
@@ -85,6 +87,54 @@ describe('isProtectedPath', () => {
     'claude/settings.json',
   ])('%j is not protected', (path) => {
     expect(isProtectedPath(path)).toBe(false);
+  });
+});
+
+describe('isProtectedAbsolutePath', () => {
+  // The root of the current platform: a drive on Windows, / elsewhere.
+  const base = parse(process.cwd()).root;
+
+  it.each([
+    ['a .git directory', ['repo', '.git', 'config']],
+    ['a file below a .git directory', ['repo', '.git', 'hooks', 'pre-commit']],
+    ['a .claude directory at any depth', ['home', 'u', '.claude', 'settings.json']],
+    ['a .vscode directory', ['x', '.vscode', 'tasks.json']],
+    ['a .env file', ['repo', '.env']],
+    ['a .env.local file', ['repo', '.env.local']],
+    ['a workflow file', ['repo', '.github', 'workflows', 'ci.yml']],
+    ['an upper-case name', ['repo', '.GIT', 'config']],
+  ])('%s is protected', (_name, parts) => {
+    expect(isProtectedAbsolutePath(join(base, ...parts))).toBe(true);
+  });
+
+  it.each([
+    ['a plain file', ['repo', 'src', 'a.ts']],
+    ['a file directly below the root', ['a.txt']],
+    ['a .gitignore', ['repo', '.gitignore']],
+    ['a .github file that is not a workflow', ['repo', '.github', 'CODEOWNERS']],
+  ])('%s is not protected', (_name, parts) => {
+    expect(isProtectedAbsolutePath(join(base, ...parts))).toBe(false);
+  });
+
+  it('the root alone, with its drive colon, is not protected', () => {
+    expect(isProtectedAbsolutePath(base)).toBe(false);
+    expect(isProtectedAbsolutePath(join(base, 'repo'))).toBe(false);
+  });
+
+  it.runIf(process.platform === 'win32')(
+    'judges a Windows path from the part after the drive',
+    () => {
+      expect(isProtectedAbsolutePath('D:\\repo\\.git\\config')).toBe(true);
+      expect(isProtectedAbsolutePath('D:\\repo\\src\\a.ts')).toBe(false);
+      expect(isProtectedAbsolutePath('D:\\repo\\.git.\\hooks')).toBe(true);
+      // A colon after the root is a stream, whatever the name.
+      expect(isProtectedAbsolutePath('D:\\repo\\a.ts:stream')).toBe(true);
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')('judges a POSIX path', () => {
+    expect(isProtectedAbsolutePath('/repo/.git/config')).toBe(true);
+    expect(isProtectedAbsolutePath('/repo/src/a.ts')).toBe(false);
   });
 });
 

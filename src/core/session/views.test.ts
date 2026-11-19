@@ -374,6 +374,7 @@ describe('banners', () => {
     ['permissions.remove', { type: 'permissions.remove', id: 'a' }],
     ['permissions.setSwitch', { type: 'permissions.setSwitch', name: 'web-fetch', on: true }],
     ['permissions.addDirectory', { type: 'permissions.addDirectory' }],
+    ['permissions.addEditDirectory', { type: 'permissions.addEditDirectory' }],
   ] as const)('answers %s with "not available yet" and changes nothing', async (_name, message) => {
     const h = await harness();
     const view = h.attach();

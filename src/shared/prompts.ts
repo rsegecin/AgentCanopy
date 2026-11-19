@@ -24,9 +24,16 @@ export type PermissionChoice = z.infer<typeof PermissionChoiceSchema>;
 
 /**
  * What an "allow always" answer saves: the rule for one command or one tool of another tool server,
- * a directory outside the folder to read and search in, or a web site to fetch from.
+ * a directory outside the folder to read and search in, a directory outside the folder to edit files
+ * in (which also allows reads and searches there), or a web site to fetch from.
  */
-export const AlwaysRuleKindSchema = z.enum(['command', 'tool', 'read-directory', 'web-site']);
+export const AlwaysRuleKindSchema = z.enum([
+  'command',
+  'tool',
+  'read-directory',
+  'edit-directory',
+  'web-site',
+]);
 export type AlwaysRuleKind = z.infer<typeof AlwaysRuleKindSchema>;
 
 export const PromptStateSchema = z.enum(['pending', 'answered', 'expired', 'cancelled']);

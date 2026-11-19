@@ -74,6 +74,7 @@ import {
   type SavedPermissions,
 } from '../policy';
 import type { RuleStore } from '../policy/agent';
+import type { DirectoryAccess } from '../policy/grants/directory';
 import { createProjectConfigDecisions, inspectProjectConfig } from '../policy/project-config';
 import { isAlive, stopOrphan } from '../provider/claude';
 import { isNotFound, newId, redact, sha256Hex } from '../util';
@@ -112,6 +113,7 @@ import {
   answerProblem,
   canonicalJson,
   directoryDialog,
+  editDirectoryDialog,
   switchDialog,
 } from './prompts';
 import type { PendingPrompt } from './prompts';
@@ -1192,7 +1194,10 @@ class Controller implements AppController {
         await this.setPermissionSwitch(view, message.name, message.on);
         return;
       case 'permissions.addDirectory':
-        await this.addPermissionDirectory(view);
+        await this.addPermissionDirectory(view, 'read');
+        return;
+      case 'permissions.addEditDirectory':
+        await this.addPermissionDirectory(view, 'edit');
         return;
 
       case 'plan.setLocked':
@@ -2825,11 +2830,11 @@ class Controller implements AppController {
   }
 
   /**
-   * Lets the user pick a directory in the native folder picker, and saves it as readable for the
-   * folder the view shows after the policy's checks and a native confirmation that names it. The
-   * path never comes from the webview.
+   * Lets the user pick a directory in the native folder picker, and saves it as readable (`access`
+   * 'read') or as editable and readable (`access` 'edit') for the folder the view shows, after the
+   * policy's checks and a native confirmation that names it. The path never comes from the webview.
    */
-  private async addPermissionDirectory(view: ViewRecord): Promise<void> {
+  private async addPermissionDirectory(view: ViewRecord, access: DirectoryAccess): Promise<void> {
     const { grants } = this;
     if (!grants) {
       this.state.toast(view, 'info', TEXT.notAvailableYet);
@@ -2841,7 +2846,7 @@ class Controller implements AppController {
       // Held from the picker to the end, so the view asks for one dialog at a time.
       this.permissionDialogs.add(view.id);
       try {
-        await this.pickAndSaveDirectory(view, grants, folder);
+        await this.pickAndSaveDirectory(view, grants, folder, access);
       } finally {
         this.permissionDialogs.delete(view.id);
       }
@@ -2854,11 +2859,13 @@ class Controller implements AppController {
     view: ViewRecord,
     grants: GrantStore,
     folder: FolderInfo,
+    access: DirectoryAccess,
   ): Promise<void> {
+    const editing = access === 'edit';
     let picked: string | undefined;
     try {
       picked = await this.deps.ui.pickDirectory({
-        title: 'Allow reads in a folder',
+        title: editing ? 'Allow edits in a folder' : 'Allow reads in a folder',
         openLabel: 'Choose Folder',
       });
     } catch (error) {
@@ -2870,18 +2877,26 @@ class Controller implements AppController {
       folderPath: folder.path,
       granted: grants.get(folder.key),
       sensitiveRoots: () => this.sensitiveRoots(),
+      access,
     });
     if ('refused' in result) {
-      this.state.toast(view, 'warning', TEXT.directoryRefusal[result.refused]);
+      const refusals = editing ? TEXT.editDirectoryRefusal : TEXT.directoryRefusal;
+      this.state.toast(view, 'warning', refusals[result.refused]);
       return;
     }
-    if (!(await this.confirmPermission(directoryDialog(result.dir, folder.path)))) return;
+    const dialog = editing
+      ? editDirectoryDialog(result.dir, folder.path)
+      : directoryDialog(result.dir, folder.path);
+    if (!(await this.confirmPermission(dialog))) return;
     if (!this.sameAfterDialog(view, folder.key)) {
       this.state.toast(view, 'warning', TEXT.permissionChangedDuringDialog);
       return;
     }
     try {
-      await grants.add(folder.key, { kind: 'read-directory', path: result.dir });
+      await grants.add(folder.key, {
+        kind: editing ? 'edit-directory' : 'read-directory',
+        path: result.dir,
+      });
     } catch (error) {
       this.logger.warn('a folder could not be saved as allowed', { error: redact(String(error)) });
       this.state.toast(view, 'warning', TEXT.permissionNotSaved);
@@ -3378,7 +3393,10 @@ class Controller implements AppController {
     const { saved } = this;
     if (!saved) return;
     if (!saved.has(folderKey, rule)) {
-      const outside = rule.kind === 'read-directory' || rule.kind === 'web-site';
+      const outside =
+        rule.kind === 'read-directory' ||
+        rule.kind === 'edit-directory' ||
+        rule.kind === 'web-site';
       this.state.toastConversation(
         conversationId,
         'warning',
@@ -4151,7 +4169,8 @@ class Controller implements AppController {
       const { prompt } = entry;
       const offered = prompt.kind === 'permission' ? prompt.alwaysRule?.kind : undefined;
       // A directory or a site is saved for a workspace folder, which the dialog must name.
-      const needsFolder = offered === 'read-directory' || offered === 'web-site';
+      const needsFolder =
+        offered === 'read-directory' || offered === 'edit-directory' || offered === 'web-site';
       const folder = needsFolder ? this.promptFolder(prompt) : undefined;
       if (needsFolder && !folder) {
         this.logger.info('an always answer was taken as allow once: its folder is not open');

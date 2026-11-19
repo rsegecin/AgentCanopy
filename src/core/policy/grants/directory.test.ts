@@ -3,8 +3,9 @@ import { homedir } from 'node:os';
 import { join, parse } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { makeTempDir, removeDir, useHome, writeTree } from '../readonly/test-support';
-import { checkDirectoryToGrant } from './directory';
-import type { FolderGrants } from './store';
+import { checkDirectoryToGrant, coversEdit, coversRead } from './directory';
+import { resolveSensitiveEnv, type SensitiveEnv } from './sensitive';
+import type { FolderGrants, Grant } from './store';
 
 describe('checkDirectoryToGrant', () => {
   let root: string;
@@ -94,5 +95,133 @@ describe('checkDirectoryToGrant', () => {
   it.runIf(process.platform === 'win32')('refuses a network share as sensitive', async () => {
     const result = await check('\\\\localhost\\C$');
     expect(['not-a-directory', 'sensitive']).toContain('refused' in result ? result.refused : '');
+  });
+
+  describe('for edits', () => {
+    const checkEdit = (path: string, granted: FolderGrants = none) =>
+      checkDirectoryToGrant({
+        path,
+        folderPath: folder,
+        granted,
+        sensitiveRoots: () => [storage],
+        access: 'edit',
+      });
+
+    it('accepts an ordinary sibling directory, as its real path', async () => {
+      expect(await checkEdit(sibling)).toEqual({ dir: sibling });
+    });
+
+    it('still refuses the folder, the storage and a directory that is too broad', async () => {
+      expect(await checkEdit(folder)).toEqual({ refused: 'inside-folder' });
+      expect(await checkEdit(storage)).toEqual({ refused: 'sensitive' });
+      expect(await checkEdit(parse(root).root)).toEqual({ refused: 'too-broad' });
+      expect(await checkEdit(join(root, 'missing'))).toEqual({ refused: 'not-a-directory' });
+    });
+
+    it('refuses a protected directory, and a directory below one', async () => {
+      await writeTree(sibling, {
+        '.git/config': 'c',
+        'x/.vscode/tasks.json': '{}',
+        '.claude/a/b': 'b',
+      });
+      expect(await checkEdit(join(sibling, '.git'))).toEqual({ refused: 'protected' });
+      expect(await checkEdit(join(sibling, 'x', '.vscode'))).toEqual({ refused: 'protected' });
+      expect(await checkEdit(join(sibling, '.claude', 'a'))).toEqual({ refused: 'protected' });
+      // Reads have no such limit.
+      expect(await check(join(sibling, '.git'))).toEqual({ dir: join(sibling, '.git') });
+    });
+
+    it('is covered by an edit directory that holds it, but not by a read directory', async () => {
+      const edit: FolderGrants = {
+        switches: [],
+        grants: [{ kind: 'edit-directory', path: join(root, 'libs') }],
+      };
+      expect(await checkEdit(sibling, edit)).toEqual({ refused: 'covered' });
+      expect(await checkEdit(join(root, 'libs'), edit)).toEqual({ refused: 'covered' });
+      const read: FolderGrants = {
+        switches: [],
+        grants: [{ kind: 'read-directory', path: join(root, 'libs') }],
+      };
+      expect(await checkEdit(sibling, read)).toEqual({ dir: sibling });
+      // A saved directory that may not be granted covers nothing.
+      const broad: FolderGrants = {
+        switches: [],
+        grants: [{ kind: 'edit-directory', path: root }],
+      };
+      expect(await checkEdit(sibling, broad)).toEqual({ dir: sibling });
+    });
+
+    it('a directory saved for edits also covers a directory to read from', async () => {
+      const edit: FolderGrants = {
+        switches: [],
+        grants: [{ kind: 'edit-directory', path: join(root, 'libs') }],
+      };
+      expect(await check(sibling, edit)).toEqual({ refused: 'covered' });
+      expect(
+        await checkDirectoryToGrant({
+          path: sibling,
+          folderPath: folder,
+          granted: edit,
+          sensitiveRoots: () => [storage],
+          access: 'read',
+        }),
+      ).toEqual({ refused: 'covered' });
+    });
+  });
+});
+
+describe('coversRead and coversEdit', () => {
+  let root: string;
+  let storage: string;
+  let restoreHome: () => void;
+  let env: SensitiveEnv;
+  const dir = () => join(root, 'libs');
+  const inside = () => join(root, 'libs', 'shared', 'x.txt');
+
+  beforeEach(async () => {
+    root = await makeTempDir('covers');
+    storage = join(root, 'ext', 'storage');
+    await fs.mkdir(storage, { recursive: true });
+    await fs.mkdir(join(root, 'home'));
+    restoreHome = useHome(join(root, 'home'));
+    env = await resolveSensitiveEnv(() => [storage]);
+  });
+  afterEach(async () => {
+    restoreHome();
+    await removeDir(root);
+  });
+
+  it('a read directory covers reads below it and no edit', () => {
+    const grant: Grant = { kind: 'read-directory', path: dir() };
+    expect(coversRead(grant, inside(), env)).toBe(true);
+    expect(coversRead(grant, dir(), env)).toBe(true);
+    expect(coversRead(grant, join(root, 'other', 'x.txt'), env)).toBe(false);
+    expect(coversEdit(grant, inside(), env)).toBe(false);
+  });
+
+  it('an edit directory covers reads and edits below it, and nothing beside it', () => {
+    const grant: Grant = { kind: 'edit-directory', path: dir() };
+    expect(coversRead(grant, inside(), env)).toBe(true);
+    expect(coversEdit(grant, inside(), env)).toBe(true);
+    expect(coversEdit(grant, join(root, 'libs-other', 'x.txt'), env)).toBe(false);
+    expect(coversRead(grant, join(root, 'libs-other', 'x.txt'), env)).toBe(false);
+  });
+
+  it('a directory that may not be granted covers nothing', () => {
+    for (const kind of ['read-directory', 'edit-directory'] as const) {
+      const broad: Grant = { kind, path: root };
+      expect(coversRead(broad, inside(), env)).toBe(false);
+      expect(coversEdit(broad, inside(), env)).toBe(false);
+    }
+  });
+
+  it('other kinds of grant cover nothing', () => {
+    for (const grant of [
+      { kind: 'web-site', host: 'docs.example.com' },
+      { kind: 'powershell-command', command: 'ls' },
+    ] as const) {
+      expect(coversRead(grant, inside(), env)).toBe(false);
+      expect(coversEdit(grant, inside(), env)).toBe(false);
+    }
   });
 });

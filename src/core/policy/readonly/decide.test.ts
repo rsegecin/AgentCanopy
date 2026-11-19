@@ -639,6 +639,32 @@ describe('decide: saved permissions for reads', () => {
     }
   });
 
+  it('a directory saved for edits allows reads and searches below it and asks for a sibling', async () => {
+    await grants.add(FOLDER_KEY, { kind: 'edit-directory', path: outside });
+    for (const [tool, input] of [
+      ['Read', { file_path: join(outside, 'secret.txt') }],
+      ['Read', { file_path: join(outside, 'dir', 'inner.txt') }],
+      ['Grep', { pattern: 'x', path: outside }],
+      ['Glob', { path: outside, pattern: 'dir/**/*.txt' }],
+      ['Glob', { pattern: `${fwd(outside)}/*.txt` }],
+    ] as const) {
+      const { decision, prompts } = await run(tool, { ...input }, DENY);
+      expect(decision).toEqual(allow('user'));
+      expect(prompts).toEqual([]);
+    }
+    for (const path of [join(other, 'x.txt'), `${outside}-evil/x`, root]) {
+      const { prompts } = await run('Read', { file_path: path }, DENY);
+      expect(prompts).toHaveLength(1);
+    }
+    // A read still offers a directory to read from, whatever is saved.
+    const sibling = await run('Read', { file_path: join(other, 'x.txt') }, DENY);
+    expect(sibling.prompts[0]).toMatchObject({
+      alwaysRule: { kind: 'read-directory', rule: other },
+    });
+    const grep = await run('Grep', { pattern: 'x', path: other }, DENY);
+    expect(grep.prompts).toHaveLength(1);
+  });
+
   it('a symlink inside a saved directory that points out of it asks', async () => {
     await grants.add(FOLDER_KEY, { kind: 'read-directory', path: outside });
     const { prompts, decision } = await run(

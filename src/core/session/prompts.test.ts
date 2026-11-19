@@ -6,7 +6,7 @@ import { initEvent } from '../../../test/fake-cli';
 import type { AssistantMessage, PermissionPrompt, Prompt, ToolCallView } from '../../shared';
 import type { NewPrompt, TurnPolicy } from '../contracts';
 import { createConversationStore } from '../conversations/store';
-import { alwaysAllowDetail, directoryDialog, switchDialog } from './prompts';
+import { alwaysAllowDetail, directoryDialog, editDirectoryDialog, switchDialog } from './prompts';
 import { shownPath } from './text';
 import {
   assistantText,
@@ -460,15 +460,16 @@ describe('permission prompts and "allow always"', () => {
   /** A prompt that offers to always allow a directory or a site, for the workspace folder. */
   function outsidePrompt(
     toolCallId: string,
-    kind: 'read-directory' | 'web-site',
+    kind: 'read-directory' | 'edit-directory' | 'web-site',
     rule: string,
   ): NewPrompt {
+    const editing = kind === 'edit-directory';
     return {
       kind: 'permission',
       toolCallId,
-      toolName: 'Read',
-      category: 'read-outside',
-      title: 'Read a file outside the workspace',
+      toolName: editing ? 'Edit' : 'Read',
+      category: editing ? 'outside-workspace' : 'read-outside',
+      title: editing ? 'Edit a file outside the workspace' : 'Read a file outside the workspace',
       detail: rule,
       inputPreview: '',
       choices: [...choices],
@@ -483,6 +484,13 @@ describe('permission prompts and "allow always"', () => {
       'D:\\libs\\shared',
       (workspace: string) =>
         `Directory: D:\\libs\\shared\nWorkspace folder: ${workspace}\n\nReads and searches in this directory and below will no longer ask, in Ask, Plan and Agent mode, for this workspace folder. What is read is sent to the model.\n\nYou can remove this under Permissions.`,
+    ],
+    [
+      'a directory for edits',
+      'edit-directory',
+      'D:\\libs\\shared',
+      (workspace: string) =>
+        `Directory: D:\\libs\\shared\nWorkspace folder: ${workspace}\n\nEdits to files in this directory and below will no longer ask, in Agent mode, for this workspace folder. Review and checkpoints do not cover files outside the workspace folder: AgentCanopy cannot show or undo these edits.\n\nReads and searches in this directory and below will no longer ask either, in Ask, Plan and Agent mode. What is read is sent to the model.\n\nProtected files (such as .git, .vscode, .claude and .env) and credential locations still ask.\n\nYou can remove this under Permissions.`,
     ],
     [
       'a site',
@@ -515,6 +523,7 @@ describe('permission prompts and "allow always"', () => {
 
   it.each([
     ['a directory', 'read-directory', 'D:\\libs\\shared'],
+    ['a directory for edits', 'edit-directory', 'D:\\libs\\shared'],
     ['a site', 'web-site', 'docs.example.com'],
   ] as const)(
     'takes an always answer for %s as allow once, with no dialog, when the folder is not open',
@@ -611,6 +620,32 @@ describe('the text of the confirmations of permissions', () => {
     });
   });
 
+  it('names the directory for edits and the workspace folder, and says review and checkpoints do not cover it', () => {
+    const detail = alwaysAllowDetail(
+      permissionPrompt({
+        kind: 'edit-directory',
+        rule: 'D:\\libs\\shared',
+        runsProjectCode: false,
+      }),
+      FOLDER,
+    );
+    expect(detail).toBe(
+      [
+        `Directory: D:\\libs\\shared\nWorkspace folder: ${FOLDER}`,
+        'Edits to files in this directory and below will no longer ask, in Agent mode, for this workspace folder. Review and checkpoints do not cover files outside the workspace folder: AgentCanopy cannot show or undo these edits.',
+        'Reads and searches in this directory and below will no longer ask either, in Ask, Plan and Agent mode. What is read is sent to the model.',
+        'Protected files (such as .git, .vscode, .claude and .env) and credential locations still ask.',
+        'You can remove this under Permissions.',
+      ].join('\n\n'),
+    );
+    expect(detail).toContain('Review and checkpoints do not cover');
+    expect(editDirectoryDialog('D:\\libs\\shared', FOLDER)).toEqual({
+      title: 'Always allow edits in this folder?',
+      detail,
+      confirmLabel: 'Always allow',
+    });
+  });
+
   it('names the site and the workspace folder, with each sentence', () => {
     expect(
       alwaysAllowDetail(
@@ -632,7 +667,7 @@ describe('the text of the confirmations of permissions', () => {
       detail: [
         `Workspace folder: ${FOLDER}`,
         'In this workspace folder the agent will read and search files anywhere on this machine without asking, in Ask, Plan and Agent mode. What it reads is sent to the model.',
-        "Credential locations (except Claude Code's own memory for this folder) and AgentCanopy's own storage still ask. Edits outside the folder still ask.",
+        "Credential locations (except Claude Code's own memory for this folder) and AgentCanopy's own storage still ask. Edits outside the folder still ask, except in folders you allowed for edits.",
         'You can turn this off under Permissions.',
       ].join('\n\n'),
       confirmLabel: 'Allow',

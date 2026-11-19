@@ -103,9 +103,24 @@ export const TEXT = {
     'inside-folder': 'That folder is inside the workspace folder, where reads never ask.',
     sensitive:
       "That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask.",
+    protected:
+      'That folder is in a protected location (such as .git, .vscode or .claude). Edits there always ask.',
     'too-broad':
       'That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location.',
     covered: 'That folder is already inside a saved folder.',
+  },
+  /** Why a folder picked for edits in the Permissions view cannot be saved, by the policy's reason. */
+  editDirectoryRefusal: {
+    'not-a-directory': 'That folder could not be read.',
+    'inside-folder':
+      'That folder is inside the workspace folder, where edits are reviewed and need no saved folder.',
+    sensitive:
+      "That folder is a credential location, AgentCanopy's own storage or on a network share. Edits there always ask.",
+    protected:
+      'That folder is in a protected location (such as .git, .vscode or .claude). Edits there always ask.',
+    'too-broad':
+      'That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location.',
+    covered: 'That folder is already inside a folder saved for edits.',
   },
 } as const;
 

@@ -7,6 +7,7 @@ import { createGrantStore, createSavedPermissions, type GrantStore } from './ind
 
 const KEY = 'folder-1' as FolderKey;
 const DIR = process.platform === 'win32' ? 'D:\\libs\\shared' : '/libs/shared';
+const EDIT_DIR = process.platform === 'win32' ? 'D:\\work\\notes' : '/work/notes';
 
 describe('saved permissions', () => {
   let root: string;
@@ -34,6 +35,7 @@ describe('saved permissions', () => {
     await rules.add(KEY, 'Bash(npm test)');
     await grants.add(KEY, { kind: 'web-site', host: 'docs.example.com' });
     await rules.add(KEY, 'Bash(git status)');
+    await grants.add(KEY, { kind: 'edit-directory', path: EDIT_DIR });
     await grants.add(KEY, { kind: 'read-directory', path: DIR });
     await grants.add(KEY, { kind: 'powershell-command', command: '.\\run.ps1' });
     return saved;
@@ -45,11 +47,12 @@ describe('saved permissions', () => {
     expect(await saved.remove(KEY, 'a'.repeat(32))).toBe(false);
   });
 
-  it('lists directories, sites, Bash commands, PowerShell commands and MCP tools, with their fields', async () => {
+  it('lists read directories, edit directories, sites, Bash commands, PowerShell commands and MCP tools, with their fields', async () => {
     const saved = await fill();
     const list = saved.list(KEY);
     expect(list).toMatchObject([
       { kind: 'read-directory', text: DIR },
+      { kind: 'edit-directory', text: EDIT_DIR },
       { kind: 'web-site', text: 'docs.example.com' },
       { kind: 'command', text: 'npm test', shell: 'bash', runsProjectCode: true },
       { kind: 'command', text: 'git status', shell: 'bash', runsProjectCode: false },
@@ -88,6 +91,21 @@ describe('saved permissions', () => {
     expect(bash?.id).not.toBe(powershell?.id);
   });
 
+  it('an id differs between a read and an edit directory with the same path', async () => {
+    const saved = await open();
+    await grants.add(KEY, { kind: 'edit-directory', path: DIR });
+    await grants.add(KEY, { kind: 'read-directory', path: DIR });
+    const list = saved.list(KEY);
+    expect(list).toMatchObject([
+      { kind: 'read-directory', text: DIR },
+      { kind: 'edit-directory', text: DIR },
+    ]);
+    expect(list[0]?.id).not.toBe(list[1]?.id);
+    // Removing one leaves the other.
+    expect(await saved.remove(KEY, list[1]?.id ?? '')).toBe(true);
+    expect(grants.get(KEY).grants).toEqual([{ kind: 'read-directory', path: DIR }]);
+  });
+
   it('removes by id from the store the entry came from, and returns false for an unknown id', async () => {
     const saved = await fill();
     const byText = (text: string) => saved.list(KEY).find((entry) => entry.text === text)?.id ?? '';
@@ -100,6 +118,7 @@ describe('saved permissions', () => {
     expect(await saved.remove(KEY, byText('docs.example.com'))).toBe(true);
     expect(await saved.remove(KEY, byText('Get-ChildItem'))).toBe(true);
     expect(await saved.remove(KEY, byText(DIR))).toBe(true);
+    expect(await saved.remove(KEY, byText(EDIT_DIR))).toBe(true);
     expect(grants.get(KEY).grants).toEqual([{ kind: 'powershell-command', command: '.\\run.ps1' }]);
 
     expect(await saved.remove(KEY, 'f'.repeat(32))).toBe(false);
@@ -114,13 +133,21 @@ describe('saved permissions', () => {
 
   it('has: tells whether what a card offered is saved, by kind', async () => {
     const saved = await fill();
-    const rule = (value: string, kind?: 'read-directory' | 'web-site' | 'command' | 'tool') => ({
+    const rule = (
+      value: string,
+      kind?: 'read-directory' | 'edit-directory' | 'web-site' | 'command' | 'tool',
+    ) => ({
       ...(kind ? { kind } : {}),
       rule: value,
       runsProjectCode: false,
     });
     expect(saved.has(KEY, rule(DIR, 'read-directory'))).toBe(true);
     expect(saved.has(KEY, rule(`${DIR}-x`, 'read-directory'))).toBe(false);
+    expect(saved.has(KEY, rule(EDIT_DIR, 'edit-directory'))).toBe(true);
+    expect(saved.has(KEY, rule(`${EDIT_DIR}-x`, 'edit-directory'))).toBe(false);
+    // A read directory is not an edit directory, and the other way round.
+    expect(saved.has(KEY, rule(DIR, 'edit-directory'))).toBe(false);
+    expect(saved.has(KEY, rule(EDIT_DIR, 'read-directory'))).toBe(false);
     expect(saved.has(KEY, rule('docs.example.com', 'web-site'))).toBe(true);
     expect(saved.has(KEY, rule('example.com', 'web-site'))).toBe(false);
     expect(saved.has(KEY, rule('PowerShell(Get-ChildItem)', 'command'))).toBe(true);
@@ -135,6 +162,7 @@ describe('saved permissions', () => {
     expect(saved.has(KEY, rule('Bash(npm test)', 'read-directory'))).toBe(false);
     expect(saved.has(KEY, rule(DIR, 'web-site'))).toBe(false);
     expect(saved.has('folder-2' as FolderKey, rule(DIR, 'read-directory'))).toBe(false);
+    expect(saved.has('folder-2' as FolderKey, rule(EDIT_DIR, 'edit-directory'))).toBe(false);
     // A PowerShell rule is looked up in the grants, never in the rules.
     await rules.add(KEY, 'Bash(ls)');
     expect(saved.has(KEY, rule('PowerShell(ls)', 'command'))).toBe(false);

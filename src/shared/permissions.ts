@@ -12,8 +12,13 @@ export type PermissionSwitch = z.infer<typeof PermissionSwitchSchema>;
 /** Every switch, in the order the Permissions view shows them. */
 export const PERMISSION_SWITCHES: readonly PermissionSwitch[] = PermissionSwitchSchema.options;
 
+/**
+ * `read-directory` is a directory outside the folder to read and search in; `edit-directory` is one
+ * to edit files in, which also allows reads and searches there.
+ */
 export const SavedPermissionKindSchema = z.enum([
   'read-directory',
+  'edit-directory',
   'web-site',
   'command',
   'mcp-tool',

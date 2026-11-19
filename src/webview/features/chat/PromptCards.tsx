@@ -316,6 +316,8 @@ function alwaysRuleLead(kind: AlwaysRuleKind | undefined): string {
   switch (kind) {
     case 'read-directory':
       return 'Always allow would allow reads and searches in this folder and below:';
+    case 'edit-directory':
+      return 'Always allow would allow edits, reads and searches in this folder and below:';
     case 'web-site':
       return 'Always allow would allow fetching any address on:';
     default:

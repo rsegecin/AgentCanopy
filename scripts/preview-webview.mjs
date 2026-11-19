@@ -563,6 +563,7 @@ const state = {
     switches: ['read-outside'],
     saved: [
       { id: 'sp-dir', kind: 'read-directory', text: '/opt/shared/docs' },
+      { id: 'sp-edit-dir', kind: 'edit-directory', text: '/opt/shared/generated' },
       { id: 'sp-site', kind: 'web-site', text: 'docs.example.com' },
       { id: 'sp-bash', kind: 'command', text: 'npm test', shell: 'bash', runsProjectCode: true },
       {
@@ -1010,8 +1011,8 @@ function page(origin, query) {
     if (params.get('tab') !== 'permissions' && params.get('permissions') !== '1') {
       state.permissions = { folder: 'f1', switches: [], saved: [] };
     }
-    // ?permcards=1: two cards that offer "Always allow" with the new wording (a read outside the folder,
-    // a web fetch) replace the sample's read of /etc/hosts at the end of the running turn.
+    // ?permcards=1: three cards that offer "Always allow" with the new wording (a read outside the folder,
+    // an edit outside the folder, a web fetch) replace the sample's read of /etc/hosts at the end of the running turn.
     if (params.get('permcards') === '1' && state.active) {
       const a = state.active;
       a.prompts = a.prompts.filter((p) => p.id !== 'pr2');
@@ -1027,6 +1028,8 @@ function page(origin, query) {
           ...parts,
           waiting('toolu_r1', 'Read', { file_path: '/opt/shared/docs/guide.md' }),
           { kind: 'prompt', promptId: 'pr3' },
+          waiting('toolu_e1', 'Edit', { file_path: '/opt/shared/generated/schema.json', old_string: '"v1"', new_string: '"v2"' }),
+          { kind: 'prompt', promptId: 'pr5' },
           waiting('toolu_w1', 'WebFetch', { url: 'https://docs.example.com/api/limits', prompt: 'Summarise' }),
           { kind: 'prompt', promptId: 'pr4' },
         ],
@@ -1052,6 +1055,14 @@ function page(origin, query) {
           detail: '/opt/shared/docs/guide.md',
           inputPreview: '{\\n  "file_path": "/opt/shared/docs/guide.md"\\n}',
           alwaysRule: { kind: 'read-directory', rule: '/opt/shared/docs', runsProjectCode: false },
+        }),
+        card('pr5', 'toolu_e1', {
+          toolName: 'Edit',
+          category: 'outside-workspace',
+          title: 'Edit a file outside the workspace',
+          detail: '/opt/shared/generated/schema.json',
+          inputPreview: '{\\n  "file_path": "/opt/shared/generated/schema.json"\\n}',
+          alwaysRule: { kind: 'edit-directory', rule: '/opt/shared/generated', runsProjectCode: false },
         }),
         card('pr4', 'toolu_w1', {
           toolName: 'WebFetch',

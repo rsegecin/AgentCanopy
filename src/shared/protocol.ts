@@ -182,6 +182,8 @@ export const WebviewMessageSchema = z.discriminatedUnion('type', [
   }),
   /** Asks the host for its native folder picker, to allow reads and searches in a folder. */
   z.object({ type: z.literal('permissions.addDirectory') }),
+  /** Asks the host for its native folder picker, to allow edits (and reads) in a folder. */
+  z.object({ type: z.literal('permissions.addEditDirectory') }),
   /** Opens the editor's settings on AgentCanopy's own. */
   z.object({ type: z.literal('settings.open') }),
 

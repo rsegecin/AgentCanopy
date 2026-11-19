@@ -13,9 +13,14 @@ const FOLDER_KEY = /^[A-Za-z0-9_-]{1,64}$/;
 const FILE_NAME = /^([A-Za-z0-9_-]{1,64})\.json$/;
 const HOST_CHARS = /^[a-z0-9._\-[\]:]{1,261}$/;
 
-/** What the user allowed for one workspace folder, besides the rules of the rule store. */
+/**
+ * What the user allowed for one workspace folder, besides the rules of the rule store. A
+ * `read-directory` allows reads and searches in a directory outside the folder and below it; an
+ * `edit-directory` allows edits there, and reads and searches with them.
+ */
 export type Grant =
   | { kind: 'read-directory'; path: string }
+  | { kind: 'edit-directory'; path: string }
   | { kind: 'web-site'; host: string }
   | { kind: 'powershell-command'; command: string };
 
@@ -57,7 +62,8 @@ function isValidHost(host: string): boolean {
 export function isValidGrant(value: unknown): value is Grant {
   if (!isRecord(value)) return false;
   switch (value['kind']) {
-    case 'read-directory': {
+    case 'read-directory':
+    case 'edit-directory': {
       const path = value['path'];
       return (
         typeof path === 'string' &&
@@ -84,6 +90,7 @@ export function isValidGrant(value: unknown): value is Grant {
 export function grantValue(grant: Grant): string {
   switch (grant.kind) {
     case 'read-directory':
+    case 'edit-directory':
       return grant.path;
     case 'web-site':
       return grant.host;
@@ -101,6 +108,8 @@ function clean(grant: Grant): Grant {
   switch (grant.kind) {
     case 'read-directory':
       return { kind: 'read-directory', path: grant.path };
+    case 'edit-directory':
+      return { kind: 'edit-directory', path: grant.path };
     case 'web-site':
       return { kind: 'web-site', host: grant.host };
     case 'powershell-command':

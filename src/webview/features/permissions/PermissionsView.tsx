@@ -33,7 +33,8 @@ const SWITCH_TEXT: Record<PermissionSwitch, { label: string; description: string
 };
 
 const GROUPS: { kind: SavedPermissionKind; title: string }[] = [
-  { kind: 'read-directory', title: 'Folders' },
+  { kind: 'read-directory', title: 'Folders (read)' },
+  { kind: 'edit-directory', title: 'Folders (read and edit)' },
   { kind: 'web-site', title: 'Web sites' },
   { kind: 'command', title: 'Commands' },
   { kind: 'mcp-tool', title: 'Tools' },
@@ -41,12 +42,12 @@ const GROUPS: { kind: SavedPermissionKind; title: string }[] = [
 
 const ALWAYS_ASKS: { what: string; why: string }[] = [
   {
-    what: 'Edits outside the folder.',
+    what: 'Edits outside the folder, except in folders you allowed for edits.',
     why: 'Review and checkpoints cannot undo them.',
   },
   {
     what: 'Edits to protected files.',
-    why: 'They can run code or change approvals later.',
+    why: 'They can run code or change approvals later. They ask also inside a folder allowed for edits.',
   },
   {
     what: 'Tools that are not from a tool server, such as skills and background commands.',
@@ -253,7 +254,19 @@ export function PermissionsView() {
                   change('add', { type: 'permissions.addDirectory' });
                 }}
               >
-                Allow a folder...
+                Allow reads in a folder...
+              </button>
+              <button
+                type="button"
+                className="button button--secondary"
+                data-focus-key="add-edit"
+                disabled={disabled}
+                aria-describedby={reasonRef}
+                onClick={() => {
+                  change('add-edit', { type: 'permissions.addEditDirectory' });
+                }}
+              >
+                Allow edits in a folder...
               </button>
             </div>
           </Section>

@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import { isAbsolute, relative, sep } from 'node:path';
+import { dirname, isAbsolute, relative, sep } from 'node:path';
 import type { FolderKey, PermissionPrompt, PromptAnswer } from '../../../shared';
 import {
   HOST_SERVER_NAME,
@@ -12,6 +12,13 @@ import {
   type TurnPolicy,
 } from '../../contracts';
 import type { GrantStore, PolicyAccess } from '../grants';
+import { coversEdit } from '../grants/directory';
+import {
+  canGrantDirectory,
+  containsSensitive,
+  isSensitivePath,
+  resolveSensitiveEnv,
+} from '../grants/sensitive';
 import { isValidGrant } from '../grants/store';
 import { fetchSite, webCovered } from '../grants/web';
 import {
@@ -32,7 +39,7 @@ import {
   runsProjectCode,
   runsProjectCodePowerShell,
 } from './commands';
-import { isProtectedPath } from './protected';
+import { isProtectedAbsolutePath, isProtectedPath } from './protected';
 import { checkReadOnlyCommand } from './readonly-command';
 import { isValidRule, type RuleStore } from './rules';
 
@@ -153,7 +160,9 @@ async function runsInFolder(hook: PermissionRequest['hook'], folderPath: string)
  * value kept across an await.
  *
  * With `grants`, the folder's switches and saved permissions (directories, sites, PowerShell
- * commands) also approve, and `sensitiveRoots` (AgentCanopy's storage directories) always ask. The
+ * commands) also approve, and `sensitiveRoots` (AgentCanopy's storage directories) always ask. A
+ * directory saved for edits approves edits outside the folder in it and below, except protected files
+ * and sensitive locations. A directory saved for reads never approves an edit. The
  * grant store is live in the same way: every approval from it reads it right before it returns, after
  * the last await, never from a value kept across one, so a removal or a switch turned off during a
  * turn applies to the next request. Without `grants` every decision is the plain one.
@@ -213,13 +222,55 @@ export function createAgentPolicy(options: {
     const folderPath = context.folder.path;
     const target = await checkPath(value, folderPath, folderPath);
     if (!target.inside || target.real === undefined) {
-      const prompt = permissionPrompt(request, {
-        category: 'outside-workspace',
-        title: 'Edit a file outside the workspace',
-        detail: escapeForDisplay(target.shown),
-        choices: ASK_ALLOW,
-      });
-      return (await ask(context, prompt, ASK_ALLOW)).decision;
+      const outsidePrompt = (
+        choices: Choice[],
+        alwaysRule?: PermissionPrompt['alwaysRule'],
+      ): NewPrompt =>
+        permissionPrompt(request, {
+          category: 'outside-workspace',
+          title: 'Edit a file outside the workspace',
+          detail: escapeForDisplay(target.shown),
+          choices,
+          ...(alwaysRule !== undefined ? { alwaysRule } : {}),
+        });
+      const prompt = outsidePrompt(ASK_ALLOW);
+      const real = target.real;
+      // Without a grant store, or for a path the host cannot judge, the plain prompt.
+      if (access === undefined || real === undefined) {
+        return (await ask(context, prompt, ASK_ALLOW)).decision;
+      }
+      const env = await resolveSensitiveEnv(access.sensitiveRoots);
+      // What a saved directory may cover: not a sensitive location, and not a protected file or a
+      // file below a protected directory (.git, .claude, .env, ...), wherever the saved directory is.
+      const coverable =
+        !isSensitivePath(real, env) &&
+        !containsSensitive(real, env) &&
+        !isProtectedAbsolutePath(real);
+      const parent = dirname(real);
+      const dir =
+        coverable &&
+        canGrantDirectory(parent, env) &&
+        isValidGrant({ kind: 'edit-directory', path: parent })
+          ? parent
+          : undefined;
+      const folder = context.conversation.folder;
+      // Read the store here, after the last await, with nothing awaited in between: a directory the
+      // user removed during the awaits above must not still approve.
+      if (
+        coverable &&
+        access.grants.get(folder).grants.some((grant) => coversEdit(grant, real, env))
+      ) {
+        return allow();
+      }
+      if (dir === undefined) return (await ask(context, prompt, ASK_ALLOW)).decision;
+      const choices: Choice[] = ['allow-once', 'allow-always', 'deny'];
+      const answer = await ask(
+        context,
+        outsidePrompt(choices, { kind: 'edit-directory', rule: dir, runsProjectCode: false }),
+        choices,
+      );
+      if (answer.always) await saveGrant(access, folder, { kind: 'edit-directory', path: dir });
+      return answer.decision;
     }
 
     const rel = toRelative(await realFolderPath(folderPath), target.real);

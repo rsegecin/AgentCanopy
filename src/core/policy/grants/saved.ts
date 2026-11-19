@@ -3,7 +3,7 @@ import type { FolderKey, PermissionPrompt, SavedPermission } from '../../../shar
 import { runsProjectCode, runsProjectCodePowerShell } from '../agent/commands';
 import type { RuleStore } from '../agent/rules';
 import { escapeForDisplay } from '../readonly/escape';
-import type { Grant, GrantStore } from './store';
+import { grantValue, type Grant, type GrantStore } from './store';
 
 /** Everything the user saved for a folder, in both stores, as the Permissions view lists it. */
 export interface SavedPermissions {
@@ -33,6 +33,8 @@ function hasGrant(grants: GrantStore, folderKey: FolderKey, wanted: Grant): bool
     switch (grant.kind) {
       case 'read-directory':
         return wanted.kind === 'read-directory' && grant.path === wanted.path;
+      case 'edit-directory':
+        return wanted.kind === 'edit-directory' && grant.path === wanted.path;
       case 'web-site':
         return wanted.kind === 'web-site' && grant.host === wanted.host;
       case 'powershell-command':
@@ -48,12 +50,7 @@ export function createSavedPermissions(options: {
   const { rules, grants } = options;
 
   function grantEntry(folderKey: FolderKey, grant: Grant): Entry {
-    const value =
-      grant.kind === 'read-directory'
-        ? grant.path
-        : grant.kind === 'web-site'
-          ? grant.host
-          : grant.command;
+    const value = grantValue(grant);
     const id = idOf({ store: 'grants', kind: grant.kind, value });
     const text = escapeForDisplay(value);
     const view: SavedPermission =
@@ -85,7 +82,7 @@ export function createSavedPermissions(options: {
     return { view, remove: () => rules.remove(folderKey, rule) };
   }
 
-  /** Directories, sites, Bash commands, PowerShell commands, MCP tools. */
+  /** Read directories, edit directories, sites, Bash commands, PowerShell commands, MCP tools. */
   function entries(folderKey: FolderKey): Entry[] {
     const stored = grants.get(folderKey).grants;
     const own = (kind: Grant['kind']) =>
@@ -95,6 +92,7 @@ export function createSavedPermissions(options: {
     const tools = ruleList.filter((rule) => !BASH_RULE.test(rule));
     return [
       ...own('read-directory'),
+      ...own('edit-directory'),
       ...own('web-site'),
       ...bash.map((rule) => ruleEntry(folderKey, rule)),
       ...own('powershell-command'),
@@ -118,6 +116,8 @@ export function createSavedPermissions(options: {
       switch (rule.kind) {
         case 'read-directory':
           return hasGrant(grants, folderKey, { kind: 'read-directory', path: rule.rule });
+        case 'edit-directory':
+          return hasGrant(grants, folderKey, { kind: 'edit-directory', path: rule.rule });
         case 'web-site':
           return hasGrant(grants, folderKey, { kind: 'web-site', host: rule.rule });
         default: {

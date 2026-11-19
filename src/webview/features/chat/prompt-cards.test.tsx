@@ -468,6 +468,11 @@ describe('permission card', () => {
       'Always allow would allow reads and searches in this folder and below: /opt/shared/docs',
     ],
     [
+      'edit-directory',
+      '/opt/shared/generated',
+      'Always allow would allow edits, reads and searches in this folder and below: /opt/shared/generated',
+    ],
+    [
       'web-site',
       'docs.example.com',
       'Always allow would allow fetching any address on: docs.example.com',

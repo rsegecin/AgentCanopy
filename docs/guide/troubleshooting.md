@@ -110,7 +110,7 @@ Auto is on when the Auto switch is pressed and the setting `agentCanopy.agent.au
 - The turn started before Auto was on. Whether a turn runs with Auto is decided when it is sent, and turning Auto on cannot change a turn that is already running.
 - The turn is the execution of a plan, and Auto was not turned on by the approval because something changed while its dialog was open, or Auto could not be saved. A warning said so; see [Auto messages](#auto-messages).
 - The call is a side question. A side question is a branch and starts without Auto, and it is read-only anyway.
-- It is not a command. Protected files, edits outside the folder, other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search, unless `agentCanopy.agent.auto.webTools` is on or a switch or saved site of the folder covers them.
+- It is not a command. Protected files, edits outside the folder (unless a folder you saved for edits covers them, and then not protected files or credential locations), other tools and MCP tools ask with Auto on. So do reads outside the folder, unless the folder's reads switch is on or a saved folder covers them, and so do web fetch and web search, unless `agentCanopy.agent.auto.webTools` is on or a switch or saved site of the folder covers them.
 
 ## Auto messages
 
@@ -142,7 +142,7 @@ These appear as warnings in the chat view. They come from the Permissions tab an
 
 | Message | What to do |
 | :- | :- |
-| A permissions dialog is already open. | Answer the dialog that is open first. Turning a switch on and **Allow a folder...** each open one, and only one can be open at a time |
+| A permissions dialog is already open. | Answer the dialog that is open first. Turning a switch on, **Allow reads in a folder...** and **Allow edits in a folder...** each open one, and only one can be open at a time |
 | The folder or the trust of the workspace changed while the dialog was open, so nothing was changed. | The view moved to a conversation of another folder, or the workspace stopped being trusted, while you read the dialog. Nothing was turned on or saved. Do it again from the folder you mean |
 | The permission could not be removed. | The entry is still saved and still allows its calls. Try **Remove** again, and check the log for the reason |
 | The switch could not be changed. | The switch kept its old state, also when you meant to turn it off. Check what it shows, try again, and check the log for the reason |
@@ -151,8 +151,14 @@ These appear as warnings in the chat view. They come from the Permissions tab an
 | That folder is a credential location, AgentCanopy's own storage or on a network share. Reads there always ask. | These are never saved. Read the file once with **Allow once** when the agent asks. Claude Code's memory for this folder is the exception: it needs no permission |
 | That folder is too broad to allow: a drive or filesystem root, your home folder, or a folder that holds it or a credential location. | Pick the folder that holds the files you mean, not one above it |
 | That folder is already inside a saved folder. | It already counts. The saved folder is listed under Saved permissions |
+| That folder is inside the workspace folder, where edits are reviewed and need no saved folder. | Only **Allow edits in a folder...** gives this message. There is nothing to allow: edits inside the workspace folder do not ask |
+| That folder is a credential location, AgentCanopy's own storage or on a network share. Edits there always ask. | Only **Allow edits in a folder...** gives this message. These are never saved for edits. Allow the edit once with **Allow once** when the agent asks |
+| That folder is in a protected location (such as .git, .vscode or .claude). Edits there always ask. | Protected locations are never saved for edits. Allow the edit once when the agent asks |
+| That folder is already inside a folder saved for edits. | Only **Allow edits in a folder...** gives this message. It already counts. The saved folder is listed under Saved permissions |
 
-Turning a switch on or choosing **Allow a folder...** also does nothing in an untrusted workspace or in a window with no folder: the tab disables its controls and says why.
+The messages about a folder that cannot be read or is too broad are the same for both buttons.
+
+Turning a switch on, choosing **Allow reads in a folder...** or choosing **Allow edits in a folder...** also does nothing in an untrusted workspace or in a window with no folder: the tab disables its controls and says why.
 
 ## A read or a web call asks although I allowed it
 

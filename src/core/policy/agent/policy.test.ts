@@ -1538,17 +1538,217 @@ describe('agent policy with saved permissions', () => {
       }
     });
 
-    it('edits outside the folder and protected files still ask, with the switch on', async () => {
+    it('a read switch and a saved read directory do not cover an edit, and protected files in the folder still ask', async () => {
       await grants.setSwitch(KEY, 'read-outside', true);
       await grants.add(KEY, { kind: 'read-directory', path: outside });
       const { decide, prompts } = setup({ answer: DENY });
-      await decide('Write', { file_path: join(outside, 'x.txt') });
+      expect((await decide('Write', { file_path: join(outside, 'x.txt') })).response.behavior).toBe(
+        'deny',
+      );
       await decide('Edit', { file_path: '.env' });
       expect(prompts.map((p) => (p as { category: string }).category)).toEqual([
         'outside-workspace',
         'protected-path',
       ]);
-      for (const prompt of prompts) expect(prompt).toMatchObject({ choices: ONCE_DENY });
+      // The outside edit offers a directory to edit in; the protected file offers nothing.
+      expect(prompts[0]).toMatchObject({
+        choices: ONCE_ALWAYS_DENY,
+        alwaysRule: { kind: 'edit-directory', rule: outside, runsProjectCode: false },
+      });
+      expect(prompts[1]).toMatchObject({ choices: ONCE_DENY });
+      expect(prompts[1]).not.toHaveProperty('alwaysRule');
+    });
+
+    it('a directory saved for edits allows reads and searches below it', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: DENY });
+      expect(await decide('Read', { file_path: join(outside, 'secret.txt') })).toEqual(allowUser);
+      expect(await decide('Grep', { pattern: 'x', path: outside })).toEqual(allowUser);
+      expect(await decide('Glob', { pattern: `${outside}/*.txt` })).toEqual(allowUser);
+      expect(prompts).toEqual([]);
+    });
+  });
+
+  describe('edits outside the folder', () => {
+    let other: string;
+    beforeEach(async () => {
+      other = join(root, 'other');
+      await writeTree(outside, { 'sub/deep/b.txt': 'b', '.git/config': 'c' });
+      await writeTree(other, { 'x.txt': 'x' });
+      await fs.symlink(other, join(outside, 'link-other'));
+    });
+
+    it.each([
+      ['Write', 'file_path'],
+      ['Edit', 'file_path'],
+      ['NotebookEdit', 'notebook_path'],
+    ])(
+      '%s offers always for the directory of the file, and saves it on always',
+      async (tool, key) => {
+        const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+        const input = (path: string) => ({ [key]: path });
+        expect(await decide(tool, input(join(outside, 'secret.txt')))).toEqual(allowUser);
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({
+          category: 'outside-workspace',
+          title: 'Edit a file outside the workspace',
+          detail: join(outside, 'secret.txt'),
+          choices: ONCE_ALWAYS_DENY,
+          alwaysRule: { kind: 'edit-directory', rule: outside, runsProjectCode: false },
+        });
+        expect(grants.get(KEY).grants).toEqual([{ kind: 'edit-directory', path: outside }]);
+
+        // Another file in it, a new file, and a file in a subdirectory pass without a prompt.
+        for (const path of [
+          join(outside, 'other.txt'),
+          join(outside, 'sub', 'deep', 'b.txt'),
+          join(outside, 'sub', 'not', 'yet.txt'),
+        ]) {
+          expect(await decide(tool, input(path))).toEqual(allowUser);
+        }
+        expect(prompts).toHaveLength(1);
+
+        // A sibling directory asks, and offers its own directory.
+        expect((await decide(tool, input(join(other, 'x.txt')))).response.behavior).toBe('allow');
+        expect(prompts).toHaveLength(2);
+        expect(prompts[1]).toMatchObject({ alwaysRule: { kind: 'edit-directory', rule: other } });
+      },
+    );
+
+    it('a directory that is saved ends the prompt, and removing it asks again', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: DENY });
+      expect(await decide('Write', { file_path: join(outside, 'sub', 'a.txt') })).toEqual(
+        allowUser,
+      );
+      expect(await decide('Write', { file_path: `${outside}-evil/a.txt` })).toMatchObject({
+        response: { behavior: 'deny' },
+      });
+      expect(prompts).toHaveLength(1);
+      await grants.remove(KEY, { kind: 'edit-directory', path: outside });
+      await decide('Write', { file_path: join(outside, 'sub', 'a.txt') });
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toMatchObject({ choices: ONCE_ALWAYS_DENY });
+    });
+
+    it('a directory saved for another folder does not count, and allow once saves nothing', async () => {
+      await grants.add('folder-2' as FolderKey, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: ALLOW_ONCE });
+      expect(await decide('Write', { file_path: join(outside, 'a.txt') })).toEqual(allowUser);
+      expect(await decide('Write', { file_path: join(outside, 'a.txt') })).toEqual(allowUser);
+      expect(prompts).toHaveLength(2);
+      expect(grants.get(KEY).grants).toEqual([]);
+    });
+
+    it('Auto does not approve an edit outside the folder that is not saved', async () => {
+      const { decide, prompts } = setup({ answer: DENY, auto: true });
+      expect((await decide('Write', { file_path: join(outside, 'a.txt') })).response.behavior).toBe(
+        'deny',
+      );
+      expect(prompts).toHaveLength(1);
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      expect(await decide('Write', { file_path: join(outside, 'a.txt') })).toEqual(allowUser);
+      expect(prompts).toHaveLength(1);
+    });
+
+    it.each([
+      ['a .git directory', ['.git', 'config']],
+      ['a .env file', ['.env']],
+      ['a .env.local file', ['.env.local']],
+      ['a .vscode directory', ['.vscode', 'tasks.json']],
+      ['a file below a protected directory', ['sub', '.claude', 'x', 'a.md']],
+    ])('%s asks with once and deny and offers no always', async (_name, parts) => {
+      const path = join(outside, ...parts);
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      const decision = await decide('Write', { file_path: path });
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ category: 'outside-workspace', choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      // An answer to an always that was not offered is denied, and nothing is saved.
+      expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+      expect(grants.get(KEY).grants).toEqual([]);
+    });
+
+    it('a protected file asks although the directory or an ancestor is saved for edits', async () => {
+      const saved = [outside, join(outside, '.git'), join(outside, 'sub', '.claude')];
+      for (const path of saved) await grants.add(KEY, { kind: 'edit-directory', path });
+      const files = [
+        join(outside, '.git', 'config'),
+        join(outside, '.env'),
+        join(outside, '.vscode', 'tasks.json'),
+        join(outside, 'sub', '.claude', 'settings.json'),
+      ];
+      const { decide, prompts } = setup({ answer: DENY });
+      for (const file of files) {
+        expect((await decide('Write', { file_path: file })).response.behavior).toBe('deny');
+      }
+      expect(prompts).toHaveLength(files.length);
+      for (const prompt of prompts) {
+        expect(prompt).toMatchObject({ choices: ONCE_DENY });
+        expect(prompt).not.toHaveProperty('alwaysRule');
+      }
+      // A plain file of the same directory is still covered.
+      expect(await decide('Write', { file_path: join(outside, 'a.txt') })).toEqual(allowUser);
+      expect(prompts).toHaveLength(files.length);
+    });
+
+    it('a sensitive location asks with once and deny and offers no always, whatever is saved', async () => {
+      const files = [join(home, '.ssh', 'id'), join(storage, 'permissions', 'k.json')];
+      // Directories that could not be saved through the host, written to the store by hand.
+      for (const path of [home, join(home, '.ssh'), join(root, 'ext'), storage]) {
+        await grants.add(KEY, { kind: 'edit-directory', path });
+      }
+      for (const file of files) {
+        const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+        const decision = await decide('Write', { file_path: file });
+        expect(prompts).toHaveLength(1);
+        expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+        expect(prompts[0]).not.toHaveProperty('alwaysRule');
+        expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+      }
+    });
+
+    it('a directory that is too broad to save is not offered and covers nothing', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: root });
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS });
+      // The directory of this file is the parent of the storage's parent: too broad.
+      const decision = await decide('Write', { file_path: join(root, 'a.txt') });
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
+      expect(decision.response.behavior).toBe('deny');
+      // The saved root covers nothing below it either.
+      await decide('Write', { file_path: join(outside, 'a.txt') });
+      expect(prompts).toHaveLength(2);
+    });
+
+    it('a symlink inside a saved directory that points out of it asks, for the real directory', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: DENY });
+      const decision = await decide('Write', { file_path: join(outside, 'link-other', 'x.txt') });
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({
+        detail: join(other, 'x.txt'),
+        alwaysRule: { kind: 'edit-directory', rule: other },
+      });
+      expect(decision.response.behavior).toBe('deny');
+    });
+
+    it('a failed save is logged and the edit still goes ahead', async () => {
+      const { logger, warnings } = recordingLogger();
+      const failing: GrantStore = { ...grants, add: () => Promise.reject(new Error('full')) };
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS, grants: failing, logger });
+      expect(await decide('Write', { file_path: join(outside, 'a.txt') })).toEqual(allowUser);
+      expect(warnings).toHaveLength(1);
+      await decide('Write', { file_path: join(outside, 'a.txt') });
+      expect(prompts).toHaveLength(2);
+    });
+
+    it('the order is kept: a protected file inside the folder still asks, a saved directory does not matter', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: DENY });
+      await decide('Edit', { file_path: '.env' });
+      expect(prompts[0]).toMatchObject({ category: 'protected-path', choices: ONCE_DENY });
     });
   });
 
@@ -1758,6 +1958,16 @@ describe('agent policy with saved permissions', () => {
         expect(prompt).toMatchObject({ choices: ONCE_DENY });
         expect(prompt).not.toHaveProperty('alwaysRule');
       }
+    });
+
+    it('an edit outside the folder asks with once and deny, whatever is in the store', async () => {
+      await grants.add(KEY, { kind: 'edit-directory', path: outside });
+      const { decide, prompts } = setup({ answer: ALLOW_ALWAYS, grants: null });
+      const decision = await decide('Write', { file_path: join(outside, 'a.txt') });
+      expect(decision).toEqual(deny('That answer was not one the prompt offered.'));
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toMatchObject({ category: 'outside-workspace', choices: ONCE_DENY });
+      expect(prompts[0]).not.toHaveProperty('alwaysRule');
     });
   });
 });

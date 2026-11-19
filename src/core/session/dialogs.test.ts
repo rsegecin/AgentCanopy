@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
 import { DEFAULT_SETTINGS } from '../../shared';
 import type { PermissionPrompt } from '../../shared';
-import { alwaysAllowDetail, directoryDialog, switchDialog } from './prompts';
+import { alwaysAllowDetail, directoryDialog, editDirectoryDialog, switchDialog } from './prompts';
 import {
   FOLDER_KEY,
   assistantText,
@@ -172,7 +172,10 @@ describe('text from the model and the workspace in native dialogs', () => {
 
 describe('text from the workspace and the model in the confirmations of permissions', () => {
   const weirdFolder = `D:\\wo\nrk${LRO}\\app`;
-  const prompt = (kind: 'read-directory' | 'web-site', rule: string): PermissionPrompt => ({
+  const prompt = (
+    kind: 'read-directory' | 'edit-directory' | 'web-site',
+    rule: string,
+  ): PermissionPrompt => ({
     id: 'p' as PermissionPrompt['id'],
     conversationId: 'c' as PermissionPrompt['conversationId'],
     turnId: 't' as PermissionPrompt['turnId'],
@@ -193,8 +196,10 @@ describe('text from the workspace and the model in the confirmations of permissi
   it('writes out line breaks and direction overrides in the folder, the directory and the host', () => {
     const details = [
       alwaysAllowDetail(prompt('read-directory', `E:\\li\nbs${LRO}\\shared`), weirdFolder),
+      alwaysAllowDetail(prompt('edit-directory', `E:\\li\nbs${LRO}\\shared`), weirdFolder),
       alwaysAllowDetail(prompt('web-site', `docs${LRO}.example\n.com`), weirdFolder),
       directoryDialog(`E:\\li\nbs${LRO}\\shared`, weirdFolder).detail,
+      editDirectoryDialog(`E:\\li\nbs${LRO}\\shared`, weirdFolder).detail,
       ...(['read-outside', 'web-fetch', 'web-search'] as const).map(
         (name) => switchDialog(name, weirdFolder).detail,
       ),
@@ -207,10 +212,14 @@ describe('text from the workspace and the model in the confirmations of permissi
       expect(first.split('\n').length).toBeLessThanOrEqual(2);
     }
     expect(details[0]).toContain('Directory: E:\\li\\u{000A}bs\\u{202E}\\shared\n');
-    expect(details[1]).toContain('Site: docs\\u{202E}.example\\u{000A}.com\n');
+    expect(details[1]).toContain('Directory: E:\\li\\u{000A}bs\\u{202E}\\shared\n');
+    expect(details[2]).toContain('Site: docs\\u{202E}.example\\u{000A}.com\n');
     // Two names that differ only by such a character look different.
     expect(directoryDialog('E:\\a\u200Fb', weirdFolder).detail).not.toBe(
       directoryDialog('E:\\ab', weirdFolder).detail,
+    );
+    expect(editDirectoryDialog('E:\\a\u200Fb', weirdFolder).detail).not.toBe(
+      editDirectoryDialog('E:\\ab', weirdFolder).detail,
     );
   });
 
@@ -218,6 +227,7 @@ describe('text from the workspace and the model in the confirmations of permissi
     const dir = `E:\\${'long-directory-name\\'.repeat(20)}end`;
     const host = `${'a'.repeat(60)}.example.com`;
     expect(directoryDialog(dir, 'D:\\app').detail).toContain(`Directory: ${dir}\n`);
+    expect(editDirectoryDialog(dir, 'D:\\app').detail).toContain(`Directory: ${dir}\n`);
     expect(
       alwaysAllowDetail(
         {

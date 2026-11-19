@@ -10,6 +10,10 @@ const DIR_GRANT: Grant = {
   kind: 'read-directory',
   path: process.platform === 'win32' ? 'D:\\libs\\shared' : '/libs/shared',
 };
+const EDIT_GRANT: Grant = {
+  kind: 'edit-directory',
+  path: process.platform === 'win32' ? 'D:\\libs\\shared' : '/libs/shared',
+};
 const SITE: Grant = { kind: 'web-site', host: 'docs.example.com' };
 const PS: Grant = { kind: 'powershell-command', command: 'npm test' };
 
@@ -18,6 +22,7 @@ describe('isValidGrant', () => {
 
   it.each([
     ['a directory', DIR_GRANT],
+    ['a directory to edit in', EDIT_GRANT],
     ['a site', SITE],
     ['a site with a port', { kind: 'web-site', host: 'example.com:8080' }],
     ['an IPv6 site', { kind: 'web-site', host: '[::1]:8080' }],
@@ -42,6 +47,21 @@ describe('isValidGrant', () => {
     ],
     ['a directory with a control character', { kind: 'read-directory', path: `${absolute}\nx` }],
     ['a directory with a bidi control', { kind: 'read-directory', path: `${absolute}\u202ex` }],
+    ['a relative directory to edit in', { kind: 'edit-directory', path: 'libs/shared' }],
+    ['an empty directory to edit in', { kind: 'edit-directory', path: '' }],
+    ['an edit directory that is not a string', { kind: 'edit-directory', path: 42 }],
+    [
+      'an edit directory of 4097 characters',
+      { kind: 'edit-directory', path: `${absolute}${'a'.repeat(4100)}` },
+    ],
+    [
+      'an edit directory with a control character',
+      { kind: 'edit-directory', path: `${absolute}\nx` },
+    ],
+    [
+      'an edit directory with a bidi control',
+      { kind: 'edit-directory', path: `${absolute}\u202ex` },
+    ],
     ['a site in upper case', { kind: 'web-site', host: 'Example.com' }],
     ['a site with a user name', { kind: 'web-site', host: 'a@example.com' }],
     ['a site with a path', { kind: 'web-site', host: 'example.com/x' }],
@@ -98,6 +118,19 @@ describe('grant store', () => {
       switches: ['read-outside', 'web-search'],
       grants: [DIR_GRANT, SITE, PS],
     });
+  });
+
+  it('round trips an edit directory, and a read and an edit grant of one path are two grants', async () => {
+    const store = await open();
+    await store.add(KEY, EDIT_GRANT);
+    await store.add(KEY, DIR_GRANT);
+    await store.add(KEY, { ...EDIT_GRANT, extra: 'x' } as Grant);
+    expect(store.get(KEY).grants).toEqual([EDIT_GRANT, DIR_GRANT]);
+    expect((await open()).get(KEY).grants).toEqual([EDIT_GRANT, DIR_GRANT]);
+    // Removing one leaves the other.
+    await store.remove(KEY, EDIT_GRANT);
+    expect(store.get(KEY).grants).toEqual([DIR_GRANT]);
+    expect((await open()).get(KEY).grants).toEqual([DIR_GRANT]);
   });
 
   it('get returns a copy', async () => {

@@ -99,6 +99,7 @@ describe('shared contracts', () => {
       switches: ['read-outside'],
       saved: [
         { id: 'a1', kind: 'read-directory', text: 'D:\\libs\\shared' },
+        { id: 'a5', kind: 'edit-directory', text: 'D:\\libs\\docs' },
         { id: 'a2', kind: 'web-site', text: 'docs.example.com' },
         { id: 'a3', kind: 'command', text: 'npm test', shell: 'powershell', runsProjectCode: true },
         { id: 'a4', kind: 'mcp-tool', text: 'mcp__docs__search' },
@@ -139,7 +140,7 @@ describe('shared contracts', () => {
       alwaysRule: { rule: 'Bash(npm test)', runsProjectCode: true },
     });
     expect(stored.alwaysRule).toEqual({ rule: 'Bash(npm test)', runsProjectCode: true });
-    for (const kind of ['command', 'tool', 'read-directory', 'web-site']) {
+    for (const kind of ['command', 'tool', 'read-directory', 'edit-directory', 'web-site']) {
       const parsed = PermissionPromptSchema.parse({
         ...prompt,
         alwaysRule: { kind, rule: 'x', runsProjectCode: false },
@@ -149,7 +150,7 @@ describe('shared contracts', () => {
     expect(
       PermissionPromptSchema.safeParse({
         ...prompt,
-        alwaysRule: { kind: 'edit-directory', rule: 'x', runsProjectCode: false },
+        alwaysRule: { kind: 'delete-directory', rule: 'x', runsProjectCode: false },
       }).success,
     ).toBe(false);
   });
@@ -178,6 +179,11 @@ describe('shared contracts', () => {
     // No message carries a folder or a path: the host uses the folder the view shows.
     const added = WebviewMessageSchema.parse({ type: 'permissions.addDirectory', path: 'C:\\' });
     expect(added).toEqual({ type: 'permissions.addDirectory' });
+    const addedForEdits = WebviewMessageSchema.parse({
+      type: 'permissions.addEditDirectory',
+      path: 'C:\\',
+    });
+    expect(addedForEdits).toEqual({ type: 'permissions.addEditDirectory' });
     expect(
       HostMessageSchema.safeParse({
         type: 'event',
