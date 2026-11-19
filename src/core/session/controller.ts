@@ -8,8 +8,10 @@ import {
   MAX_IMAGE_BYTES_PER_MESSAGE,
   RelPathSchema,
   WebviewMessageSchema,
+  parseModelChoice,
 } from '../../shared';
 import type {
+  ModelInfo,
   AsideAnchor,
   AssistantMessage,
   Attachment,
@@ -105,6 +107,8 @@ type Report = (level: 'info' | 'warning' | 'error', text: string) => void;
 import { asideOps, asidesOf } from './asides';
 import { createAutoReset } from './auto-reset';
 import type { AutoReset } from './auto-reset';
+import { createLearnedModels } from './learned-models';
+import type { LearnedModels } from './learned-models';
 import { REFRESH_ACTION, SIGN_IN_ACTION, bannerKey, computeBanners } from './banners';
 import { decodeBase64, matchesImageSignature } from './images';
 import { isInside, resolveInsideWorkspace } from './paths';
@@ -286,6 +290,8 @@ class Controller implements AppController {
   private autoResetWarned = false;
   /** The machine-wide reset of Auto (`autoReset`), created on first use. */
   private autoResetStore: AutoReset | undefined;
+  /** The full ids that finished turns reported for model aliases (`learnedModels`), created on first use. */
+  private learnedModelsStore: LearnedModels | undefined;
   /**
    * Views whose first message is creating its conversation with the draft's Auto. An off without an
    * id from such a view sets `cancelled`, and the conversation is then created (or set) without it.
@@ -329,6 +335,10 @@ class Controller implements AppController {
     if (this.started) return;
     this.started = true;
     this.recomputeEnvironment();
+    // What turns on this machine reported for the model aliases only shapes labels, so the
+    // environment above does not wait for the file; the list is corrected once it is read.
+    await this.learnedModels.refresh();
+    if (!this.disposed) this.state.patchGlobal({ models: this.modelList() });
     await this.openStore();
     await this.startTracker();
     try {
@@ -367,6 +377,7 @@ class Controller implements AppController {
     // A reset of Auto that could not be saved gets one more try, and what is being written finishes.
     await this.autoResetStore?.refresh();
     await this.autoResetStore?.idle();
+    await this.learnedModelsStore?.idle();
     try {
       await this.store?.flush();
     } catch (error) {
@@ -432,7 +443,6 @@ class Controller implements AppController {
     const { env } = this.deps;
     this.fileSearch.invalidate();
     const settings = env.settings();
-    const provider = this.provider();
     const status = this.state.global.provider;
     this.state.patchGlobal({
       trusted: env.trusted(),
@@ -447,7 +457,7 @@ class Controller implements AppController {
         autoWebTools: settings.agentAutoWebTools,
         sandbox: settings.sandbox,
       },
-      models: provider ? provider.listModels(settings.customModels) : [],
+      models: this.modelList(),
       banners: this.banners(status),
     });
     this.settleAuto(settings.agentAuto);
@@ -530,13 +540,44 @@ class Controller implements AppController {
     if (token !== this.detectToken || this.disposed) return;
     this.state.patchGlobal({
       provider: status,
-      models: provider.listModels(this.deps.env.settings().customModels),
+      models: this.modelList(),
       banners: this.banners(status),
     });
   }
 
   private provider(): AgentProvider | undefined {
     return this.deps.providers.list()[0];
+  }
+
+  /** The models the provider offers: its own list, the custom ids, and the full ids learned for aliases. */
+  private modelList(): ModelInfo[] {
+    const provider = this.provider();
+    if (!provider) return [];
+    return provider.listModels(
+      this.deps.env.settings().customModels,
+      this.learnedModels.get(provider.id),
+    );
+  }
+
+  /**
+   * A turn that completed has told which full id its model alias ran as: it is remembered, and the
+   * models in every view are updated. Only a built-in alias (or `default`) is learned, never a custom
+   * id. Changes nothing else (no `recomputeEnvironment`, which would act on Auto). Never throws.
+   */
+  private learnModel(run: TurnRun): void {
+    try {
+      const reported = run.reportedModel;
+      const base = run.providerModel;
+      if (reported === undefined || reported.length === 0 || reported === base) return;
+      const provider = this.deps.providers.get(run.providerId);
+      if (!provider) return;
+      if (!provider.listModels([]).some((model) => !model.custom && model.id === base)) return;
+      if (this.learnedModels.record(provider.id, base, reported)) {
+        this.state.patchGlobal({ models: this.modelList() });
+      }
+    } catch (error) {
+      this.logger.warn('a model id could not be learned', { error: redact(String(error)) });
+    }
   }
 
   private banners(provider: ProviderStatus | null): Banner[] {
@@ -607,6 +648,15 @@ class Controller implements AppController {
     // when it was turned on after the last reset on this machine.
     if (!this.deps.env.settings().agentAuto) this.settleAuto(false);
     else this.clearStaleAuto(store);
+  }
+
+  /** The full ids learned for model aliases, kept in the global storage directory (in memory only without one). */
+  private get learnedModels(): LearnedModels {
+    this.learnedModelsStore ??= createLearnedModels({
+      dir: this.deps.env.globalStorageDir(),
+      logger: this.logger,
+    });
+    return this.learnedModelsStore;
   }
 
   /** The reset of Auto, kept in the global storage directory (in memory only without one). */
@@ -2275,6 +2325,7 @@ class Controller implements AppController {
         this.fireRunningChanged();
         // Only after a turn that completed: after a stop or an error the message waits for the user.
         if (status === 'completed') {
+          this.learnModel(run);
           this.dispatchQueued(run.conversationId).catch((error: unknown) => {
             this.logger.error('a queued message could not be sent', {
               error: redact(String(error)),
@@ -3996,6 +4047,8 @@ class Controller implements AppController {
             version,
             stored.content.title,
             unanswered,
+            // The execution turn is sent with this same model choice.
+            parseModelChoice(meta.model).delegate,
             turnOn ? { title: meta.title, folder } : undefined,
           );
           let confirmed = false;
@@ -4109,6 +4162,7 @@ class Controller implements AppController {
     version: number,
     title: string,
     unanswered: number,
+    delegate: boolean,
     turnOn?: { title: string | undefined; folder: FolderInfo },
   ): string {
     const settings = this.deps.env.settings();
@@ -4118,6 +4172,13 @@ class Controller implements AppController {
     ];
     if (unanswered > 0) {
       paragraphs.push(`${unanswered} question(s) or decision(s) in this plan have no answer yet.`);
+    }
+    if (delegate) {
+      paragraphs.push(
+        'This conversation uses an "orchestrate and delegate" model: the model plans, decides and reviews, ' +
+          'and hands routine tasks to subagents on faster models (Haiku and Sonnet). ' +
+          "What a subagent does is approved, tracked and reviewed like the model's own work.",
+      );
     }
     if (turnOn) {
       paragraphs.push(

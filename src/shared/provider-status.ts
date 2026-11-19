@@ -25,6 +25,8 @@ export const ModelInfoSchema = z.object({
   id: z.string().min(1),
   label: z.string().min(1),
   custom: z.boolean(),
+  /** The full id the provider runs for this entry, when it is known. For display only. */
+  resolved: z.string().min(1).max(200).optional(),
 });
 export type ModelInfo = z.infer<typeof ModelInfoSchema>;
 

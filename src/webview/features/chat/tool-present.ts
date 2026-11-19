@@ -275,14 +275,17 @@ function specialised(call: ToolCallView): ToolPresentation | null {
       if (query === undefined) return null;
       return { icon: 'globe', title: 'Web search', detail: clip(query) };
     }
+    case 'Agent':
     case 'Task': {
       const description = text(input, 'description');
       if (description === undefined) return null;
-      const kind = text(input, 'subagent_type');
+      const detail = [text(input, 'subagent_type'), text(input, 'model')]
+        .filter((part): part is string => part !== undefined)
+        .join(' · ');
       return {
         icon: 'robot',
         title: description,
-        ...(kind !== undefined ? { detail: kind } : {}),
+        ...(detail !== '' ? { detail } : {}),
         parent: true,
       };
     }

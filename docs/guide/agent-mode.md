@@ -51,7 +51,7 @@ A Bash command runs without asking, labelled "Allowed by AgentCanopy", only when
 
 - **Nothing decided it first.** A saved always-allow rule is checked first ("Approved by you"), then Auto ("Auto-approved"). This rule comes after both, and they keep their labels.
 - **`agentCanopy.agent.alwaysAskCommands` is off.**
-- **The call comes from the main session, and Claude Code reported the workspace folder as its working directory.** AgentCanopy reads that from the PreToolUse hook that it installs in Agent mode. A command run by a subagent asks. With `disableAllHooks` in your Claude Code user settings no hook arrives, and every command asks. Every Bash call of an Agent turn starts in the folder, so a `cd` does not carry over to the next call.
+- **The call comes from the main session, and Claude Code reported the workspace folder as its working directory.** AgentCanopy reads that from the PreToolUse hook that it installs in Agent mode. A command run by a subagent is never allowed as read-only and asks. With `disableAllHooks` in your Claude Code user settings no hook arrives, and every command asks. Every Bash call of an Agent turn starts in the folder, so a `cd` does not carry over to the next call.
 - **The project's own Claude Code settings are not in use, or hold only the safe set.** If you chose **Use Project Settings** and they hold environment variables, hooks or helper commands, read-only commands ask, because those settings can change what a command name runs.
 - **The folder is not your home folder or above it, and not inside a credential location.** Every entry of `PATH` is an absolute path outside the folder. On Windows an empty entry is ignored, because Git Bash drops it.
 - **The command is made only of these commands, with the options AgentCanopy lists for each:** `ls`, `cat`, `head`, `tail`, `wc`, `nl`, `stat`, `file`, `du`, `df`, `cut`, `tr`, `diff`, `cmp`, `sort`, `uniq`, `grep`, `egrep`, `fgrep`, `rg`, `find`, `sed` (scripts that only print), `echo`, `printf`, `pwd`, `which`, `whoami`, `uname`, `date`, `basename`, `dirname`, `realpath`, and `git` with `status`, `diff`, `log`, `show`, `shortlog`, `rev-list`, `rev-parse`, `ls-files`, `ls-tree`, `blame`, `describe`, `cat-file`, `check-ignore`, `reflog`, `grep`, the listing forms of `branch` and `tag`, and `remote -v`. An option that is not listed asks, and so does an abbreviated long option.
@@ -151,7 +151,7 @@ Click **Auto** again. There is no dialog, it works at any time, and it takes eff
 | `AskUserQuestion` | Shown to you, as always |
 | AgentCanopy's own tools | Denied, as always |
 
-Tools that Claude Code runs without asking (subagent launch, tool search, scheduling and messaging tools) never reach AgentCanopy's policy, with or without Auto; their cards say "Allowed by Claude Code". When Auto covers commands, the agent is told in its prompt that Auto is on and what still asks; with `agentCanopy.agent.alwaysAskCommands` on, the prompt is the ordinary Agent one.
+Tools that Claude Code runs without asking (subagent launch, tool search, scheduling and messaging tools) never reach AgentCanopy's policy, with or without Auto; their cards say "Allowed by Claude Code". The calls that a subagent makes itself (its commands, edits, reads and web calls) do reach the policy, like the model's own; see [Orchestrate and delegate](#orchestrate-and-delegate). When Auto covers commands, the agent is told in its prompt that Auto is on and what still asks; with `agentCanopy.agent.alwaysAskCommands` on, the prompt is the ordinary Agent one.
 
 ### What shows that it is on
 
@@ -170,6 +170,56 @@ Auto belongs to one conversation. A new conversation, a branch, a side question 
 - `agentCanopy.agent.auto.webTools` (default on) lets Auto also approve web fetch and web search, so a plan that reads documentation runs without a card for each page. Turn it off to have them ask even with Auto on: a fetched page can carry instructions for the agent and a request can send file contents out.
 
 A setting that narrows Auto takes effect at once, also for a running turn: turning `agentCanopy.agent.alwaysAskCommands` on, `agentCanopy.agent.auto.webTools` off or `agentCanopy.agent.auto.enabled` off makes the next call ask, and it stays in effect for the rest of that turn even if you change it back. A setting that widens what runs applies from the next turn.
+
+## Model versions
+
+The Model selector shows a version in the label of each entry: "Sonnet 5.5", "Opus 5.5", "Haiku 5.5", "Fable 5.2" and "Default (Claude Code decides)". The versions come from a table built into the extension and are corrected by what Claude Code reports. When a turn that used an alias or `default` completes, AgentCanopy remembers the full model id that Claude Code reported for it and shows that version from then on. "Default" shows its version after its first completed turn, for example "Default (Claude Code decides) · Fable 5.2".
+
+What is remembered is kept per machine, in the extension's global storage, and is shared by all windows and projects. It holds only the alias and the model id. A turn that fails or is stopped teaches nothing, and ids you add in `agentCanopy.customModels` are shown as typed. Hover over the selector to see the full id of the selected entry, when it is known.
+
+Claude Code still cannot list models, so AgentCanopy does not query the provider for the available ones. A label can be out of date until a turn has run with that alias on this machine, for example after Claude Code points an alias at a newer model. An id that does not have the shape `claude-<family>-<major>[-<minor>]`, such as a cloud provider's id, keeps the built-in label for an alias; the tooltip still shows the reported id.
+
+## Orchestrate and delegate
+
+"Orchestrate and delegate" is a choice in the Model selector for Agent turns. The model you pick keeps the planning, the decisions and the final review, and AgentCanopy adds an instruction to the turn that tells it to hand routine work to subagents on faster models, Haiku and Sonnet. It is an instruction to the model, not a rule that AgentCanopy enforces: the model decides what to delegate, and AgentCanopy does not check that it did.
+
+### Pick it
+
+Choose "Fable 5.2 · orchestrate and delegate" in the Model selector. The choice is stored as `fable+delegate`. In Agent mode, including the execution of an approved [plan](plan-mode.md#approve-and-execute), a turn with this choice runs on the named model, Fable, with the instruction added. In Ask and Plan mode and in side questions the choice runs as the plain model, Fable, because those modes have no subagent tool.
+
+To get the same option for another model, add `<model>+delegate` to `agentCanopy.customModels`, for example `opus+delegate`. `agentCanopy.defaultModel` may also be such a choice, and `default+delegate` works too: Claude Code's default model then orchestrates.
+
+### What the model is told
+
+The instruction asks the model to:
+
+- keep the planning, architectural decisions, complex reasoning and final review for itself;
+- delegate searches, reading and simple analysis to subagents on Haiku, and routine implementation and tests to subagents on Sonnet, each with a complete brief;
+- launch subagents that only read together, so they run in parallel, and run subagents that edit files or run commands one at a time;
+- not use worktrees or background subagents;
+- not delegate a task that is smaller than its brief;
+- review what subagents return, and run the project's checks itself before it finishes;
+- follow the project's own subagent or delegation rules when it has them.
+
+### What you see
+
+Each subagent launch is a tool card. The tool is called `Agent`; older Claude Code versions call it `Task`. The card shows the task description, the subagent type and its model, for example "general-purpose · haiku", with the subagent's own tool calls nested inside it. The subagent's text is not shown, only its tool calls and what the orchestrating model says about the result.
+
+### Permissions
+
+Launching a subagent never asks and never reaches AgentCanopy's policy; the card says "Allowed by Claude Code", as before. Every command, edit, read and web call that a subagent makes does reach the policy, exactly like the model's own. Protected files, paths outside the folder and so on ask. With [Auto](#auto) on, a subagent's commands and edits inside the folder are approved like the model's own. This was checked against Claude Code 2.1.325 on 2026-11-18.
+
+One difference without Auto: a [read-only command](#read-only-commands) from a subagent asks, because that check only passes calls of the main session. So without Auto a delegated turn asks more often than a plain one; with Auto it does not. A permission card does not say which subagent asked.
+
+### Review and checkpoints
+
+A subagent's edits are tracked, reviewed and undone like the model's own; see [Reviewing changes](reviewing-changes.md). Parallel subagents are limited to reading on purpose. If two subagents change files at the same time, AgentCanopy may not be able to attribute each change to one tool call. Such changes are listed as changed while the agent was working ("mixed" or "unattributed" in the review), and Reject All leaves them alone. The instruction asks the model to avoid this; it cannot prevent it.
+
+### Cost and older builds
+
+Subagents run on Haiku and Sonnet whatever the orchestrating model is. Each subagent starts with only its brief, so a small task can cost more delegated than done directly; the instruction tells the model not to delegate those.
+
+The plan approval dialog adds a paragraph when the conversation uses such a choice; see [Plan mode](plan-mode.md#approve-and-execute). A build older than 0.1.7 does not know the `+delegate` form: a conversation that stored such a choice fails there with "model name contains characters that are not allowed" until another model is picked. See [Troubleshooting](troubleshooting.md#a-turn-ends-with-an-error).
 
 ## Who allowed each call
 

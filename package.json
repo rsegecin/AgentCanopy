@@ -1,7 +1,7 @@
 {
   "name": "agentcanopy",
   "displayName": "AgentCanopy",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "AI coding agents in standard VS Code: Ask, Plan and Agent modes with reviewable changes",
   "license": "MIT",
   "publisher": "agentcanopy-local",
@@ -257,7 +257,7 @@
           "type": "string",
           "default": "default",
           "scope": "machine",
-          "markdownDescription": "Model a new conversation starts with: an alias such as `sonnet`, a full model id, or `default` to let Claude Code decide."
+          "markdownDescription": "Model a new conversation starts with: an alias such as `sonnet`, a full model id, or `default` to let Claude Code decide. Add `+delegate` (for example `fable+delegate`) to have that model orchestrate Agent turns and hand routine work to subagents on faster models."
         },
         "agentCanopy.customModels": {
           "type": "array",
@@ -266,7 +266,7 @@
           },
           "default": [],
           "scope": "machine",
-          "description": "Additional model ids to offer in the model selector."
+          "markdownDescription": "Additional model ids to offer in the model selector. An entry that ends in `+delegate`, such as `opus+delegate`, adds an \"orchestrate and delegate\" option for that model: in Agent mode it plans, decides and reviews, and hands routine work to subagents on faster models."
         },
         "agentCanopy.ask.webTools": {
           "type": "boolean",

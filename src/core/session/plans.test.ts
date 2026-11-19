@@ -3,8 +3,10 @@ import { promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { initEvent } from '../../../test/fake-cli';
+import { DEFAULT_SETTINGS } from '../../shared';
 import type { AssistantMessage, ConversationId, PlanDoc, Prompt } from '../../shared';
 import type { TurnPolicy, TurnRequest } from '../contracts';
+import { AGENT_DELEGATE_PARAGRAPH } from '../conversations/compose';
 import type * as PlansModule from '../plans';
 import { BUSY_MESSAGE } from '../workspace/tracker/tracker';
 import { createConversationStore } from '../conversations/store';
@@ -985,6 +987,75 @@ describe('approving a plan', () => {
     expect(planOf(view).approvals[0]?.executionTurnId).toBe(executing?.id);
     expect((await planStoreOf(h).get(plan.id))?.approvals[0]?.executionTurnId).toBe(executing?.id);
     view.expectMirror();
+  });
+
+  describe('in a conversation with a delegate model choice', () => {
+    const DELEGATE_DETAIL =
+      'This conversation uses an "orchestrate and delegate" model: the model plans, decides and reviews, ' +
+      'and hands routine tasks to subagents on faster models (Haiku and Sonnet). ' +
+      "What a subagent does is approved, tracked and reviewed like the model's own work.";
+
+    async function delegatePlan(
+      model: string,
+    ): Promise<{ h: Harness; view: TestView; plan: PlanDoc }> {
+      const h = await planHarness([submitScenario(PLAN), textSpec('done')]);
+      const view = h.attach();
+      await sendAndFinish(h, view, 'plan it', { mode: 'plan', model });
+      expect(view.active().meta.model).toBe(model);
+      return { h, view, plan: planOf(view) };
+    }
+
+    function detailOf(h: Harness): string {
+      return (h.ui.callsOf('confirm')[0]?.[0] as { detail: string }).detail;
+    }
+
+    it('says so in the dialog, before the Auto paragraphs, and runs the execution turn on the base model', async () => {
+      const { h, view, plan } = await delegatePlan('fable+delegate');
+      approve(view, plan);
+      await until('the execution turn', () => view.active().turns.length === 2);
+      await finishedTurn(h, view);
+
+      expect(detailOf(h).split('\n\n').slice(0, 4)).toEqual([
+        'Version 1 of "Add caching" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
+        '2 question(s) or decision(s) in this plan have no answer yet.',
+        DELEGATE_DETAIL,
+        'Approving also turns on Auto for this conversation.',
+      ]);
+      expect(h.requests[1]?.mode).toBe('agent');
+      expect(h.requests[1]?.model).toBe('fable');
+      const { argv, stdin } = await h.record(1);
+      expect(argv[argv.indexOf('--model') + 1]).toBe('fable');
+      expect(stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
+      expect(view.active().turns[1]?.model).toBe('fable+delegate');
+      expect(view.active().meta.model).toBe('fable+delegate');
+    });
+
+    it('follows the unanswered paragraph directly when Auto is not offered', async () => {
+      const { h, view, plan } = await delegatePlan('default+delegate');
+      h.env.settingsValue = { ...DEFAULT_SETTINGS, agentAuto: false };
+      approve(view, plan);
+      await until('the execution turn', () => view.active().turns.length === 2);
+      await finishedTurn(h, view);
+
+      expect(detailOf(h).split('\n\n')).toEqual([
+        'Version 1 of "Add caching" will be implemented in Agent mode. Changes are checkpointed and you review them afterwards.',
+        '2 question(s) or decision(s) in this plan have no answer yet.',
+        DELEGATE_DETAIL,
+      ]);
+      expect(h.requests[1]?.model).toBe('default');
+      expect((await h.record(1)).stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
+    });
+
+    it('is not in the dialog or the turn for a plain model', async () => {
+      const { h, view, plan } = await delegatePlan('fable');
+      approve(view, plan);
+      await until('the execution turn', () => view.active().turns.length === 2);
+      await finishedTurn(h, view);
+
+      expect(detailOf(h)).not.toContain('orchestrate and delegate');
+      expect(h.requests[1]?.model).toBe('fable');
+      expect((await h.record(1)).stdin).not.toContain(AGENT_DELEGATE_PARAGRAPH);
+    });
   });
 
   it('sends no images and takes none from the draft', async () => {

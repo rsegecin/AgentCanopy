@@ -229,11 +229,53 @@ describe('web, task, question and MCP cards', () => {
     expect(cardOf(toggleOf('Web search')).textContent).toContain('vitest jsdom');
   });
 
-  it('shows a Task with its description as the title', () => {
-    render([
-      call('Task', { description: 'Survey the tests', prompt: 'p', subagent_type: 'general' }),
-    ]);
-    expect(cardOf(toggleOf('Survey the tests')).textContent).toContain('general');
+  describe.each(['Task', 'Agent'])('a %s call', (name) => {
+    it('shows its description as the title and the subagent type', () => {
+      render([
+        call(name, { description: 'Survey the tests', prompt: 'p', subagent_type: 'general' }),
+      ]);
+      const header = cardOf(toggleOf('Survey the tests')).querySelector('.tool-card-header');
+      expect(header?.textContent).toContain('general');
+      expect(header?.textContent).not.toContain('·');
+    });
+
+    it('shows the model after the subagent type', () => {
+      render([
+        call(name, {
+          description: 'Find the store tests',
+          subagent_type: 'general-purpose',
+          model: 'haiku',
+          prompt: 'p',
+        }),
+      ]);
+      const header = cardOf(toggleOf('Find the store tests')).querySelector('.tool-card-header');
+      expect(header?.textContent).toContain('general-purpose · haiku');
+    });
+
+    it('shows the model alone when there is no subagent type', () => {
+      render([call(name, { description: 'Find', model: 'sonnet' })]);
+      const header = cardOf(toggleOf('Find')).querySelector('.tool-card-header');
+      expect(header?.textContent).toContain('sonnet');
+      expect(header?.textContent).not.toContain('·');
+    });
+
+    it.each([
+      ['a number', 5],
+      ['an object', { id: 'haiku' }],
+      ['an empty string', ''],
+      ['blank text', '   '],
+      ['null', null],
+    ])('ignores a model that is %s', (_label, model) => {
+      render([call(name, { description: 'Find', subagent_type: 'general', model })]);
+      const header = cardOf(toggleOf('Find')).querySelector('.tool-card-header');
+      expect(header?.textContent).toContain('general');
+      expect(header?.textContent).not.toContain('·');
+    });
+
+    it('uses the robot icon', () => {
+      render([call(name, { description: 'Find' })]);
+      expect(cardOf(toggleOf('Find')).querySelector('.codicon-robot')).toBeTruthy();
+    });
   });
 
   it('shows AskUserQuestion with the count from the recording Q1', () => {
@@ -297,6 +339,7 @@ describe('every card keeps status, approval and the raw disclosure', () => {
     ['WebFetch', { url: 'https://x.test' }],
     ['WebSearch', { query: 'q' }],
     ['Task', { description: 'Do it' }],
+    ['Agent', { description: 'Do it', subagent_type: 'general-purpose', model: 'haiku' }],
     ['AskUserQuestion', { questions: [] }],
     ['mcp__s__t', {}],
     ['mcp__agentcanopy__submit_plan', {}],
@@ -343,6 +386,27 @@ describe('nested calls', () => {
     expect(within(group).getByRole('button', { name: 'Search for x' })).toBeTruthy();
     expect(within(group).getByRole('link', { name: 'a.ts' })).toBeTruthy();
     expect(group.closest('.tool-card-body')?.hasAttribute('hidden')).toBe(false);
+    expect(within(group).getAllByRole('button', { name: /Read|Search/ })).toHaveLength(2);
+  });
+
+  it('draws calls of an Agent inside its disclosure, and not at top level', () => {
+    render([
+      call(
+        'Agent',
+        { description: 'Survey', subagent_type: 'general-purpose', model: 'haiku' },
+        { id: 'agent1' },
+      ),
+      call('Read', { file_path: 'a.ts' }, { id: 'r1', parentId: 'agent1' }),
+      call('Grep', { pattern: 'x' }, { id: 'g1', parentId: 'agent1' }),
+    ]);
+    expect(screen.queryByRole('link', { name: 'a.ts' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Read' })).toBeNull();
+
+    open('Survey');
+    const parent = cardOf(toggleOf('Survey'));
+    const group = within(parent).getByRole('group', { name: 'Calls made by this one' });
+    expect(within(group).getByRole('button', { name: 'Read' })).toBeTruthy();
+    expect(within(group).getByRole('button', { name: 'Search for x' })).toBeTruthy();
     expect(within(group).getAllByRole('button', { name: /Read|Search/ })).toHaveLength(2);
   });
 
@@ -430,6 +494,7 @@ describe('malformed input', () => {
     'WebFetch',
     'WebSearch',
     'Task',
+    'Agent',
     'AskUserQuestion',
   ];
   const everyWrongInput: [string, unknown][] = [

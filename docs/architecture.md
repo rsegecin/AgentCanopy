@@ -48,6 +48,8 @@ Every turn runs `claude -p --output-format stream-json --verbose --include-parti
 | Plan | Ask, plus the plan tool unless the plan is locked | Same as Ask |
 | Agent | Default tools, `ask` rules for the edit tools, saved allow rules, tool hooks, optional sandbox | Edits inside the folder pass; protected paths, outside paths, commands, web and external tools ask, except what a saved permission or Auto approves (see Permission flow) |
 
+The model list comes from `listModels(customModels, known)` on the provider. `known` holds the full model ids learned from earlier turns. They are kept by `src/core/session/learned-models.ts` in the global storage directory (`learned-models.json`, alias to id per provider). The store fails open and is used for display only. The controller learns an id when a turn completes, from the `model` of the `session` event, when the turn used an alias or `default`; a turn that fails or is stopped teaches nothing.
+
 ## Turn flow
 
 ```mermaid
@@ -84,6 +86,8 @@ sequenceDiagram
 6. On the next activation, a journaled open turn means a crash. The orphaned process is stopped first, then the folder is reconciled and the changes are marked as after an interruption.
 
 Cancel sends SIGINT, then settles pending prompts, then SIGTERM and SIGKILL to the process group after grace periods. Windows uses `taskkill /T /F`.
+
+A model choice is a string: an alias or id, optionally followed by `+delegate`. `parseModelChoice` in `src/shared/models.ts` splits it. The full choice is stored in the conversation and in the turn, and only `TurnRun` derives the base model that goes to the provider, so the CLI never receives the suffix. In Agent mode, `composePrompt` adds `AGENT_DELEGATE_PARAGRAPH` (`src/core/conversations/compose.ts`) to the context block when the choice is a delegate one. The policy, the tracker and the CLI arguments are unchanged, so a subagent's calls are decided like the model's own.
 
 ## Sending while a turn runs
 

@@ -128,7 +128,14 @@ export interface AgentProvider {
   readonly displayName: string;
   /** Finds the provider and reports version, sign-in state and capabilities. Never throws. */
   detect(signal?: AbortSignal): Promise<ProviderStatus>;
-  listModels(customModels: readonly string[]): ModelInfo[];
+  /**
+   * The model choices to offer. `known` maps an alias of this provider to the full id it was last
+   * seen to run, as reported by a finished turn; it only shapes labels.
+   */
+  listModels(
+    customModels: readonly string[],
+    known?: Readonly<Record<string, string>>,
+  ): ModelInfo[];
   /**
    * The command a user runs to sign in to this provider, using the executable found by the last
    * detection. Undefined when the provider was not found. Nothing here touches credentials.

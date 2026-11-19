@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { applyPatch } from '../../shared';
 import type { AssistantMessage, MessagePart, PatchOp, ToolCallView, ViewState } from '../../shared';
 import type { TurnObserver } from '../contracts';
+import { AGENT_DELEGATE_PARAGRAPH } from '../conversations/compose';
 import { createConversationStore } from '../conversations/store';
 import { BUSY_MESSAGE } from '../workspace/tracker/tracker';
 import {
@@ -188,6 +189,18 @@ describe('failures', () => {
     view.expectMirror();
   });
 
+  it('names the model without the delegate suffix', async () => {
+    const h = await harness({ scenario: { steps: fixtureSteps('E1') } });
+    const view = h.attach();
+    const turn = await sendAndFinish(h, view, 'hi', { model: 'not-a-real-model-xyz+delegate' });
+    const sentence = 'Claude Code does not know the model "not-a-real-model-xyz".';
+    expect(turn.status).toBe('error');
+    expect(turn.error).toBe(sentence);
+    expect(turn.model).toBe('not-a-real-model-xyz+delegate');
+    const notices = parts(assistantOf(view.active().messages), 'notice');
+    expect(notices).toEqual([{ kind: 'notice', level: 'error', text: sentence }]);
+  });
+
   it('stops the process when the policy refuses an event', async () => {
     const base = createTestPolicy();
     const h = await harness({
@@ -317,6 +330,91 @@ describe('sessions', () => {
       { kind: 'text', text: 'second answer' },
     ]);
     view.expectMirror();
+  });
+});
+
+describe('a delegate model choice', () => {
+  function modelFlag(argv: string[]): string | undefined {
+    const at = argv.indexOf('--model');
+    return at < 0 ? undefined : argv[at + 1];
+  }
+
+  function insideContext(stdin: string, paragraph: string): boolean {
+    const at = stdin.indexOf(paragraph);
+    return (
+      at > stdin.indexOf('<agentcanopy-context') && at < stdin.indexOf('</agentcanopy-context>')
+    );
+  }
+
+  it('runs an Agent turn on the base model and tells the model to delegate', async () => {
+    const h = await harness({
+      scenario: textScenario('ok'),
+      record: true,
+      policy: createPlanTestPolicy(),
+    });
+    const view = h.attach();
+    const turn = await sendAndFinish(h, view, 'build it', {
+      mode: 'agent',
+      model: 'fable+delegate',
+    });
+    expect(turn.status).toBe('completed');
+    expect(turn.model).toBe('fable+delegate');
+    expect(view.active().meta.model).toBe('fable+delegate');
+    expect(h.requests[0]?.model).toBe('fable');
+    const recorded = await h.record();
+    expect(modelFlag(recorded.argv)).toBe('fable');
+    expect(recorded.argv.join(' ')).not.toContain('delegate');
+    expect(recorded.stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
+    expect(insideContext(recorded.stdin, AGENT_DELEGATE_PARAGRAPH)).toBe(true);
+  });
+
+  it('adds nothing in Ask and Plan mode, and runs on the base model there too', async () => {
+    for (const mode of ['ask', 'plan']) {
+      const h = await harness({
+        scenario: textScenario('ok'),
+        record: true,
+        policy: createPlanTestPolicy(),
+      });
+      const view = h.attach();
+      const turn = await sendAndFinish(h, view, 'think', { mode, model: 'fable+delegate' });
+      expect(turn.status).toBe('completed');
+      expect(turn.model).toBe('fable+delegate');
+      expect(view.active().meta.model).toBe('fable+delegate');
+      const recorded = await h.record();
+      expect(modelFlag(recorded.argv)).toBe('fable');
+      expect(recorded.stdin).not.toContain(AGENT_DELEGATE_PARAGRAPH);
+    }
+  });
+
+  it('adds nothing to an Agent turn on a plain model', async () => {
+    const h = await harness({
+      scenario: textScenario('ok'),
+      record: true,
+      policy: createPlanTestPolicy(),
+    });
+    const view = h.attach();
+    await sendAndFinish(h, view, 'build it', { mode: 'agent', model: 'fable' });
+    const recorded = await h.record();
+    expect(modelFlag(recorded.argv)).toBe('fable');
+    expect(recorded.stdin).not.toContain(AGENT_DELEGATE_PARAGRAPH);
+  });
+
+  it('leaves out --model for the default model, and still delegates', async () => {
+    const h = await harness({
+      scenario: textScenario('ok'),
+      record: true,
+      policy: createPlanTestPolicy(),
+    });
+    const view = h.attach();
+    const turn = await sendAndFinish(h, view, 'build it', {
+      mode: 'agent',
+      model: 'default+delegate',
+    });
+    expect(turn.model).toBe('default+delegate');
+    expect(h.requests[0]?.model).toBe('default');
+    const recorded = await h.record();
+    expect(recorded.argv).not.toContain('--model');
+    expect(recorded.stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
   });
 });
 

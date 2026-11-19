@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
-import { PromptSchema } from '../../shared';
+import { PromptSchema, parseModelChoice } from '../../shared';
 import type {
   AgentEvent,
   ApprovalSource,
@@ -197,6 +197,10 @@ export class TurnRun {
   readonly conversationId: ConversationId;
   readonly folderKey: FolderKey;
   readonly mode: Mode;
+  /** The model the provider is asked for: the model choice without its `+delegate` suffix. */
+  readonly providerModel: string;
+  /** The id of the provider this turn runs on. */
+  readonly providerId: string;
   /** Resolves when the turn has ended and everything is written. Never rejects. */
   readonly done: Promise<void>;
 
@@ -262,6 +266,10 @@ export class TurnRun {
   private final: FinalState | undefined;
   private usage: UsageInfo | undefined;
   private forkPointEventId: string | undefined;
+  /** Whether the model choice asks for "orchestrate and delegate" (its `+delegate` suffix). */
+  private readonly delegate: boolean;
+  /** The model id the provider's session event named, the last one seen. */
+  private reported: string | undefined;
 
   private prompt = '';
   private userIndex = -1;
@@ -286,6 +294,10 @@ export class TurnRun {
     this.conversationId = input.runtime.id;
     this.folderKey = input.folder.key;
     this.mode = input.mode;
+    const choice = parseModelChoice(input.model);
+    this.providerModel = choice.model;
+    this.delegate = choice.delegate;
+    this.providerId = input.provider.id;
     this.profile = input.profile;
     // The turn starts from its own snapshot of the settings, narrowed by what they are now.
     this.observeSettings(input.settings);
@@ -296,6 +308,11 @@ export class TurnRun {
     this.done = new Promise<void>((resolve) => {
       this.resolveDone = resolve;
     });
+  }
+
+  /** The model id the provider reported for this turn (the full id behind an alias), once it has. */
+  get reportedModel(): string | undefined {
+    return this.reported;
   }
 
   /** Begins the turn. The user's message is in the views before this returns. */
@@ -437,6 +454,8 @@ export class TurnRun {
       text: this.input.promptText ?? text,
       attachments,
       planLocked: meta.planLocked,
+      // Plan execution turns are Agent turns too; Ask, Plan and side questions never delegate.
+      ...(mode === 'agent' && this.delegate ? { delegate: true } : {}),
       // Only when Auto covers commands: with alwaysAskCommands on, commands still ask.
       ...(this.autoApplies() && !this.input.settings.alwaysAskCommands
         ? { agentAuto: true, agentAutoWebTools: this.input.settings.agentAutoWebTools }
@@ -635,7 +654,7 @@ export class TurnRun {
       prompt: plan.prefix.length > 0 ? `${plan.prefix}\n\n${this.prompt}` : this.prompt,
       ...(this.input.images ? { images: this.input.images } : {}),
       mode: this.input.mode,
-      model: this.input.model,
+      model: this.providerModel,
       session: plan.ref,
       profile: this.profile,
       host: registration.endpoint,
@@ -1085,7 +1104,7 @@ export class TurnRun {
         this.logger.debug('an unknown event type', { type: event.rawType });
         return undefined;
       case 'error': {
-        const sentence = errorSentence(event.category, this.input.model, event.message);
+        const sentence = errorSentence(event.category, this.providerModel, event.message);
         this.errorNoticed = true;
         this.addNotice('error', sentence);
         if (event.category === 'authentication') {
@@ -1101,6 +1120,7 @@ export class TurnRun {
   }
 
   private onSession(event: SessionEvent): void {
+    if (typeof event.model === 'string' && event.model.length > 0) this.reported = event.model;
     if (event.sessionId.length > 0 && event.sessionId !== sessionIdOf(this.session.ref)) {
       this.track(this.patchMeta({ sessionId: event.sessionId }));
     }
@@ -1176,7 +1196,7 @@ export class TurnRun {
       case 'error':
       case 'limit':
         this.hitLimit = event.outcome === 'limit';
-        this.final = { status: 'error', error: resultSentence(event, this.input.model) };
+        this.final = { status: 'error', error: resultSentence(event, this.providerModel) };
         break;
     }
     return undefined;

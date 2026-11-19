@@ -1136,6 +1136,93 @@ describe('Composer mode and model', () => {
     expect(Array.from(select.options).map((o) => o.value)).toEqual(['default', 'opus', 'custom-x']);
     expect(select.value).toBe('custom-x');
   });
+
+  it('shows the label of each option as its visible text', () => {
+    renderWithHost(<Composer />);
+    const select = screen.getByRole<HTMLSelectElement>('combobox', { name: 'Model' });
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(['Default', 'Opus']);
+  });
+
+  describe('delegate choices', () => {
+    const models = [
+      { id: 'default', label: 'Default', custom: false },
+      { id: 'opus', label: 'Opus 5.5', custom: false, resolved: 'claude-opus-5-5' },
+      {
+        id: 'opus+delegate',
+        label: 'Opus 5.5 · orchestrate and delegate',
+        custom: false,
+        resolved: 'claude-opus-5-5',
+      },
+    ];
+    const select = () => screen.getByRole<HTMLSelectElement>('combobox', { name: 'Model' });
+    const withModel = (model: string, list = models) =>
+      makeState({ models: list, active: makeActive('c1', { meta: { model } }) });
+
+    it('reads an unlisted delegate choice as the model orchestrating, and keeps it selectable', () => {
+      renderWithHost(<Composer />, withModel('x+delegate'));
+      expect(select().value).toBe('x+delegate');
+      const option = Array.from(select().options).find((o) => o.value === 'x+delegate');
+      expect(option?.textContent).toBe('x · orchestrate and delegate');
+      expect(select().selectedOptions[0]?.textContent).toBe('x · orchestrate and delegate');
+    });
+
+    it('uses the label of the listed base model for an unlisted delegate choice', () => {
+      renderWithHost(<Composer />, withModel('opus+delegate', models.slice(0, 2)));
+      expect(select().value).toBe('opus+delegate');
+      expect(select().selectedOptions[0]?.textContent).toBe('Opus 5.5 · orchestrate and delegate');
+    });
+
+    it('keeps the raw id for an unlisted model that is not a delegate choice', () => {
+      renderWithHost(<Composer />, withModel('+delegate'));
+      expect(select().selectedOptions[0]?.textContent).toBe('+delegate');
+    });
+
+    it('sets the title to the resolved id of the selected entry', () => {
+      const { init } = renderWithHost(<Composer />, withModel('opus'));
+      expect(select().getAttribute('title')).toBe('claude-opus-5-5');
+      init(withModel('opus+delegate'), 1);
+      expect(select().getAttribute('title')).toBe('claude-opus-5-5');
+    });
+
+    it('has no title when the selected entry has no resolved id', () => {
+      const { init } = renderWithHost(<Composer />, withModel('default'));
+      expect(select().hasAttribute('title')).toBe(false);
+      init(withModel('x+delegate'), 1);
+      expect(select().hasAttribute('title')).toBe(false);
+    });
+
+    it('posts the full choice for an open conversation, and the send carries it unchanged', () => {
+      const { host, init } = renderWithHost(<Composer />, withModel('default'));
+      fireEvent.change(select(), { target: { value: 'opus+delegate' } });
+      expect(host.postedOf('conversation.setModel')).toEqual([
+        { type: 'conversation.setModel', conversationId: convId('c1'), model: 'opus+delegate' },
+      ]);
+      // The host owns the state: the selection moves when the host says so.
+      init(withModel('opus+delegate'), 1);
+      expect(select().value).toBe('opus+delegate');
+      type('go');
+      enter();
+      expect(host.postedOf('turn.send')).toEqual([
+        {
+          type: 'turn.send',
+          conversationId: convId('c1'),
+          text: 'go',
+          mode: 'ask',
+          model: 'opus+delegate',
+        },
+      ]);
+    });
+
+    it('sends the full choice of a new conversation', () => {
+      const { host } = renderWithHost(<Composer />, makeState({ models }));
+      fireEvent.change(select(), { target: { value: 'opus+delegate' } });
+      type('go');
+      enter();
+      expect(host.postedOf('turn.send')).toEqual([
+        { type: 'turn.send', text: 'go', mode: 'ask', model: 'opus+delegate' },
+      ]);
+    });
+  });
 });
 
 describe('Composer Auto switch', () => {

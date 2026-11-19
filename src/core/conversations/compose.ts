@@ -23,6 +23,8 @@ export interface ComposeInput {
   agentAuto?: boolean;
   /** Auto also covers web fetch and web search (`agentAutoWebTools`). Only read with `agentAuto`. */
   agentAutoWebTools?: boolean;
+  /** The user chose a delegate model choice: the model orchestrates and hands routine work to subagents. Only read in Agent mode. */
+  delegate?: boolean;
 }
 
 /**
@@ -64,6 +66,19 @@ function agentAutoParagraph(webTools: boolean): string {
     ? `${AGENT_AUTO_INTRO}Protected files, paths outside the folder and other tools ${STILL_ASK_END}`
     : `${AGENT_AUTO_INTRO}Protected files, paths outside the folder, web access and other tools ${STILL_ASK_END}`;
 }
+
+/** Added in Agent mode when the user chose a delegate model choice. */
+export const AGENT_DELEGATE_PARAGRAPH =
+  'The user chose to have this work orchestrated. Keep for yourself the planning, the ' +
+  'architectural decisions, anything that needs complex reasoning and the final review. Delegate ' +
+  'the rest to subagents of type general-purpose, each with a complete brief (the goal, the files, ' +
+  'what is already known, the check that proves it works): searches, reading and simple analysis ' +
+  'with model "haiku"; routine implementation and tests with model "sonnet". Launch subagents ' +
+  'that only read in one message so they run in parallel. Run subagents that edit files or run ' +
+  'commands one at a time, so the user can review each change. Do not use worktree isolation or ' +
+  'background subagents. Do not delegate a task smaller than its brief. Review what a subagent ' +
+  "returns before relying on it. Before you finish, run the project's checks yourself and fix " +
+  'what they find. If the project defines its own subagents or delegation rules, follow those.';
 
 function modeParagraph(
   mode: Mode,
@@ -148,6 +163,7 @@ export function composePrompt(input: ComposeInput): string {
       input.agentAutoWebTools === true,
     ),
   ];
+  if (input.mode === 'agent' && input.delegate === true) sections.push(AGENT_DELEGATE_PARAGRAPH);
   if (input.planBlock) sections.push(neutralize(input.planBlock));
   if (input.revertedPaths && input.revertedPaths.length > 0) {
     sections.push(revertedSection(input.revertedPaths));

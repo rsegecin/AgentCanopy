@@ -182,7 +182,10 @@ export function createClaudeProvider(options: ClaudeProviderOptions): AgentProvi
     id: 'claude-code',
     displayName: 'Claude Code',
     detect,
-    listModels: (custom: readonly string[]): ModelInfo[] => claudeModels(custom),
+    listModels: (
+      custom: readonly string[],
+      known?: Readonly<Record<string, string>>,
+    ): ModelInfo[] => claudeModels(custom, known),
     // Only a directly found executable is offered: a test launch with prefix arguments is not a
     // command a person would type.
     signInCommand: () =>

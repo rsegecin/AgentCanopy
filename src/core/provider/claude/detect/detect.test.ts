@@ -2,7 +2,13 @@ import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { claudeModels, compareVersions, detectClaude, MINIMUM_CLAUDE_VERSION } from './index';
+import {
+  claudeModels,
+  compareVersions,
+  detectClaude,
+  MINIMUM_CLAUDE_VERSION,
+  modelDisplayName,
+} from './index';
 import type { ExecFn } from './index';
 
 let dir: string;
@@ -547,22 +553,168 @@ describe('robustness', () => {
 });
 
 describe('claudeModels', () => {
-  it('lists the built-in aliases first', () => {
+  it('lists the built-in entries first, with versioned labels', () => {
     expect(claudeModels([])).toEqual([
       { id: 'default', label: 'Default (Claude Code decides)', custom: false },
-      { id: 'sonnet', label: 'Sonnet', custom: false },
-      { id: 'opus', label: 'Opus', custom: false },
-      { id: 'haiku', label: 'Haiku', custom: false },
-      { id: 'fable', label: 'Fable', custom: false },
+      { id: 'sonnet', label: 'Sonnet 5.5', custom: false, resolved: 'claude-sonnet-5-5' },
+      { id: 'opus', label: 'Opus 5.5', custom: false, resolved: 'claude-opus-5-5' },
+      { id: 'haiku', label: 'Haiku 5.5', custom: false, resolved: 'claude-haiku-5-5' },
+      { id: 'fable', label: 'Fable 5.2', custom: false, resolved: 'claude-fable-5-2' },
+      {
+        id: 'fable+delegate',
+        label: 'Fable 5.2 · orchestrate and delegate',
+        custom: false,
+        resolved: 'claude-fable-5-2',
+      },
     ]);
   });
 
   it('appends custom ids without duplicates', () => {
     const models = claudeModels(['my-model', ' my-model ', 'sonnet', '', 'other']);
-    expect(models.slice(5)).toEqual([
+    expect(models.slice(6)).toEqual([
       { id: 'my-model', label: 'my-model', custom: true },
       { id: 'other', label: 'other', custom: true },
     ]);
-    expect(models).toHaveLength(7);
+    expect(models).toHaveLength(8);
+  });
+
+  it('a learned id sets the label and resolved of its alias, and the delegate entry follows fable', () => {
+    const models = claudeModels([], { opus: 'claude-opus-6', fable: 'claude-fable-6-1-20270101' });
+    expect(models.find((m) => m.id === 'opus')).toEqual({
+      id: 'opus',
+      label: 'Opus 6',
+      custom: false,
+      resolved: 'claude-opus-6',
+    });
+    expect(models.find((m) => m.id === 'fable')).toMatchObject({
+      label: 'Fable 6.1',
+      resolved: 'claude-fable-6-1-20270101',
+    });
+    expect(models.find((m) => m.id === 'fable+delegate')).toEqual({
+      id: 'fable+delegate',
+      label: 'Fable 6.1 · orchestrate and delegate',
+      custom: false,
+      resolved: 'claude-fable-6-1-20270101',
+    });
+    expect(models.find((m) => m.id === 'sonnet')?.label).toBe('Sonnet 5.5');
+  });
+
+  it('default gains the version and resolved only when learned', () => {
+    const unknown = claudeModels([])[0];
+    expect(unknown).toEqual({
+      id: 'default',
+      label: 'Default (Claude Code decides)',
+      custom: false,
+    });
+    expect(unknown).not.toHaveProperty('resolved');
+    expect(claudeModels([], { default: 'claude-fable-5-2' })[0]).toEqual({
+      id: 'default',
+      label: 'Default (Claude Code decides) · Fable 5.2',
+      custom: false,
+      resolved: 'claude-fable-5-2',
+    });
+  });
+
+  it('an unrecognised learned id keeps the table label and sets resolved', () => {
+    const models = claudeModels([], {
+      opus: 'anthropic.claude-opus-v1:0',
+      default: 'anthropic.claude-opus-v1:0',
+    });
+    expect(models.find((m) => m.id === 'opus')).toEqual({
+      id: 'opus',
+      label: 'Opus 5.5',
+      custom: false,
+      resolved: 'anthropic.claude-opus-v1:0',
+    });
+    expect(models[0]).toEqual({
+      id: 'default',
+      label: 'Default (Claude Code decides)',
+      custom: false,
+      resolved: 'anthropic.claude-opus-v1:0',
+    });
+  });
+
+  it.each([
+    ['a space', 'claude opus-6'],
+    ['101 characters', 'a'.repeat(101)],
+    ['an empty string', ''],
+    ['a number', 6],
+    ['an object', {}],
+  ])('ignores a learned value with %s', (_name, value) => {
+    const models = claudeModels([], { opus: value as string, default: value as string });
+    expect(models).toEqual(claudeModels([]));
+    expect(models[0]).not.toHaveProperty('resolved');
+  });
+
+  it('does not read a learned id from the prototype', () => {
+    const known = Object.create({ opus: 'claude-opus-9', default: 'claude-opus-9' }) as Record<
+      string,
+      string
+    >;
+    expect(claudeModels([], known)).toEqual(claudeModels([]));
+    const polluted = JSON.parse('{"__proto__": "claude-opus-9"}') as Record<string, string>;
+    expect(claudeModels(['__proto__+delegate'], polluted).at(-1)).toEqual({
+      id: '__proto__+delegate',
+      label: '__proto__ · orchestrate and delegate',
+      custom: true,
+    });
+  });
+
+  it('labels custom delegate choices from their base', () => {
+    const models = claudeModels(
+      [
+        'opus+delegate',
+        'default+delegate',
+        'my-model+delegate',
+        'fable+delegate',
+        'sonnet+delegate',
+      ],
+      { sonnet: 'claude-sonnet-6' },
+    );
+    expect(models.slice(6)).toEqual([
+      {
+        id: 'opus+delegate',
+        label: 'Opus 5.5 · orchestrate and delegate',
+        custom: true,
+        resolved: 'claude-opus-5-5',
+      },
+      { id: 'default+delegate', label: 'Default · orchestrate and delegate', custom: true },
+      { id: 'my-model+delegate', label: 'my-model · orchestrate and delegate', custom: true },
+      {
+        id: 'sonnet+delegate',
+        label: 'Sonnet 6 · orchestrate and delegate',
+        custom: true,
+        resolved: 'claude-sonnet-6',
+      },
+    ]);
+    // 'fable+delegate' is the built-in entry and is listed once.
+    expect(models.filter((m) => m.id === 'fable+delegate')).toHaveLength(1);
+    expect(models.find((m) => m.id === 'fable+delegate')?.custom).toBe(false);
+  });
+
+  it('returns fresh objects on every call', () => {
+    const first = claudeModels(['x']);
+    first[1]!.label = 'changed';
+    first.pop();
+    const second = claudeModels(['x']);
+    expect(second[1]?.label).toBe('Sonnet 5.5');
+    expect(second).toHaveLength(7);
+  });
+});
+
+describe('modelDisplayName', () => {
+  it.each([
+    ['claude-opus-5-5', 'Opus 5.5'],
+    ['claude-fable-5', 'Fable 5'],
+    ['claude-haiku-5-5-20260101', 'Haiku 5.5'],
+    ['claude-fable-5-20260101', 'Fable 5'],
+    ['claude-opus-5-5[1m]', 'Opus 5.5 (1M)'],
+    ['claude-3-5-sonnet-20241022', undefined],
+    ['opus', undefined],
+    ['', undefined],
+    ['claude-opus-5-5-extra', undefined],
+    ['anthropic.claude-opus-v1:0', undefined],
+  ])('names %j as %j', (id, name) => {
+    expect(modelDisplayName(id)).toBe(name);
   });
 });

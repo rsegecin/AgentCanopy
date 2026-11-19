@@ -72,6 +72,11 @@ Messages that start "Claude Code offered tools that are not allowed in a read-on
 | Claude Code reports a billing problem with your account. | Check your plan or credits |
 | Claude Code could not be started. | Check that it is installed and signed in |
 | Claude Code no longer has this session. | The conversation continues with its visible messages as context |
+| model name contains characters that are not allowed | The conversation stored an "orchestrate and delegate" choice (a model name ending in `+delegate`) and this build is older than 0.1.7, which does not know that form. Pick another model, or use a newer build |
+
+## The model selector shows an old version
+
+The label of an alias comes from a table built into the extension until a turn that used that alias has completed on this machine. After that AgentCanopy shows the version that Claude Code reported. Run a turn with that model: a turn that fails or is stopped does not count. Hover over the selector to see the full id of the selected entry, when it is known. See [Model versions](agent-mode.md#model-versions).
 
 ## The project settings dialog
 
@@ -90,7 +95,7 @@ In Agent mode a terminal command asks unless it is read-only, you chose **Always
 - It names a file outside the workspace folder, or a link inside the folder leads outside it. On Windows, MSYS paths such as `/c/...` ask.
 - It is a git command and the folder has no `.git` directory of its own at its root. A parent folder's repository, a linked worktree and a submodule (where `.git` is a file) all ask.
 - It is a PowerShell command. PowerShell commands ask unless saved or Auto is on.
-- It comes from a subagent, or Claude Code did not report the workspace folder as the working directory. AgentCanopy reads that from the hook it installs in Agent mode, so with `disableAllHooks` in your Claude Code user settings every command asks.
+- It comes from a subagent, or Claude Code did not report the workspace folder as the working directory. AgentCanopy reads that from the hook it installs in Agent mode, so with `disableAllHooks` in your Claude Code user settings every command asks. A turn with an [orchestrate and delegate](agent-mode.md#orchestrate-and-delegate) model therefore asks more often without Auto, because the read-only commands of a subagent ask; with Auto on they do not.
 - `agentCanopy.agent.alwaysAskCommands` is on. It turns read-only commands off.
 - You chose **Use Project Settings** and the project's settings hold environment variables, hooks or helper commands.
 - The workspace folder is your home folder or above it, or inside a credential location, or a `PATH` entry is relative or lies inside the folder.

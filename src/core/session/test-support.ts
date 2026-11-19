@@ -548,7 +548,7 @@ function trackedProvider(
         ? status
         : { ...status, capabilities: { ...status.capabilities, forkAtMessage } };
     },
-    listModels: (custom) => first.listModels(custom),
+    listModels: (custom, known) => first.listModels(custom, known),
     startTurn(request) {
       const provider = providers[Math.min(calls, providers.length - 1)] ?? first;
       calls += 1;

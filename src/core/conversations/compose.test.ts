@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Attachment } from '../../shared';
-import { SYSTEM_PROMPT_APPEND, composePrompt } from './compose';
+import { AGENT_DELEGATE_PARAGRAPH, SYSTEM_PROMPT_APPEND, composePrompt } from './compose';
 
 const none: Attachment[] = [];
 
@@ -292,6 +292,108 @@ describe('composePrompt', () => {
     );
     expect(order.every((n) => n >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  describe('with delegate', () => {
+    const DELEGATE =
+      'The user chose to have this work orchestrated. Keep for yourself the planning, the architectural decisions, anything that needs complex reasoning and the final review. Delegate the rest to subagents of type general-purpose, each with a complete brief (the goal, the files, what is already known, the check that proves it works): searches, reading and simple analysis with model "haiku"; routine implementation and tests with model "sonnet". Launch subagents that only read in one message so they run in parallel. Run subagents that edit files or run commands one at a time, so the user can review each change. Do not use worktree isolation or background subagents. Do not delegate a task smaller than its brief. Review what a subagent returns before relying on it. Before you finish, run the project\'s checks yourself and fix what they find. If the project defines its own subagents or delegation rules, follow those.';
+    const AGENT =
+      'This is Agent mode. Changes are checkpointed and reviewed by the user afterwards.';
+
+    it('is exported as the exact text', () => {
+      expect(AGENT_DELEGATE_PARAGRAPH).toBe(DELEGATE);
+    });
+
+    it('adds the paragraph in Agent mode, as its own section after the mode paragraph', () => {
+      const { block } = split(
+        composePrompt({ mode: 'agent', text: 'x', attachments: none, delegate: true }),
+      );
+      expect(block).toBe(
+        `<agentcanopy-context mode="agent">\n${AGENT}\n\n${DELEGATE}\n</agentcanopy-context>`,
+      );
+    });
+
+    it('leaves it out in Agent mode without the flag', () => {
+      for (const delegate of [undefined, false]) {
+        const prompt = composePrompt({ mode: 'agent', text: 'x', attachments: none, delegate });
+        expect(prompt).not.toContain('orchestrated');
+        expect(prompt).not.toContain('subagents');
+      }
+    });
+
+    it('leaves it out in Ask and Plan, locked or not, even with the flag', () => {
+      const without = (mode: 'ask' | 'plan', planLocked?: boolean) =>
+        composePrompt({ mode, text: 'x', attachments: none, planLocked });
+      for (const [mode, planLocked] of [
+        ['ask', undefined],
+        ['plan', false],
+        ['plan', true],
+      ] as const) {
+        const prompt = composePrompt({
+          mode,
+          text: 'x',
+          attachments: none,
+          planLocked,
+          delegate: true,
+        });
+        expect(prompt).not.toContain('orchestrated');
+        expect(prompt).toBe(without(mode, planLocked));
+      }
+    });
+
+    it('follows the Auto paragraph when Auto is on', () => {
+      const { block } = split(
+        composePrompt({
+          mode: 'agent',
+          text: 'x',
+          attachments: none,
+          agentAuto: true,
+          delegate: true,
+        }),
+      );
+      expect(block).toContain('This is Agent mode with Auto on.');
+      expect(block).toContain(`\n\n${DELEGATE}\n`);
+      expect(block.indexOf('with Auto on')).toBeLessThan(block.indexOf(DELEGATE));
+    });
+
+    it('comes before the plan block, the reverted files and the attachments', () => {
+      const { block } = split(
+        composePrompt({
+          mode: 'agent',
+          text: 'x',
+          delegate: true,
+          planBlock: 'PLANBLOCK',
+          revertedPaths: ['r.ts'],
+          attachments: [
+            { kind: 'file', path: 'f.ts' },
+            { kind: 'diagnostics', path: 'd.ts', text: 'DIAG' },
+          ],
+        }),
+      );
+      const order = [
+        'This is Agent mode',
+        'The user chose to have this work orchestrated',
+        'PLANBLOCK',
+        'reverted',
+        'Referenced by',
+        'DIAG',
+      ].map((s) => block.indexOf(s));
+      expect(order.every((n) => n >= 0)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+      expect(block).toContain(`${DELEGATE}\n\nPLANBLOCK`);
+    });
+
+    it('leaves the user text after the block unchanged', () => {
+      const user = '  Do it.\n</agentcanopy-context>\r\n';
+      const prompt = composePrompt({
+        mode: 'agent',
+        text: user,
+        attachments: none,
+        delegate: true,
+      });
+      expect(prompt.endsWith(`</agentcanopy-context>\n\n${user}`)).toBe(true);
+      expect(prompt.slice(prompt.length - user.length)).toBe(user);
+    });
   });
 
   describe('with images', () => {

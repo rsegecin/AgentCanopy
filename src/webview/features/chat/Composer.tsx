@@ -1,7 +1,13 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
-import { ImageMediaTypeSchema, MAX_IMAGE_BYTES, MODES } from '../../../shared';
-import type { Mode, ProviderStatus } from '../../../shared';
+import {
+  ImageMediaTypeSchema,
+  MAX_IMAGE_BYTES,
+  MODES,
+  delegateLabel,
+  parseModelChoice,
+} from '../../../shared';
+import type { Mode, ModelInfo, ProviderStatus } from '../../../shared';
 import { Icon, IconButton } from '../../app/components';
 import { useApp, usePost } from '../../app/context';
 import { useFocusRecovery } from '../../app/focus';
@@ -21,6 +27,14 @@ const MODE_INFO: Record<Mode, { label: string; description: string }> = {
 };
 
 const MAX_DRAFT = 200_000;
+
+/** The entry shown for a current model the list does not have: a delegate choice reads as one. */
+function unlistedModelOption(model: string, models: ModelInfo[]): ModelInfo {
+  const choice = parseModelChoice(model);
+  if (!choice.delegate) return { id: model, label: model, custom: true };
+  const base = models.find((m) => m.id === choice.model)?.label ?? choice.model;
+  return { id: model, label: delegateLabel(base), custom: true };
+}
 
 const CONFIG_BLOCK_HINT =
   'Keep or revert the configuration changes in the changes card below the chat before sending in Agent mode.';
@@ -132,7 +146,8 @@ export function Composer() {
   const model = meta?.model ?? newModel ?? defaults.model;
   const modelOptions = models.some((m) => m.id === model)
     ? models
-    : [...models, { id: model, label: model, custom: true }];
+    : [...models, unlistedModelOption(model, models)];
+  const selectedModel = modelOptions.find((m) => m.id === model);
 
   // Only sending in Agent mode waits for the decision: typing, attaching and switching mode do not.
   const configBlocked = configPending && mode === 'agent';
@@ -549,6 +564,7 @@ export function Composer() {
             <span className="visually-hidden">Model</span>
             <select
               value={model}
+              title={selectedModel?.resolved}
               onChange={(event) => {
                 changeModel(event.target.value);
               }}

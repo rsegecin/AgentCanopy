@@ -1,7 +1,15 @@
-import { promises as fs } from 'node:fs';
+import { existsSync, promises as fs } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import type { Attachment, ConversationId, FolderKey, ProviderStatus } from '../../shared';
+import { DEFAULT_SETTINGS } from '../../shared';
+import type {
+  Attachment,
+  ConversationId,
+  FolderKey,
+  ModelInfo,
+  PatchOp,
+  ProviderStatus,
+} from '../../shared';
 import type { AgentProvider } from '../contracts';
 import {
   assistantMessage,
@@ -13,12 +21,17 @@ import {
 } from '../conversations/test-support';
 import { createConversationStore } from '../conversations/store';
 import type { ConversationStore } from '../conversations/store';
+import { AUTO_RESET_FILE } from './auto-reset';
+import { LEARNED_MODELS_FILE } from './learned-models';
 import {
   FOLDER_KEY,
   createHarness,
+  finishedTurn,
+  fixtureSteps,
   providerStatus,
   sendAndFinish,
   sleep,
+  streamedText,
   stubProvider,
   textScenario,
   until,
@@ -866,5 +879,172 @@ describe('features of the default workspace tracking, in an application built wi
       view.toasts.every((t) => t.level === 'info' && t.text === 'This is not available yet.'),
     ).toBe(true);
     expect(view.current()).toEqual(before);
+  });
+});
+
+describe('the full ids that finished turns reported for model aliases', () => {
+  const DEFAULT_LABEL = 'Default (Claude Code decides) · Haiku 5.5';
+
+  function entryOf(view: TestView, id: string): ModelInfo | undefined {
+    return view.current().models.find((model) => model.id === id);
+  }
+
+  /** The patches that set the whole list of models. */
+  function modelPatches(view: TestView): PatchOp[] {
+    return view
+      .patches()
+      .flatMap((patch) => patch.ops)
+      .filter((op) => op.op === 'set' && op.path.length === 1 && op.path[0] === 'models');
+  }
+
+  it('puts the resolved id and label in every view after a completed turn', async () => {
+    const h = await harness({ scenario: textScenario('ok') });
+    const view = h.attach();
+    const other = h.attach();
+    expect(entryOf(view, 'default')?.resolved).toBeUndefined();
+    expect(entryOf(view, 'default')?.label).toBe('Default (Claude Code decides)');
+    expect(modelPatches(view)).toEqual([]);
+    const before = view.current().models;
+
+    const turn = await sendAndFinish(h, view, 'hello');
+    expect(turn.status).toBe('completed');
+    for (const v of [view, other]) {
+      expect(entryOf(v, 'default')).toMatchObject({
+        id: 'default',
+        label: DEFAULT_LABEL,
+        resolved: 'claude-haiku-5-5',
+      });
+      // Only what was learned changed.
+      expect(v.current().models.filter((m) => m.id !== 'default')).toEqual(
+        before.filter((m) => m.id !== 'default'),
+      );
+    }
+    const patches = modelPatches(view);
+    expect(patches).toHaveLength(1);
+    expect(patches[0]?.op === 'set' && patches[0].value).toEqual(view.current().models);
+    expect(modelPatches(other)).toHaveLength(1);
+    view.expectMirror();
+    other.expectMirror();
+
+    // The same id again changes nothing.
+    await sendAndFinish(h, view, 'again');
+    expect(modelPatches(view)).toHaveLength(1);
+  });
+
+  it('learns the model of a delegate choice for its base alias', async () => {
+    const h = await harness({ scenario: textScenario('ok') });
+    const view = h.attach();
+    await sendAndFinish(h, view, 'hello', { model: 'fable+delegate' });
+    expect(entryOf(view, 'fable')?.resolved).toBe('claude-haiku-5-5');
+    expect(entryOf(view, 'fable+delegate')?.resolved).toBe('claude-haiku-5-5');
+    expect(entryOf(view, 'default')?.resolved).toBeUndefined();
+    expect(entryOf(view, 'default')?.label).toBe('Default (Claude Code decides)');
+    view.expectMirror();
+  });
+
+  it('learns nothing from a turn that ended in an error', async () => {
+    const h = await harness({ scenario: { steps: fixtureSteps('E1') } });
+    const view = h.attach();
+    const before = view.current().models;
+    const turn = await sendAndFinish(h, view, 'hi');
+    expect(turn.status).toBe('error');
+    expect(view.current().models).toEqual(before);
+    expect(modelPatches(view)).toEqual([]);
+    await h.controller.dispose();
+    expect(existsSync(join(h.globalStorage, LEARNED_MODELS_FILE))).toBe(false);
+  });
+
+  it('learns nothing from a turn that was interrupted', async () => {
+    const h = await harness({
+      scenario: { steps: [...streamedText(['partial text']), { hang: true }] },
+    });
+    const view = h.attach();
+    const before = view.current().models;
+    view.send({ type: 'turn.send', text: 'go', mode: 'ask', model: 'default' });
+    await until('text to appear', () => {
+      const message = view.state?.active?.messages[1];
+      return message?.role === 'assistant' && message.parts.length > 0;
+    });
+    view.send({ type: 'turn.cancel', conversationId: view.active().meta.id });
+    const turn = await finishedTurn(h, view);
+    expect(turn.status).toBe('interrupted');
+    expect(view.current().models).toEqual(before);
+    expect(modelPatches(view)).toEqual([]);
+    await h.controller.dispose();
+    expect(existsSync(join(h.globalStorage, LEARNED_MODELS_FILE))).toBe(false);
+  });
+
+  it('learns nothing for a custom model id', async () => {
+    const h = await harness({ scenario: textScenario('ok'), noStart: true });
+    h.env.settingsValue = { ...DEFAULT_SETTINGS, customModels: ['claude-custom-1'] };
+    await h.controller.start();
+    const view = h.attach();
+    const before = view.current().models;
+    expect(before.some((m) => m.id === 'claude-custom-1' && m.custom)).toBe(true);
+    const turn = await sendAndFinish(h, view, 'hello', { model: 'claude-custom-1' });
+    expect(turn.status).toBe('completed');
+    expect(h.requests[0]?.model).toBe('claude-custom-1');
+    expect(view.current().models).toEqual(before);
+    expect(modelPatches(view)).toEqual([]);
+    await h.controller.dispose();
+    expect(existsSync(join(h.globalStorage, LEARNED_MODELS_FILE))).toBe(false);
+  });
+
+  it('is in the first state of a window that starts later on the same global storage', async () => {
+    const first = await harness({ scenario: textScenario('ok') });
+    const view = first.attach();
+    await sendAndFinish(first, view, 'hello');
+    // Written in the background; disposing waits for it.
+    await first.controller.dispose();
+    expect(existsSync(join(first.globalStorage, LEARNED_MODELS_FILE))).toBe(true);
+
+    const second = await harness({
+      scenario: textScenario('ok'),
+      globalStorage: first.globalStorage,
+    });
+    const next = second.attach();
+    const init = next.messages[0];
+    expect(init?.type).toBe('init');
+    if (init?.type !== 'init') return;
+    expect(init.state.models.find((m) => m.id === 'default')).toMatchObject({
+      label: DEFAULT_LABEL,
+      resolved: 'claude-haiku-5-5',
+    });
+    expect(modelPatches(next)).toEqual([]);
+  });
+
+  it('works in memory when there is no global storage directory', async () => {
+    const h = await harness({ scenario: textScenario('ok'), noStart: true });
+    h.env.globalStorage = undefined;
+    await h.controller.start();
+    const view = h.attach();
+    const turn = await sendAndFinish(h, view, 'hello');
+    expect(turn.status).toBe('completed');
+    expect(entryOf(view, 'default')).toMatchObject({
+      label: DEFAULT_LABEL,
+      resolved: 'claude-haiku-5-5',
+    });
+    expect(await fs.readdir(h.globalStorage)).toEqual([]);
+    view.expectMirror();
+  });
+
+  it('does not reset Auto', async () => {
+    const h = await harness({ scenario: textScenario('ok'), noStart: true });
+    h.env.settingsValue = { ...DEFAULT_SETTINGS, agentAuto: false };
+    await h.controller.start();
+    const view = h.attach();
+    // With the setting off, start-up has reset Auto once and saved when it saw that.
+    const file = join(h.globalStorage, AUTO_RESET_FILE);
+    await until('the reset to be saved', () => existsSync(file));
+    await sleep(50);
+    const resets: unknown = Reflect.get(h.controller, 'autoResets');
+    const saved = await fs.readFile(file, 'utf8');
+
+    const turn = await sendAndFinish(h, view, 'hello');
+    expect(turn.status).toBe('completed');
+    expect(entryOf(view, 'default')?.resolved).toBe('claude-haiku-5-5');
+    expect(Reflect.get(h.controller, 'autoResets')).toBe(resets);
+    await h.controller.dispose();
+    expect(await fs.readFile(file, 'utf8')).toBe(saved);
   });
 });

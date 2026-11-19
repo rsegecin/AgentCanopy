@@ -1,6 +1,7 @@
 export * from './conversation';
 export * from './events';
 export * from './ids';
+export * from './models';
 export * from './modes';
 export * from './patch';
 export * from './permissions';

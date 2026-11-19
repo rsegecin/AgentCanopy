@@ -12,6 +12,7 @@ import type {
 } from '../../shared';
 import type { TurnObserver, TurnPolicy } from '../contracts';
 import type { ConversationStore } from '../conversations/store';
+import { AGENT_DELEGATE_PARAGRAPH } from '../conversations/compose';
 import { createPlanStore, renderPlanBlock } from '../plans';
 import type { PlanStore } from '../plans';
 import { projectAside } from './asides';
@@ -159,8 +160,9 @@ function sendIn(
   conversationId: ConversationId,
   message: string,
   mode: 'ask' | 'plan' | 'agent' = 'ask',
+  model = 'default',
 ): void {
-  view.send({ type: 'turn.send', conversationId, text: message, mode, model: 'default' });
+  view.send({ type: 'turn.send', conversationId, text: message, mode, model });
 }
 
 function assistants(view: TestView): AssistantMessage[] {
@@ -313,6 +315,38 @@ describe('a question asked in Ask mode while a turn runs', () => {
     await h.idle();
     expect(problems).toEqual([]);
     view.expectMirror();
+  });
+
+  it('has no delegate paragraph and runs on the base model in a delegate conversation', async () => {
+    const { h, problems } = await harness({
+      sequence: [text('answer 1'), hanging, streamedAnswer(['The side answer'])],
+      policy: createPlanTestPolicy(),
+    });
+    const view = h.attach();
+    const choice = 'fable+delegate';
+    await sendAndFinish(h, view, 'one', { mode: 'agent', model: choice });
+    const parentId = view.active().meta.id;
+    sendIn(view, parentId, 'two', 'agent', choice);
+    await until('the running answer', () => (assistants(view)[1]?.parts.length ?? 0) === 1);
+    // The parent's own Agent turns delegate.
+    expect((await h.record(0)).stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
+    expect((await h.record(1)).stdin).toContain(AGENT_DELEGATE_PARAGRAPH);
+
+    sendIn(view, parentId, 'side question?', 'ask', choice);
+    await until('the answer', () => entry(view)?.status === 'completed');
+    const request = h.requests[2];
+    expect(request?.model).toBe('fable');
+    expect(request?.mode).toBe('ask');
+    expect(request?.prompt).not.toContain(AGENT_DELEGATE_PARAGRAPH);
+    const { argv, stdin } = await h.record(2);
+    expect(argv[argv.indexOf('--model') + 1]).toBe('fable');
+    expect(stdin).not.toContain(AGENT_DELEGATE_PARAGRAPH);
+    const [branch] = branchesOf(view, parentId);
+    expect(branch?.mode).toBe('ask');
+
+    view.send({ type: 'turn.cancel', conversationId: parentId });
+    await h.idle();
+    expect(problems).toEqual([]);
   });
 
   it('is anchored after the parts the running answer had', async () => {
